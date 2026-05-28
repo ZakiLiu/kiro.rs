@@ -3177,7 +3177,6 @@ impl MultiTokenManager {
     }
 
     /// 设置凭据冷却（支持自定义时长）
-    #[allow(dead_code)]
     pub fn set_credential_cooldown_with_duration(
         &self,
         id: u64,
