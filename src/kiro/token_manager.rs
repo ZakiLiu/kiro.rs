@@ -12,7 +12,7 @@
 //! - **优雅降级**: Token 刷新失败时使用现有 Token
 
 use anyhow::bail;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -546,6 +546,10 @@ struct CredentialEntry {
     auto_heal_reason: Option<AutoHealReason>,
     /// 禁用原因（公共 API 展示用）
     disable_reason: Option<DisableReason>,
+    /// 禁用时间（用于定时恢复判断）
+    disabled_at: Option<DateTime<Utc>>,
+    /// 恢复尝试次数（用于指数退避）
+    recovery_attempts: u32,
     /// 设备指纹（每个凭据独立）
     fingerprint: Fingerprint,
     /// API 调用成功次数
@@ -591,6 +595,10 @@ pub struct CredentialEntrySnapshot {
     pub disabled: bool,
     /// 禁用原因
     pub disable_reason: Option<DisableReason>,
+    /// 禁用时间
+    pub disabled_at: Option<String>,
+    /// 恢复尝试次数
+    pub recovery_attempts: u32,
     /// 连续失败次数
     pub failure_count: u32,
     /// Token 刷新连续失败次数
@@ -885,6 +893,8 @@ impl MultiTokenManager {
                     } else {
                         None
                     },
+                    disabled_at: if cred.disabled { Some(Utc::now()) } else { None },
+                    recovery_attempts: 0,
                     fingerprint,
                     success_count: 0,
                     last_used_at: None,
@@ -1168,8 +1178,10 @@ impl MultiTokenManager {
         &self,
         exclude_ids: &[u64],
     ) -> anyhow::Result<CallContext> {
-        // 检查是否需要自动恢复
+        // 检查是否需要自动恢复（全局 ModelUnavailable 恢复）
         self.check_and_recover();
+        // 检查是否有单个凭据可以恢复（超过退避时间的自动禁用凭据）
+        self.check_and_recover_individual();
 
         let total = self.total_count();
         let mut tried_ids: Vec<u64> = exclude_ids.to_vec();
@@ -1308,6 +1320,8 @@ impl MultiTokenManager {
                     for e in entries.iter_mut() {
                         if e.auto_heal_reason == Some(AutoHealReason::TooManyFailures) {
                             e.disabled = false;
+                            e.disabled_at = None;
+                            e.recovery_attempts = 0;
                             e.auto_heal_reason = None;
                             e.disable_reason = None;
                             e.failure_count = 0;
@@ -1771,6 +1785,8 @@ impl MultiTokenManager {
                                         == Some(DisableReason::RefreshFailureLimit)
                                     {
                                         entry.disabled = false;
+                                        entry.disabled_at = None;
+                                        entry.recovery_attempts = 0;
                                         entry.auto_heal_reason = None;
                                         entry.disable_reason = None;
                                     }
@@ -1795,6 +1811,8 @@ impl MultiTokenManager {
                                         let refresh_failure_count = entry.refresh_failure_count;
                                         if refresh_failure_count >= MAX_FAILURES_PER_CREDENTIAL {
                                             entry.disabled = true;
+                                            entry.disabled_at = Some(Utc::now());
+                                            entry.recovery_attempts = 0;
                                             entry.auto_heal_reason =
                                                 Some(AutoHealReason::TooManyFailures);
                                             entry.disable_reason =
@@ -2128,6 +2146,8 @@ impl MultiTokenManager {
 
             if failure_count >= MAX_FAILURES_PER_CREDENTIAL {
                 entry.disabled = true;
+                entry.disabled_at = Some(Utc::now());
+                entry.recovery_attempts = 0;
                 entry.auto_heal_reason = Some(AutoHealReason::TooManyFailures);
                 entry.disable_reason = Some(DisableReason::FailureLimit);
                 tracing::error!("凭据 #{} 已连续失败 {} 次，已被禁用", id, failure_count);
@@ -2167,6 +2187,8 @@ impl MultiTokenManager {
             }
 
             entry.disabled = true;
+            entry.disabled_at = Some(Utc::now());
+            entry.recovery_attempts = 0;
             entry.auto_heal_reason = Some(AutoHealReason::QuotaExceeded);
             entry.disable_reason = Some(DisableReason::QuotaExceeded);
             entry.last_used_at = Some(Utc::now().to_rfc3339());
@@ -2209,6 +2231,8 @@ impl MultiTokenManager {
         for entry in entries.iter_mut() {
             if !entry.disabled {
                 entry.disabled = true;
+                entry.disabled_at = Some(Utc::now());
+                entry.recovery_attempts = 0;
                 entry.disable_reason = Some(reason);
             }
         }
@@ -2248,6 +2272,8 @@ impl MultiTokenManager {
             // 只恢复因 ModelUnavailable 禁用的凭据，余额不足的不恢复
             if entry.disabled && entry.disable_reason == Some(DisableReason::ModelUnavailable) {
                 entry.disabled = false;
+                entry.disabled_at = None;
+                entry.recovery_attempts = 0;
                 entry.disable_reason = None;
                 entry.failure_count = 0;
                 recovered_count += 1;
@@ -2265,14 +2291,67 @@ impl MultiTokenManager {
         recovered_count > 0
     }
 
-    /// 标记凭据为认证失败（如 invalid_grant，不会被自动恢复）
+    /// 检查并恢复单个超时的自动禁用凭据
+    ///
+    /// 对于因 FailureLimit / RefreshFailureLimit 被禁用超过 5 分钟的凭据，
+    /// 在请求到来时给予重试机会（重置失败计数，重新启用）。
+    /// 这解决了"部分凭据被禁用但永远不会恢复"的问题。
+    fn check_and_recover_individual(&self) {
+        let now = Utc::now();
+        let mut entries = self.entries.lock();
+        let mut recovered = Vec::new();
+
+        for entry in entries.iter_mut() {
+            if !entry.disabled {
+                continue;
+            }
+            // 只对 FailureLimit 和 RefreshFailureLimit 做请求时自愈
+            // （其他类型由 start_periodic_recovery 处理，需要实际验证）
+            match entry.disable_reason {
+                Some(DisableReason::FailureLimit) | Some(DisableReason::RefreshFailureLimit) => {}
+                _ => continue,
+            }
+            // 必须有 auto_heal_reason == TooManyFailures
+            if entry.auto_heal_reason != Some(AutoHealReason::TooManyFailures) {
+                continue;
+            }
+            // 禁用超过 5 分钟才尝试恢复
+            let min_wait_minutes: i64 = 5;
+            if let Some(disabled_at) = entry.disabled_at {
+                let elapsed = now.signed_duration_since(disabled_at);
+                if elapsed.num_minutes() >= min_wait_minutes {
+                    recovered.push(entry.id);
+                    entry.disabled = false;
+                    entry.disabled_at = None;
+                    entry.recovery_attempts = 0;
+                    entry.failure_count = 0;
+                    entry.refresh_failure_count = 0;
+                    entry.auto_heal_reason = None;
+                    entry.disable_reason = None;
+                }
+            }
+        }
+
+        if !recovered.is_empty() {
+            tracing::info!(
+                "已自动恢复 {} 个超时禁用凭据: {:?}",
+                recovered.len(),
+                recovered
+            );
+        }
+    }
+
+    /// 标记凭据为认证失败（如 invalid_grant）
+    /// 允许周期性恢复尝试（可能是暂时性 OAuth 故障）
     pub fn mark_authentication_failed(&self, id: u64) {
         let mut entries = self.entries.lock();
         if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
             entry.disabled = true;
-            entry.auto_heal_reason = None;
+            entry.disabled_at = Some(Utc::now());
+            entry.recovery_attempts = 0;
+            entry.auto_heal_reason = Some(AutoHealReason::TooManyFailures);
             entry.disable_reason = Some(DisableReason::AuthenticationFailed);
-            tracing::warn!("凭据 #{} 已标记为认证失败", id);
+            tracing::warn!("凭据 #{} 已标记为认证失败（将在恢复周期中尝试重新验证）", id);
         }
         drop(entries);
         self.affinity.remove_by_credential(id);
@@ -2283,6 +2362,8 @@ impl MultiTokenManager {
         let mut entries = self.entries.lock();
         if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
             entry.disabled = true;
+            entry.disabled_at = Some(Utc::now());
+            entry.recovery_attempts = 0;
             entry.auto_heal_reason = None;
             entry.disable_reason = Some(DisableReason::AccountSuspended);
             tracing::warn!("凭据 #{} 已标记为账户暂停", id);
@@ -2291,14 +2372,111 @@ impl MultiTokenManager {
         self.affinity.remove_by_credential(id);
     }
 
-    /// 标记凭据为余额不足（不会被自动恢复）
+    /// 标记凭据为余额不足（允许周期性恢复尝试——余额可能月初重置）
     pub fn mark_insufficient_balance(&self, id: u64) {
         let mut entries = self.entries.lock();
         if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
             entry.disabled = true;
-            entry.auto_heal_reason = None; // 清除自愈原因，防止被自愈循环错误恢复
+            entry.disabled_at = Some(Utc::now());
+            entry.recovery_attempts = 0;
+            entry.auto_heal_reason = Some(AutoHealReason::TooManyFailures);
             entry.disable_reason = Some(DisableReason::InsufficientBalance);
-            tracing::warn!("凭据 #{} 已标记为余额不足", id);
+            tracing::warn!("凭据 #{} 已标记为余额不足（将在恢复周期中重新检查）", id);
+        }
+    }
+
+    /// 获取可尝试恢复的禁用凭据列表
+    ///
+    /// 返回满足恢复条件的凭据 ID 和禁用原因：
+    /// - 非 Manual / AccountSuspended
+    /// - 禁用时间超过退避间隔（基础 5 分钟，指数退避，最大 2 小时）
+    pub fn get_recovery_candidates(&self) -> Vec<(u64, DisableReason)> {
+        let entries = self.entries.lock();
+        let now = Utc::now();
+        entries
+            .iter()
+            .filter(|e| {
+                if !e.disabled {
+                    return false;
+                }
+                // 不恢复手动禁用、账户暂停和模型不可用（后者有独立恢复机制）
+                match e.disable_reason {
+                    Some(DisableReason::Manual)
+                    | Some(DisableReason::AccountSuspended)
+                    | Some(DisableReason::ModelUnavailable) => {
+                        return false;
+                    }
+                    None => return false,
+                    _ => {}
+                }
+                // 指数退避：5min * 2^attempts，最大 120min
+                let base_minutes: i64 = 5;
+                let backoff_minutes =
+                    (base_minutes * (1i64 << e.recovery_attempts.min(5))).min(120);
+                if let Some(disabled_at) = e.disabled_at {
+                    let elapsed = now.signed_duration_since(disabled_at);
+                    elapsed.num_minutes() >= backoff_minutes
+                } else {
+                    // 没有 disabled_at（旧数据），允许恢复尝试
+                    true
+                }
+            })
+            .map(|e| (e.id, e.disable_reason.unwrap()))
+            .collect()
+    }
+
+    /// 恢复指定凭据（重置所有禁用状态，含持久化）。供 Admin API 等单次调用场景使用。
+    #[allow(dead_code)]
+    pub fn recover_credential(&self, id: u64) {
+        if self.recover_credential_inner(id) {
+            if let Err(e) = self.persist_credentials() {
+                tracing::warn!("凭据恢复后持久化失败: {}", e);
+            }
+        }
+    }
+
+    /// 恢复指定凭据（不写盘，用于批量操作后统一持久化）
+    /// 返回 true 表示实际执行了恢复
+    pub fn recover_credential_inner(&self, id: u64) -> bool {
+        let mut entries = self.entries.lock();
+        if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+            if !entry.disabled {
+                return false;
+            }
+            entry.disabled = false;
+            entry.disabled_at = None;
+            entry.recovery_attempts = 0;
+            entry.failure_count = 0;
+            entry.refresh_failure_count = 0;
+            entry.auto_heal_reason = None;
+            entry.disable_reason = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 增加恢复尝试计数（含持久化）。供单次调用场景使用。
+    #[allow(dead_code)]
+    pub fn increment_recovery_attempts(&self, id: u64) {
+        self.increment_recovery_attempts_inner(id);
+        if let Err(e) = self.persist_credentials() {
+            tracing::debug!("恢复计数持久化失败（非关键）: {}", e);
+        }
+    }
+
+    /// 增加恢复尝试计数（不写盘，用于批量操作后统一持久化）
+    pub fn increment_recovery_attempts_inner(&self, id: u64) {
+        let mut entries = self.entries.lock();
+        if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+            entry.recovery_attempts = entry.recovery_attempts.saturating_add(1);
+        }
+    }
+
+    /// 批量操作后统一持久化（供 start_periodic_recovery 使用）
+    pub fn persist_if_needed(&self) {
+        if let Err(e) = self.persist_credentials() {
+            tracing::warn!("批量恢复后持久化失败: {}", e);
         }
     }
 
@@ -2369,6 +2547,8 @@ impl MultiTokenManager {
                         let mut entries = self.entries.lock();
                         if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
                             entry.disabled = true;
+                            entry.disabled_at = Some(Utc::now());
+                            entry.recovery_attempts = 0;
                             entry.disable_reason = Some(DisableReason::InsufficientBalance);
                             tracing::warn!("凭据 #{} 余额不足 ({:.2})，已自动禁用", id, remaining);
                         }
@@ -2421,6 +2601,8 @@ impl MultiTokenManager {
                         priority: e.credentials.priority,
                         disabled: e.disabled,
                         disable_reason: e.disable_reason,
+                        disabled_at: e.disabled_at.map(|dt| dt.to_rfc3339_opts(SecondsFormat::Secs, true)),
+                        recovery_attempts: e.recovery_attempts,
                         failure_count: e.failure_count,
                         refresh_failure_count: e.refresh_failure_count,
                         auth_method: e.credentials.auth_method.as_deref().map(|m| {
@@ -2432,7 +2614,11 @@ impl MultiTokenManager {
                             }
                         }),
                         has_profile_arn: e.credentials.profile_arn.is_some(),
-                        expires_at: e.credentials.expires_at.clone(),
+                        expires_at: e.credentials.expires_at.as_deref().map(|s| {
+                            DateTime::parse_from_rfc3339(s)
+                                .map(|dt| dt.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Secs, true))
+                                .unwrap_or_else(|_| s.to_string())
+                        }),
                         refresh_token_hash: hash,
                         email: e.credentials.email.clone(),
                         subscription_title: e.credentials.subscription_title.clone(),
@@ -2461,9 +2647,13 @@ impl MultiTokenManager {
             if !disabled {
                 // 启用时重置失败计数
                 entry.failure_count = 0;
+                entry.disabled_at = None;
+                entry.recovery_attempts = 0;
                 entry.auto_heal_reason = None;
                 entry.disable_reason = None;
             } else {
+                entry.disabled_at = Some(Utc::now());
+                entry.recovery_attempts = 0;
                 entry.auto_heal_reason = Some(AutoHealReason::Manual);
                 entry.disable_reason = Some(DisableReason::Manual);
             }
@@ -2533,6 +2723,8 @@ impl MultiTokenManager {
             entry.failure_count = 0;
             entry.refresh_failure_count = 0;
             entry.disabled = false;
+            entry.disabled_at = None;
+            entry.recovery_attempts = 0;
             entry.auto_heal_reason = None;
             entry.disable_reason = None;
         }
@@ -2570,10 +2762,17 @@ impl MultiTokenManager {
                 entry.refresh_failure_count = 0;
                 entry.refresh_token_hash = credential_secret_hash(&new_creds);
 
-                // 仅对自动禁用（失败阈值/刷新失败）自动恢复，手动禁用状态保持不变
-                if entry.disabled && entry.disable_reason != Some(DisableReason::Manual) {
+                // 仅对自动禁用（失败阈值/刷新失败）自动恢复；手动禁用和账户暂停保持不变
+                if entry.disabled
+                    && !matches!(
+                        entry.disable_reason,
+                        Some(DisableReason::Manual) | Some(DisableReason::AccountSuspended)
+                    )
+                {
                     entry.failure_count = 0;
                     entry.disabled = false;
+                    entry.disabled_at = None;
+                    entry.recovery_attempts = 0;
                     entry.auto_heal_reason = None;
                     entry.disable_reason = None;
                 }
@@ -2792,6 +2991,8 @@ impl MultiTokenManager {
                 failure_count: 0,
                 refresh_failure_count: 0,
                 disabled: false,
+                disabled_at: None,
+                recovery_attempts: 0,
                 auto_heal_reason: None,
                 disable_reason: None,
                 fingerprint,
@@ -3022,7 +3223,6 @@ impl MultiTokenManager {
     ///
     /// 定期检查并预刷新即将过期的 Token，避免请求时的刷新延迟。
     /// 返回 `BackgroundRefresher` 的 `Arc` 引用，调用方需要保持该引用以维持后台任务运行。
-    #[allow(dead_code)]
     pub fn start_background_refresh(
         self: &Arc<Self>,
         config: BackgroundRefreshConfig,

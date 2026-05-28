@@ -186,6 +186,19 @@ impl KiroProvider {
         &self.token_manager
     }
 
+    /// 启动后台 Token 刷新任务
+    ///
+    /// 防止长时间空闲导致 Token 过期，避免请求到来时刷新失败导致凭据被永久禁用
+    pub fn start_background_token_refresh(self: &Arc<Self>) {
+        use crate::kiro::background_refresh::BackgroundRefreshConfig;
+        let config = BackgroundRefreshConfig::default();
+        let refresher = self.token_manager.start_background_refresh(config);
+        tokio::spawn(async move {
+            let _keep_alive = refresher;
+            std::future::pending::<()>().await;
+        });
+    }
+
     /// 启动周期性 balance 刷新任务（P0#3 修复）。
     ///
     /// 实测：未修前 24h 0 条 balance refresh log，cache 完全是启动时冻结快照。
@@ -237,6 +250,109 @@ impl KiroProvider {
                     }
                     tokio::time::sleep(Duration::from_millis(300)).await;
                 }
+            }
+        });
+    }
+
+    /// 周期性尝试恢复被自动禁用的凭据
+    ///
+    /// 对以下类型的禁用凭据进行恢复尝试：
+    /// - InsufficientBalance: 重新查询余额，余额恢复则重新启用
+    /// - AuthenticationFailed: 尝试刷新 Token，成功则重新启用
+    /// - RefreshFailureLimit / FailureLimit: 尝试刷新 Token，成功则重新启用
+    /// - QuotaExceeded: 重新查询余额
+    ///
+    /// 不恢复：Manual, AccountSuspended
+    ///
+    /// 使用指数退避：基础间隔 5 分钟，每次失败翻倍，最大 2 小时
+    pub fn start_periodic_recovery(self: &Arc<Self>, interval_secs: u64) {
+        let interval_secs = interval_secs.max(60);
+        let provider = Arc::clone(self);
+        tokio::spawn(async move {
+            tracing::info!(
+                interval_secs = interval_secs,
+                "周期性凭据恢复任务已启动"
+            );
+            let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await; // 第一个 tick 立即返回
+            loop {
+                ticker.tick().await;
+                let tm = &provider.token_manager;
+                let candidates = tm.get_recovery_candidates();
+                if candidates.is_empty() {
+                    continue;
+                }
+                tracing::info!(
+                    count = candidates.len(),
+                    "开始周期性凭据恢复检查"
+                );
+                for (id, reason) in candidates {
+                    match reason {
+                        crate::kiro::token_manager::DisableReason::InsufficientBalance
+                        | crate::kiro::token_manager::DisableReason::QuotaExceeded => {
+                            // 尝试重新查询余额
+                            match tm.get_usage_limits_for(id).await {
+                                Ok(resp) => {
+                                    let remaining = resp.usage_limit() - resp.current_usage();
+                                    if remaining >= 1.0 {
+                                        tm.recover_credential_inner(id);
+                                        tm.update_balance_cache(id, remaining);
+                                        tracing::info!(
+                                            "凭据 #{} 余额已恢复 ({:.2})，重新启用",
+                                            id,
+                                            remaining
+                                        );
+                                    } else {
+                                        tm.increment_recovery_attempts_inner(id);
+                                        tracing::debug!(
+                                            "凭据 #{} 余额仍不足 ({:.2})，保持禁用",
+                                            id,
+                                            remaining
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    tm.increment_recovery_attempts_inner(id);
+                                    tracing::debug!(
+                                        "凭据 #{} 恢复检查失败（余额查询）: {}",
+                                        id,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        crate::kiro::token_manager::DisableReason::AuthenticationFailed
+                        | crate::kiro::token_manager::DisableReason::RefreshFailureLimit
+                        | crate::kiro::token_manager::DisableReason::FailureLimit => {
+                            // 尝试刷新 Token
+                            match tm.force_refresh_token_for(id).await {
+                                Ok(_) => {
+                                    tracing::info!(
+                                        "凭据 #{} Token 刷新成功，已自动恢复",
+                                        id
+                                    );
+                                    // force_refresh_token_for 内部已经恢复了凭据并持久化
+                                }
+                                Err(e) => {
+                                    tm.increment_recovery_attempts_inner(id);
+                                    tracing::debug!(
+                                        "凭据 #{} 恢复检查失败（Token 刷新）: {}",
+                                        id,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        _ => {
+                            // Manual, AccountSuspended, ModelUnavailable 不在此处理
+                        }
+                    }
+                    // 间隔避免突发压力
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                // 批量操作完成后统一持久化
+                tm.persist_if_needed();
             }
         });
     }

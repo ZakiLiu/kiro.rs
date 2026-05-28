@@ -177,6 +177,12 @@ async fn main() {
     // P0#3：启动周期性 balance 刷新（10 分钟），避免 LB 长期基于陈旧 cache 决策
     kiro_provider.start_periodic_balance_refresh(600);
 
+    // 启动周期性凭据恢复（5 分钟），自动恢复被错误禁用的凭据
+    kiro_provider.start_periodic_recovery(300);
+
+    // 启动后台 Token 刷新，防止长时间空闲导致 Token 过期
+    kiro_provider.start_background_token_refresh();
+
     // 初始化 count_tokens 配置
     {
         let cfg = config.read();

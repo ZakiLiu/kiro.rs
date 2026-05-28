@@ -1,3 +1,9 @@
+---
+related:
+  - "spec:project:architecture-constraints"
+  - "spec:project:coding-conventions"
+  - knowhow-decompose-src-2026-05-24
+---
 # Wiki Connections Report
 **Generated:** 2026-05-24 | **Mode:** --fix
 

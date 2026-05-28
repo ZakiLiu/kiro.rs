@@ -11,7 +11,9 @@ keywords:
 related:
   - knowhow-decompose-src-2026-05-24
   - knowhow-follow-provider-2026-05-24
+  - knowhow-periodic-recovery-2026-05-25
 ---
+
 
 
 # Learnings
@@ -35,5 +37,13 @@ src/ 全量模式分解：63 文件 → 40 raw patterns → 24 unique（6 已记
 
 <spec-entry source="learn-follow" category="technique" date="2026-05-24">
 provider.rs 韧性链路深度阅读：(1) 错误分类决定重试策略——400 bail、401/403 failover、402 disable+failover、429 cooldown、5xx retry、network retry-without-failover（Round 11 决议）；(2) client_cache 无驱逐策略是潜在内存泄漏；(3) MAX_TOTAL_RETRIES=3 硬上限在大凭据池场景可能不足；(4) Round 注释系统记录了迭代决策历史，是重要的考古线索；(5) is_rate_limit_response 是 Round 8 后的 dead code，保留但未接入。
+</spec-entry>
+
+<spec-entry source="wiki-digest" category="technique" date="2026-05-25">
+二轮 digest（91 条，99/100 健康分）：知识图谱从「全 spec」演进到 spec:35 + knowhow:55 的双层结构，但仍缺 note 和 issue 类型。关键发现：(1) 前端和测试主题仅有规范零实操（health 70-75）；(2) 新增的周期性凭据恢复（start_periodic_recovery）和后台 Token 刷新（start_background_token_refresh）尚未入 wiki；(3) learnings 中 3 条技术债（cooldown 未接线、dead code、MAX_TOTAL_RETRIES 不足）应升级为 issue 追踪。
+</spec-entry>
+
+<spec-entry source="wiki-connect" category="technique" date="2026-05-25">
+wiki-connect --fix 将健康分从 97 提升到 100/100，消除全部 3 个 orphan（127 条目）。关键策略：(1) 新增 knowhow-periodic-recovery 首日即成为 top hub（in-degree 5），证明高质量 knowhow 自然吸引连接；(2) digest 条目间建立时间线链（digest-2024→digest-2025），支持知识演进追溯；(3) spec:project:periodic-recovery-mechanism 是 maestro 自动镜像的 spec 副本，需手动补 related 才能消除 orphan。
 </spec-entry>
 

@@ -3,7 +3,9 @@ related:
   - "spec:project:coding-conventions"
   - knowhow-decompose-src-2026-05-24
   - "spec:project:architecture-constraints"
+  - knowhow-periodic-recovery-2026-05-25
 ---
+
 # Understanding Map: src/kiro/provider.rs
 **Generated:** 2026-05-24 | **Lines:** 2185 | **Depth:** shallow (W003: >1000 lines)
 

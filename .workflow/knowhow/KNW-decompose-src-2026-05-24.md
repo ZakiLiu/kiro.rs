@@ -2,7 +2,9 @@
 related:
   - "spec:project:architecture-constraints"
   - "spec:project:coding-conventions"
+  - knowhow-periodic-recovery-2026-05-25
 ---
+
 # Pattern Decomposition: src/ (Full Codebase)
 **Generated:** 2026-05-24 | **Files analyzed:** 63 | **Patterns found:** 40 raw → 24 unique (after dedup)
 
