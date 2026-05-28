@@ -452,6 +452,10 @@ impl KiroProvider {
             let ctx = match self.token_manager.acquire_context_excluding(&failed_ids).await {
                 Ok(c) => c,
                 Err(e) => {
+                    // 所有凭据均处于冷却 → 不再重试，直接返回（handlers.rs 会转为 429）
+                    if e.to_string().contains("所有凭据均处于冷却/速率限制") {
+                        return Err(e);
+                    }
                     last_error = Some(e);
                     // 已 exclude 的凭据数 ≥ 当前可用集合，下一轮清空让 LB 重新挑选
                     if failed_ids.len() >= self.token_manager.available_count().max(1) {
@@ -745,6 +749,10 @@ impl KiroProvider {
             {
                 Ok(c) => c,
                 Err(e) => {
+                    // 所有凭据均处于冷却 → 不再重试，直接返回（handlers.rs 会转为 429）
+                    if e.to_string().contains("所有凭据均处于冷却/速率限制") {
+                        return Err(e);
+                    }
                     last_error = Some(e);
                     // 已 exclude 的凭据数 ≥ 当前可用集合，下一轮清空让 LB 重新挑选
                     if failed_ids.len() >= self.token_manager.available_count().max(1) {
