@@ -2428,10 +2428,10 @@ impl MultiTokenManager {
     /// 恢复指定凭据（重置所有禁用状态，含持久化）。供 Admin API 等单次调用场景使用。
     #[allow(dead_code)]
     pub fn recover_credential(&self, id: u64) {
-        if self.recover_credential_inner(id) {
-            if let Err(e) = self.persist_credentials() {
-                tracing::warn!("凭据恢复后持久化失败: {}", e);
-            }
+        if self.recover_credential_inner(id)
+            && let Err(e) = self.persist_credentials()
+        {
+            tracing::warn!("凭据恢复后持久化失败: {}", e);
         }
     }
 
