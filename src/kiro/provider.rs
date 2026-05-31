@@ -233,10 +233,11 @@ impl KiroProvider {
                         Ok(resp) => {
                             let remaining = resp.usage_limit() - resp.current_usage();
                             tm.update_balance_cache(id, remaining);
-                            if remaining < crate::kiro::token_manager::BALANCE_DISABLE_THRESHOLD {
-                                tm.mark_insufficient_balance(id);
-                                tracing::warn!(
-                                    "凭据 #{} 余额耗尽 ({:.4})，周期刷新触发主动禁用",
+                            // 余额信息仅用于缓存和动态 TTL，不主动禁用
+                            // 上游允许超额使用，只有返回 402 时才由 report_quota_exhausted 禁用
+                            if remaining < 1.0 {
+                                tracing::info!(
+                                    "凭据 #{} 余额偏低 ({:.2})，保持可用（等待上游 402 判定）",
                                     id,
                                     remaining
                                 );
@@ -368,10 +369,6 @@ impl KiroProvider {
                     let remaining = resp.usage_limit() - resp.current_usage();
                     tm.update_balance_cache(id, remaining);
                     tracing::debug!("凭据 #{} 余额缓存已刷新: {:.2}", id, remaining);
-                    if remaining < 1.0 {
-                        tm.mark_insufficient_balance(id);
-                        tracing::warn!("凭据 #{} 余额不足 ({:.2})，已主动禁用", id, remaining);
-                    }
                 }
                 Err(e) => {
                     tracing::warn!("凭据 #{} 余额刷新失败: {}", id, e);

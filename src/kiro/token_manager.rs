@@ -677,8 +677,6 @@ const HIGH_FREQ_THRESHOLD: u32 = 20;
 const USAGE_COUNT_RESET_SECS: u64 = 600;
 /// 低余额阈值（用于动态 TTL 判断）
 const LOW_BALANCE_THRESHOLD: f64 = 1.0;
-/// 余额禁用阈值：低于此值才主动禁用（远低于恢复阈值 1.0，形成滞后区间避免反复抖动）
-pub const BALANCE_DISABLE_THRESHOLD: f64 = 0.01;
 
 /// 多凭据 Token 管理器
 ///
