@@ -2379,6 +2379,8 @@ impl MultiTokenManager {
     }
 
     /// 标记凭据为余额不足（允许周期性恢复尝试——余额可能月初重置）
+    /// 当前仅由 402 路径（report_quota_exhausted）间接触发禁用，此方法保留备用
+    #[allow(dead_code)]
     pub fn mark_insufficient_balance(&self, id: u64) {
         let mut entries = self.entries.lock();
         if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
