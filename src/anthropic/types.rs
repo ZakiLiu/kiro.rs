@@ -321,15 +321,41 @@ pub struct CountTokensResponse {
 
 /// 根据模型名称获取上下文窗口大小
 ///
-/// - Opus 4.6 和 Sonnet 4.6 系列: 1,000,000 tokens
+/// - Opus 4.6 / 4.7 / 4.8 和 Sonnet 4.6 系列: 1,000,000 tokens
 /// - 其他模型: 200,000 tokens
 pub fn get_context_window_size(model: &str) -> i32 {
     let model_lower = model.to_lowercase();
-    if (model_lower.contains("opus") || model_lower.contains("sonnet"))
-        && (model_lower.contains("4-6") || model_lower.contains("4.6"))
-    {
+    let is_opus = model_lower.contains("opus");
+    let is_sonnet = model_lower.contains("sonnet");
+    let is_4_6 = model_lower.contains("4-6") || model_lower.contains("4.6");
+    let is_4_7 = model_lower.contains("4-7") || model_lower.contains("4.7");
+    let is_4_8 = model_lower.contains("4-8") || model_lower.contains("4.8");
+    if ((is_opus || is_sonnet) && is_4_6) || (is_opus && (is_4_7 || is_4_8)) {
         1_000_000
     } else {
         200_000
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_context_window_1m_models() {
+        assert_eq!(get_context_window_size("claude-opus-4-6"), 1_000_000);
+        assert_eq!(get_context_window_size("claude-sonnet-4-6"), 1_000_000);
+        assert_eq!(get_context_window_size("claude-opus-4-7"), 1_000_000);
+        assert_eq!(get_context_window_size("claude-opus-4-7-thinking"), 1_000_000);
+        assert_eq!(get_context_window_size("claude-opus-4-8"), 1_000_000);
+        assert_eq!(get_context_window_size("claude-opus-4-8-thinking"), 1_000_000);
+        assert_eq!(get_context_window_size("claude-opus-4.8"), 1_000_000);
+    }
+
+    #[test]
+    fn test_context_window_200k_models() {
+        assert_eq!(get_context_window_size("claude-opus-4-5-20251101"), 200_000);
+        assert_eq!(get_context_window_size("claude-haiku-4-5-20251001"), 200_000);
+        assert_eq!(get_context_window_size("gpt-4"), 200_000);
     }
 }
