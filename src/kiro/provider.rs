@@ -233,10 +233,10 @@ impl KiroProvider {
                         Ok(resp) => {
                             let remaining = resp.usage_limit() - resp.current_usage();
                             tm.update_balance_cache(id, remaining);
-                            if remaining < 1.0 {
+                            if remaining < crate::kiro::token_manager::BALANCE_DISABLE_THRESHOLD {
                                 tm.mark_insufficient_balance(id);
                                 tracing::warn!(
-                                    "凭据 #{} 余额不足 ({:.2})，周期刷新触发主动禁用",
+                                    "凭据 #{} 余额耗尽 ({:.4})，周期刷新触发主动禁用",
                                     id,
                                     remaining
                                 );
@@ -262,7 +262,7 @@ impl KiroProvider {
     ///
     /// 不恢复：Manual, AccountSuspended
     ///
-    /// 使用指数退避：基础间隔 5 分钟，每次失败翻倍，最大 2 小时
+    /// 使用指数退避：基础间隔 5 分钟，每次失败翻倍，最大 30 分钟
     pub fn start_periodic_recovery(self: &Arc<Self>, interval_secs: u64) {
         let interval_secs = interval_secs.max(60);
         let provider = Arc::clone(self);

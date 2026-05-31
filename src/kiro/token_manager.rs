@@ -675,8 +675,10 @@ const BALANCE_TTL_LOW_BALANCE_SECS: u64 = 86400;
 const HIGH_FREQ_THRESHOLD: u32 = 20;
 /// 使用计数重置周期（10 分钟）
 const USAGE_COUNT_RESET_SECS: u64 = 600;
-/// 低余额阈值
+/// 低余额阈值（用于动态 TTL 判断）
 const LOW_BALANCE_THRESHOLD: f64 = 1.0;
+/// 余额禁用阈值：低于此值才主动禁用（远低于恢复阈值 1.0，形成滞后区间避免反复抖动）
+pub const BALANCE_DISABLE_THRESHOLD: f64 = 0.01;
 
 /// 多凭据 Token 管理器
 ///
@@ -1415,6 +1417,8 @@ impl MultiTokenManager {
             // 尝试获取/刷新 Token
             match self.try_ensure_token(id, &credentials).await {
                 Ok(ctx) => {
+                    // 在派发时记录 usage（而非等成功响应），避免 429 凭据因 usage 冻结被反复优先选中
+                    self.record_usage(id);
                     return Ok(ctx);
                 }
                 Err(e) => {
@@ -2098,8 +2102,7 @@ impl MultiTokenManager {
         // 重置 MODEL_TEMPORARILY_UNAVAILABLE 计数器
         self.model_unavailable_count.store(0, Ordering::SeqCst);
 
-        // 记录使用次数（用于动态 TTL）
-        self.record_usage(id);
+        // usage 已在 acquire_context 派发时记录，此处不再重复计数
 
         {
             let mut entries = self.entries.lock();
@@ -2248,10 +2251,10 @@ impl MultiTokenManager {
         );
     }
 
-    /// 检查并执行自动恢复
+    /// 检查并执行全局自动恢复
     ///
-    /// 如果已到恢复时间，恢复因 ModelUnavailable 禁用的凭据
-    /// 余额不足的凭据不会被恢复
+    /// 如果已到恢复时间，恢复所有自动禁用的凭据（Manual / AccountSuspended 除外）
+    /// 覆盖熔断窗口期间因其他原因（如余额、认证）被改写禁用原因的凭据
     ///
     /// 返回是否执行了恢复
     pub fn check_and_recover(&self) -> bool {
@@ -2269,8 +2272,13 @@ impl MultiTokenManager {
         let mut recovered_count = 0;
 
         for entry in entries.iter_mut() {
-            // 只恢复因 ModelUnavailable 禁用的凭据，余额不足的不恢复
-            if entry.disabled && entry.disable_reason == Some(DisableReason::ModelUnavailable) {
+            // 恢复所有自动禁用的凭据（Manual 和 AccountSuspended 除外）
+            if entry.disabled
+                && !matches!(
+                    entry.disable_reason,
+                    Some(DisableReason::Manual) | Some(DisableReason::AccountSuspended)
+                )
+            {
                 entry.disabled = false;
                 entry.disabled_at = None;
                 entry.recovery_attempts = 0;
@@ -2389,7 +2397,7 @@ impl MultiTokenManager {
     ///
     /// 返回满足恢复条件的凭据 ID 和禁用原因：
     /// - 非 Manual / AccountSuspended
-    /// - 禁用时间超过退避间隔（基础 5 分钟，指数退避，最大 2 小时）
+    /// - 禁用时间超过退避间隔（基础 5 分钟，指数退避，最大 30 分钟）
     pub fn get_recovery_candidates(&self) -> Vec<(u64, DisableReason)> {
         let entries = self.entries.lock();
         let now = Utc::now();
@@ -2409,10 +2417,10 @@ impl MultiTokenManager {
                     None => return false,
                     _ => {}
                 }
-                // 指数退避：5min * 2^attempts，最大 120min
+                // 指数退避：5min * 2^attempts，最大 30min
                 let base_minutes: i64 = 5;
                 let backoff_minutes =
-                    (base_minutes * (1i64 << e.recovery_attempts.min(5))).min(120);
+                    (base_minutes * (1i64 << e.recovery_attempts.min(3))).min(30);
                 if let Some(disabled_at) = e.disabled_at {
                     let elapsed = now.signed_duration_since(disabled_at);
                     elapsed.num_minutes() >= backoff_minutes
