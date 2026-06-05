@@ -187,6 +187,21 @@ pub async fn update_proxy_config(
     }
 }
 
+/// GET /api/admin/metrics/summary - 获取指标概览
+pub async fn get_metrics_summary(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.metrics_summary())
+}
+
+/// GET /api/admin/metrics/by-model - 获取按模型聚合的指标
+pub async fn get_metrics_by_model(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.metrics_by_model())
+}
+
+/// GET /api/admin/metrics/by-credential - 获取按凭据聚合的指标
+pub async fn get_metrics_by_credential(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.metrics_by_credential())
+}
+
 /// GET /api/admin/config/global - 获取全局配置
 pub async fn get_global_config(State(state): State<AdminState>) -> impl IntoResponse {
     let response = state.service.get_global_config();

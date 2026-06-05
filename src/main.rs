@@ -245,6 +245,7 @@ async fn main() {
                     config.clone(),
                     compression_config.clone(),
                     prompt_cache_runtime.clone(),
+                    metrics_collector.clone(),
                     endpoint_names.clone(),
                 );
                 let admin_state = admin::AdminState::new(admin_key, admin_service);

@@ -14,15 +14,17 @@ use crate::http_client::ProxyConfig;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::provider::KiroProvider;
 use crate::kiro::token_manager::{CachedBalanceInfo, MultiTokenManager};
+use crate::metrics::{MetricEventType, MetricsCollector};
 use crate::model::config::{CompressionConfig, Config};
 use parking_lot::RwLock;
 
 use super::error::AdminServiceError;
 use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, CachedBalanceItem,
-    CachedBalancesResponse, CredentialStatusItem, CredentialsStatusResponse, ImportAction,
-    ImportItemResult, ImportSummary, ImportTokenJsonRequest, ImportTokenJsonResponse,
-    ProxyConfigResponse, TokenJsonItem, UpdateProxyConfigRequest,
+    CachedBalancesResponse, CredentialMetrics, CredentialStatusItem, CredentialsStatusResponse,
+    ImportAction, ImportItemResult, ImportSummary, ImportTokenJsonRequest, ImportTokenJsonResponse,
+    MetricsSummaryResponse, ModelMetrics, ProxyConfigResponse, TokenJsonItem,
+    UpdateProxyConfigRequest,
 };
 
 /// 余额缓存过期时间（秒），5 分钟
@@ -46,6 +48,7 @@ pub struct AdminService {
     config: Arc<RwLock<Config>>,
     compression_config: Arc<RwLock<CompressionConfig>>,
     prompt_cache_runtime: Arc<RwLock<PromptCacheRuntime>>,
+    metrics: Option<Arc<MetricsCollector>>,
     balance_cache: Mutex<HashMap<u64, CachedBalance>>,
     cache_path: Option<PathBuf>,
     known_endpoints: HashSet<String>,
@@ -58,6 +61,7 @@ impl AdminService {
         config: Arc<RwLock<Config>>,
         compression_config: Arc<RwLock<CompressionConfig>>,
         prompt_cache_runtime: Arc<RwLock<PromptCacheRuntime>>,
+        metrics: Option<Arc<MetricsCollector>>,
         known_endpoints: impl IntoIterator<Item = String>,
     ) -> Self {
         let cache_path = token_manager
@@ -76,6 +80,7 @@ impl AdminService {
             config,
             compression_config,
             prompt_cache_runtime,
+            metrics,
             balance_cache: Mutex::new(balance_cache),
             cache_path,
             known_endpoints: known_endpoints.into_iter().collect(),
@@ -742,6 +747,179 @@ impl AdminService {
         "social".to_string()
     }
 
+    // ============ 指标聚合 ============
+
+    /// 获取指标概览
+    pub fn metrics_summary(&self) -> MetricsSummaryResponse {
+        let Some(collector) = &self.metrics else {
+            return MetricsSummaryResponse {
+                total_requests: 0,
+                successful: 0,
+                failed: 0,
+                avg_latency_ms: 0.0,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                window_size: 0,
+            };
+        };
+
+        let events = collector.snapshot();
+        let completed: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == MetricEventType::RequestCompleted)
+            .collect();
+
+        let total_requests = completed.len();
+        let successful = completed
+            .iter()
+            .filter(|e| e.status.as_deref() == Some("success"))
+            .count();
+        let failed = total_requests - successful;
+
+        let (latency_sum, latency_count) =
+            completed
+                .iter()
+                .fold((0u64, 0usize), |(sum, count), e| match e.latency_ms {
+                    Some(ms) => (sum.saturating_add(ms), count + 1),
+                    None => (sum, count),
+                });
+        let avg_latency_ms = if latency_count > 0 {
+            latency_sum as f64 / latency_count as f64
+        } else {
+            0.0
+        };
+
+        let total_input_tokens: i64 = completed
+            .iter()
+            .filter_map(|e| e.input_tokens)
+            .map(|t| t as i64)
+            .sum();
+        let total_output_tokens: i64 = completed
+            .iter()
+            .filter_map(|e| e.output_tokens)
+            .map(|t| t as i64)
+            .sum();
+
+        MetricsSummaryResponse {
+            total_requests,
+            successful,
+            failed,
+            avg_latency_ms,
+            total_input_tokens,
+            total_output_tokens,
+            window_size: events.len(),
+        }
+    }
+
+    /// 获取按模型聚合的指标
+    pub fn metrics_by_model(&self) -> Vec<ModelMetrics> {
+        let Some(collector) = &self.metrics else {
+            return Vec::new();
+        };
+
+        let events = collector.snapshot();
+
+        // 按模型名称分组 RequestCompleted 事件
+        let mut model_map: HashMap<String, (usize, u64, usize, i64, i64)> = HashMap::new();
+
+        for event in &events {
+            if event.event_type != MetricEventType::RequestCompleted {
+                continue;
+            }
+            let model = event
+                .model
+                .as_deref()
+                .unwrap_or("unknown")
+                .to_string();
+            let entry = model_map.entry(model).or_insert((0, 0, 0, 0, 0));
+            entry.0 += 1; // request_count
+            if let Some(ms) = event.latency_ms {
+                entry.1 = entry.1.saturating_add(ms); // latency_sum
+                entry.2 += 1; // latency_count
+            }
+            entry.3 += event.input_tokens.unwrap_or(0) as i64;
+            entry.4 += event.output_tokens.unwrap_or(0) as i64;
+        }
+
+        let mut result: Vec<ModelMetrics> = model_map
+            .into_iter()
+            .map(
+                |(model, (request_count, latency_sum, latency_count, input_tokens, output_tokens))| {
+                    ModelMetrics {
+                        model,
+                        request_count,
+                        avg_latency_ms: if latency_count > 0 {
+                            latency_sum as f64 / latency_count as f64
+                        } else {
+                            0.0
+                        },
+                        total_input_tokens: input_tokens,
+                        total_output_tokens: output_tokens,
+                    }
+                },
+            )
+            .collect();
+
+        // 按请求数降序排列
+        result.sort_by_key(|b| std::cmp::Reverse(b.request_count));
+        result
+    }
+
+    /// 获取按凭据聚合的指标
+    pub fn metrics_by_credential(&self) -> Vec<CredentialMetrics> {
+        let Some(collector) = &self.metrics else {
+            return Vec::new();
+        };
+
+        let events = collector.snapshot();
+
+        // 按凭据 ID 分组 RequestCompleted 事件
+        let mut cred_map: HashMap<u64, (usize, usize, usize, u64, usize)> = HashMap::new();
+
+        for event in &events {
+            if event.event_type != MetricEventType::RequestCompleted {
+                continue;
+            }
+            let Some(cred_id) = event.credential_id else {
+                continue;
+            };
+            let entry = cred_map.entry(cred_id).or_insert((0, 0, 0, 0, 0));
+            entry.0 += 1; // request_count
+            if event.status.as_deref() == Some("success") {
+                entry.1 += 1; // success_count
+            } else {
+                entry.2 += 1; // failure_count
+            }
+            if let Some(ms) = event.latency_ms {
+                entry.3 = entry.3.saturating_add(ms); // latency_sum
+                entry.4 += 1; // latency_count
+            }
+        }
+
+        let mut result: Vec<CredentialMetrics> = cred_map
+            .into_iter()
+            .map(
+                |(credential_id, (request_count, success_count, failure_count, latency_sum, latency_count))| {
+                    CredentialMetrics {
+                        credential_id,
+                        request_count,
+                        success_count,
+                        failure_count,
+                        avg_latency_ms: if latency_count > 0 {
+                            latency_sum as f64 / latency_count as f64
+                        } else {
+                            0.0
+                        },
+                    }
+                },
+            )
+            .collect();
+
+        // 按凭据 ID 排序
+        result.sort_by_key(|c| c.credential_id);
+        result
+    }
+
     /// 获取当前代理配置（脱敏）
     pub fn get_proxy_config(&self) -> ProxyConfigResponse {
         let config = self.config.read();
@@ -1033,6 +1211,7 @@ mod tests {
             config,
             compression_config,
             prompt_cache_runtime,
+            None,
             known_endpoints,
         )
     }

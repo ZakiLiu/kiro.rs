@@ -383,6 +383,60 @@ impl AdminErrorResponse {
     }
 }
 
+// ============ 指标聚合 ============
+
+/// 指标概览响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricsSummaryResponse {
+    /// 总请求数
+    pub total_requests: usize,
+    /// 成功请求数
+    pub successful: usize,
+    /// 失败请求数
+    pub failed: usize,
+    /// 平均延迟（毫秒）
+    pub avg_latency_ms: f64,
+    /// 总输入 token 数
+    pub total_input_tokens: i64,
+    /// 总输出 token 数
+    pub total_output_tokens: i64,
+    /// 统计窗口内的事件总数
+    pub window_size: usize,
+}
+
+/// 按模型聚合的指标
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelMetrics {
+    /// 模型名称
+    pub model: String,
+    /// 请求数
+    pub request_count: usize,
+    /// 平均延迟（毫秒）
+    pub avg_latency_ms: f64,
+    /// 总输入 token 数
+    pub total_input_tokens: i64,
+    /// 总输出 token 数
+    pub total_output_tokens: i64,
+}
+
+/// 按凭据聚合的指标
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialMetrics {
+    /// 凭据 ID
+    pub credential_id: u64,
+    /// 请求数
+    pub request_count: usize,
+    /// 成功请求数
+    pub success_count: usize,
+    /// 失败请求数
+    pub failure_count: usize,
+    /// 平均延迟（毫秒）
+    pub avg_latency_ms: f64,
+}
+
 // ============ 全局配置 ============
 
 /// 全局配置响应
