@@ -35,6 +35,7 @@ const ADAPTIVE_MIN_MESSAGE_CONTENT_MAX_CHARS: usize = 8192;
 use crate::metrics::{MetricEvent, MetricEventType};
 
 use super::converter::{ConversionError, convert_request};
+use super::error_map::{self, ErrorRequestContext};
 use super::middleware::AppState;
 use super::stream::{CacheUsageBreakdown, SseEvent, StreamContext};
 use super::types::{
@@ -62,6 +63,7 @@ struct StreamRequestContext<'a> {
     user_id: Option<&'a str>,
     metrics: Option<&'a std::sync::Arc<crate::metrics::MetricsCollector>>,
     request_start: std::time::Instant,
+    adaptive_outcome: Option<&'a AdaptiveCompressionOutcome>,
 }
 
 struct NonStreamRequestContext<'a> {
@@ -74,6 +76,7 @@ struct NonStreamRequestContext<'a> {
     cache_profile: Option<&'a crate::anthropic::cache_tracker::CacheProfile>,
     metrics: Option<&'a std::sync::Arc<crate::metrics::MetricsCollector>>,
     request_start: std::time::Instant,
+    adaptive_outcome: Option<&'a AdaptiveCompressionOutcome>,
 }
 
 fn build_cache_profile(
@@ -139,70 +142,6 @@ fn inject_credit_usage_fields(usage: &mut serde_json::Value, metering: &Metering
     usage["credit_unit_plural"] = json!(metering.unit_plural);
 }
 
-fn is_input_too_long_error(err: &Error) -> bool {
-    // provider.rs 在遇到上游返回的 input-too-long 场景时，会在错误中保留以下关键字：
-    // - CONTENT_LENGTH_EXCEEDS_THRESHOLD
-    // - Input is too long
-    //
-    // 这类错误是确定性的请求问题（缩短输入才可恢复），不应返回 5xx（会诱发客户端重试）。
-    // 注意：不包含 "Improperly formed request"，该错误可能由空消息内容等格式问题引起
-    let s = err.to_string();
-    s.contains("CONTENT_LENGTH_EXCEEDS_THRESHOLD") || s.contains("Input is too long")
-}
-
-fn is_quota_exhausted_error(err: &Error) -> bool {
-    let s = err.to_string();
-    s.contains("所有凭据已用尽")
-}
-
-fn is_no_credentials_error(err: &Error) -> bool {
-    let s = err.to_string();
-    s.contains("没有可用的凭据")
-}
-
-/// 检查是否为"所有凭据均处于冷却/速率限制"错误，并提取建议的 retry_after 秒数。
-fn is_all_credentials_cooling_down_error(err: &Error) -> (bool, Option<u64>) {
-    let s = err.to_string();
-    if !s.contains("所有凭据均处于冷却/速率限制") {
-        return (false, None);
-    }
-    // 提取 retry_after_secs=N
-    let retry = s.split("retry_after_secs=").nth(1).and_then(|rest| {
-        let end = rest
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(rest.len());
-        rest[..end].parse::<u64>().ok()
-    });
-    (true, retry)
-}
-
-/// 网络错误关键字（is_transient_upstream_error 和 is_network_error 共用）
-const NETWORK_ERROR_PATTERNS: &[&str] = &[
-    "error sending request",
-    "connection closed",
-    "connection reset",
-];
-
-fn is_network_error(s: &str) -> bool {
-    NETWORK_ERROR_PATTERNS.iter().any(|p| s.contains(p))
-}
-
-fn is_transient_upstream_error(err: &Error) -> bool {
-    let s = err.to_string().to_lowercase();
-    s.contains("429 too many requests")
-        || s.contains("insufficient_model_capacity")
-        || s.contains("high traffic")
-        || s.contains("408 request timeout")
-        || s.contains("502 bad gateway")
-        || s.contains("503 service unavailable")
-        || s.contains("504 gateway timeout")
-        || is_network_error(&s)
-}
-
-fn is_improperly_formed_request_error(err: &Error) -> bool {
-    let s = err.to_string();
-    s.contains("Improperly formed request")
-}
 
 #[derive(Debug, Default, Clone, Copy)]
 struct AdaptiveCompressionOutcome {
@@ -451,121 +390,18 @@ fn adaptive_shrink_request_body(
     Ok(Some(outcome))
 }
 
-fn map_kiro_provider_error_to_response(request_body: &str, err: Error) -> Response {
-    if is_input_too_long_error(&err) {
-        tracing::warn!(
-            kiro_request_body_bytes = request_body.len(),
-            error = %err,
-            "上游拒绝请求：输入上下文过长（不应重试）"
-        );
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(
-                "invalid_request_error",
-                "Input is too long (CONTENT_LENGTH_EXCEEDS_THRESHOLD). Reduce conversation history/system/tools; retrying the same request will not help.",
-            )),
-        )
-            .into_response();
-    }
-
-    if is_improperly_formed_request_error(&err) {
-        tracing::warn!(
-            error = %err,
-            kiro_request_body_bytes = request_body.len(),
-            "上游拒绝请求：请求格式错误（可能由超大请求体、消息/工具序列异常或空内容块导致）"
-        );
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(
-                "invalid_request_error",
-                "Improperly formed request. This is often caused by oversized payloads, malformed message/tool sequences, or empty content blocks.",
-            )),
-        )
-            .into_response();
-    }
-
-    if is_no_credentials_error(&err) {
-        tracing::error!(error = %err, "没有可用的凭据");
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse::new(
-                "service_unavailable",
-                "No credentials available. Please add or enable credentials via Admin API or credentials.json.",
-            )),
-        )
-            .into_response();
-    }
-
-    let (cooling, retry_after) = is_all_credentials_cooling_down_error(&err);
-    if cooling {
-        let secs = retry_after.unwrap_or(60);
-        tracing::warn!(
-            error = %err,
-            retry_after_secs = secs,
-            "所有凭据临时冷却，返回 429 + Retry-After"
-        );
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            [(header::RETRY_AFTER, secs.to_string())],
-            Json(ErrorResponse::new(
-                "rate_limit_error",
-                format!(
-                    "All credentials are temporarily cooling down. Retry after {}s.",
-                    secs
-                ),
-            )),
-        )
-            .into_response();
-    }
-
-    if is_quota_exhausted_error(&err) {
-        tracing::warn!(error = %err, "所有凭据配额已耗尽");
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(ErrorResponse::new(
-                "rate_limit_error",
-                "All credentials quota exhausted. Please wait for quota reset or add new credentials.",
-            )),
-        )
-            .into_response();
-    }
-
-    if is_transient_upstream_error(&err) {
-        let err_str = err.to_string().to_lowercase();
-        if is_network_error(&err_str) {
-            tracing::warn!(error = %err, "上游网络错误，不输出请求体");
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(ErrorResponse::new(
-                    "api_error",
-                    format!("上游网络错误: {}", err),
-                )),
-            )
-                .into_response();
-        }
-        tracing::warn!(error = %err, "上游瞬态错误（429/5xx），不输出请求体");
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(ErrorResponse::new("rate_limit_error", err.to_string())),
-        )
-            .into_response();
-    }
-
-    tracing::error!("Kiro API 调用失败: {}", err);
-    #[cfg(feature = "sensitive-logs")]
-    tracing::error!(
-        request_body_bytes = request_body.len(),
-        "上游报错，请求体大小: {} bytes",
-        request_body.len()
-    );
-    (
-        StatusCode::BAD_GATEWAY,
-        Json(ErrorResponse::new(
-            "api_error",
-            format!("上游 API 调用失败: {}", err),
-        )),
-    )
-        .into_response()
+fn map_kiro_provider_error_to_response(
+    request_body: &str,
+    err: Error,
+    adaptive_outcome: Option<&AdaptiveCompressionOutcome>,
+) -> Response {
+    let ctx = ErrorRequestContext {
+        was_compressed: adaptive_outcome.is_some(),
+        request_body_bytes: request_body.len(),
+        compression_iterations: adaptive_outcome.map(|o| o.iters),
+    };
+    let category = error_map::classify(&err, &ctx);
+    error_map::to_anthropic_response(&category, &err, &ctx)
 }
 
 /// 对 user_id 进行掩码处理，保护隐私
@@ -1186,6 +1022,7 @@ pub async fn post_messages(
 
     // 请求体大小预检（上游存在硬性请求体大小限制；按实际序列化后的总字节数判断）
     let max_body = compression_config.max_request_body_bytes;
+    let mut adaptive_outcome: Option<AdaptiveCompressionOutcome> = None;
     if max_body > 0 && request_body.len() > max_body && compression_config.enabled {
         // 自适应二次压缩：按 request_body_bytes 迭代截断，尽量把请求缩到阈值内
         match adaptive_shrink_request_body(
@@ -1207,6 +1044,7 @@ pub async fn post_messages(
                     final_message_content_max_chars = outcome.final_message_content_max_chars,
                     "请求体超过阈值，已执行自适应二次压缩"
                 );
+                adaptive_outcome = Some(outcome);
             }
             Ok(None) => {}
             Err(e) => {
@@ -1290,6 +1128,7 @@ pub async fn post_messages(
             user_id: user_id.as_deref(),
             metrics: state.metrics.as_ref(),
             request_start,
+            adaptive_outcome: adaptive_outcome.as_ref(),
         };
         handle_stream_request(provider, stream_request).await
     } else {
@@ -1306,6 +1145,7 @@ pub async fn post_messages(
             cache_profile: cache_profile.as_ref(),
             metrics: state.metrics.as_ref(),
             request_start,
+            adaptive_outcome: adaptive_outcome.as_ref(),
         };
         handle_non_stream_request(provider, non_stream_request).await
     }
@@ -1320,7 +1160,13 @@ async fn handle_stream_request(
         .await
     {
         Ok(resp) => resp,
-        Err(e) => return map_kiro_provider_error_to_response(context.request_body, e),
+        Err(e) => {
+            return map_kiro_provider_error_to_response(
+                context.request_body,
+                e,
+                context.adaptive_outcome,
+            )
+        }
     };
 
     let final_cache_context = match (context.cache_tracker, context.cache_profile) {
@@ -1496,7 +1342,13 @@ async fn handle_non_stream_request(
         .await
     {
         Ok(resp) => resp,
-        Err(e) => return map_kiro_provider_error_to_response(context.request_body, e),
+        Err(e) => {
+            return map_kiro_provider_error_to_response(
+                context.request_body,
+                e,
+                context.adaptive_outcome,
+            )
+        }
     };
 
     let final_cache_context = match (context.cache_tracker, context.cache_profile) {
@@ -2156,54 +2008,8 @@ mod tests {
         assert_eq!(usage["credit_unit_plural"], json!("credits"));
     }
 
-    #[test]
-    fn test_is_no_credentials_error() {
-        let err = anyhow::anyhow!("没有可用的凭据");
-        assert!(is_no_credentials_error(&err));
-
-        let err = anyhow::anyhow!("所有凭据已用尽");
-        assert!(!is_no_credentials_error(&err));
-    }
-
-    #[test]
-    fn test_is_quota_exhausted_error() {
-        let err = anyhow::anyhow!("流式 API 请求失败（所有凭据已用尽）: 429 Quota exceeded");
-        assert!(is_quota_exhausted_error(&err));
-
-        let err = anyhow::anyhow!("没有可用的凭据（可用: 0/0），请添加或启用凭据后重试");
-        assert!(!is_quota_exhausted_error(&err));
-    }
-
-    #[test]
-    fn test_is_all_credentials_cooling_down_error_matches_and_parses() {
-        let err = anyhow::anyhow!(
-            "所有凭据均处于冷却/速率限制（retry_after_secs=120，原因：cooldown，来自凭据 #3）"
-        );
-        let (matched, retry) = is_all_credentials_cooling_down_error(&err);
-        assert!(matched);
-        assert_eq!(retry, Some(120));
-    }
-
-    #[test]
-    fn test_is_all_credentials_cooling_down_error_rejects_unrelated() {
-        let err = anyhow::anyhow!("所有凭据已用尽");
-        let (matched, retry) = is_all_credentials_cooling_down_error(&err);
-        assert!(!matched);
-        assert_eq!(retry, None);
-
-        let err = anyhow::anyhow!("没有可用的凭据");
-        let (matched, retry) = is_all_credentials_cooling_down_error(&err);
-        assert!(!matched);
-        assert_eq!(retry, None);
-    }
-
-    #[test]
-    fn test_is_all_credentials_cooling_down_error_missing_secs_returns_none() {
-        let err = anyhow::anyhow!("所有凭据均处于冷却/速率限制（无 retry_after 信息）");
-        let (matched, retry) = is_all_credentials_cooling_down_error(&err);
-        assert!(matched);
-        assert_eq!(retry, None);
-    }
+    // 注意：is_no_credentials_error / is_quota_exhausted_error / is_all_credentials_cooling_down_error
+    // 测试已迁移至 error_map::tests（TASK-001），这里不再重复。
 
     #[test]
     fn test_adaptive_shrink_removes_only_history_images() {
@@ -2244,6 +2050,7 @@ mod tests {
         let response = map_kiro_provider_error_to_response(
             "{}",
             anyhow::anyhow!("400 Improperly formed request"),
+            None,
         );
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }

@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::anthropic::error_map::{self, ErrorCategory, ErrorRequestContext};
 use crate::common::utf8::floor_char_boundary;
 use crate::kiro::model::events::{Event, MeteringEvent};
 
@@ -679,7 +680,16 @@ impl StreamContext {
                 error_code,
                 error_message,
             } => {
-                tracing::error!("收到错误事件: {} - {}", error_code, error_message);
+                // 使用 ErrorCategory 结构化分类记录流内错误（用于可观测性）
+                let err_for_classify = anyhow::anyhow!("{}: {}", error_code, error_message);
+                let ctx = ErrorRequestContext::default();
+                let category: ErrorCategory = error_map::classify(&err_for_classify, &ctx);
+                tracing::error!(
+                    error_code = %error_code,
+                    error_message = %error_message,
+                    error_category = ?category,
+                    "收到流内错误事件"
+                );
                 // 上游业务错误 → 转 Anthropic SSE error event + 标记 stop_reason
                 // 让客户端能感知（throttling、content filter 等）。
                 self.state_manager.set_stop_reason("error");

@@ -4,8 +4,6 @@
 //! 并通过 [`to_anthropic_response`] 生成符合 Anthropic API 格式的 HTTP 响应。
 //!
 //! 本模块取代 `handlers.rs` 中散落的 8 个谓词函数和单体 `map_kiro_provider_error_to_response`。
-#![allow(dead_code)]
-
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -50,9 +48,11 @@ pub enum ErrorCategory {
     ModelUnavailable,
 
     /// 认证失败（401/403，当前由 middleware 处理，预留）
+    #[allow(dead_code)]
     AuthFailure,
 
     /// 服务器瞬态错误（兜底 5xx）
+    #[allow(dead_code)]
     ServerTransient,
 
     /// 无法识别的错误
@@ -73,6 +73,8 @@ pub struct ErrorRequestContext {
     pub request_body_bytes: usize,
 
     /// 压缩迭代次数（若未压缩则为 None）
+    /// 仅在 `sensitive-logs` feature 启用时用于诊断日志
+    #[cfg_attr(not(feature = "sensitive-logs"), allow(dead_code))]
     pub compression_iterations: Option<usize>,
 }
 
