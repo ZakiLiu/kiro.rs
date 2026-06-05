@@ -1,0 +1,868 @@
+//! Token 管理模块
+//!
+//! 负责 Token 过期检测和刷新，支持 Social 和 IdC 认证方式
+//! 支持单凭据 (TokenManager) 和多凭据 (MultiTokenManager) 管理
+//!
+//! ## 增强特性
+//!
+//! - **多维度设备指纹**: 每个凭据生成独立的设备指纹，模拟真实客户端
+//! - **后台 Token 刷新**: 定期检查并预刷新即将过期的 Token
+//! - **精细化速率限制**: 每日请求限制、请求间隔控制、指数退避
+//! - **冷却管理**: 分类管理不同原因的冷却状态
+//! - **优雅降级**: Token 刷新失败时使用现有 Token
+
+pub(crate) mod balance;
+pub(crate) mod multi;
+pub(crate) mod refresh;
+pub(crate) mod single;
+pub(crate) mod types;
+
+// Re-export public API
+pub use multi::{CallContext, MultiTokenManager};
+pub use types::{CachedBalanceInfo, DisableReason};
+
+#[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
+mod tests {
+    use super::*;
+    use super::multi::{resolve_symlink_target, MAX_FAILURES_PER_CREDENTIAL};
+    use super::refresh::{build_idc_refresh_user_agents, sha256_hex};
+    use super::single::{
+        TokenManager, is_token_expired, is_token_expiring_soon, is_token_expiring_within,
+        validate_refresh_token,
+    };
+    use super::types::{endpoint_for_credentials, get_usage_limits};
+    use chrono::{DateTime, Duration, SecondsFormat, Utc};
+    use crate::http_client::ProxyConfig;
+    use crate::kiro::cooldown::CooldownReason;
+    use crate::kiro::endpoint::{CliEndpoint, IdeEndpoint, KiroEndpoint, RequestContext};
+    use crate::kiro::machine_id;
+    use crate::kiro::model::credentials::KiroCredentials;
+    use crate::kiro::model::usage_limits::UsageLimitsResponse;
+    use crate::model::config::Config;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn test_token_manager_new() {
+        let config = Config::default();
+        let credentials = KiroCredentials::default();
+        let tm = TokenManager::new(config, credentials, None);
+        assert!(tm.credentials().access_token.is_none());
+    }
+
+    #[test]
+    fn test_is_token_expired_with_expired_token() {
+        let mut credentials = KiroCredentials::default();
+        credentials.expires_at = Some("2020-01-01T00:00:00Z".to_string());
+        assert!(is_token_expired(&credentials));
+    }
+
+    #[test]
+    fn test_is_token_expired_with_valid_token() {
+        let mut credentials = KiroCredentials::default();
+        let future = Utc::now() + Duration::hours(1);
+        credentials.expires_at = Some(future.to_rfc3339());
+        assert!(!is_token_expired(&credentials));
+    }
+
+    #[test]
+    fn test_is_token_expired_within_5_minutes() {
+        let mut credentials = KiroCredentials::default();
+        let expires = Utc::now() + Duration::minutes(3);
+        credentials.expires_at = Some(expires.to_rfc3339());
+        assert!(is_token_expired(&credentials));
+    }
+
+    #[test]
+    fn test_is_token_expired_no_expires_at() {
+        let credentials = KiroCredentials::default();
+        assert!(is_token_expired(&credentials));
+    }
+
+    #[test]
+    fn test_is_token_expiring_soon_within_10_minutes() {
+        let mut credentials = KiroCredentials::default();
+        let expires = Utc::now() + Duration::minutes(8);
+        credentials.expires_at = Some(expires.to_rfc3339());
+        assert!(is_token_expiring_soon(&credentials));
+    }
+
+    #[test]
+    fn test_is_token_expiring_soon_beyond_10_minutes() {
+        let mut credentials = KiroCredentials::default();
+        let expires = Utc::now() + Duration::minutes(15);
+        credentials.expires_at = Some(expires.to_rfc3339());
+        assert!(!is_token_expiring_soon(&credentials));
+    }
+
+    #[test]
+    fn test_validate_refresh_token_missing() {
+        let credentials = KiroCredentials::default();
+        let result = validate_refresh_token(&credentials);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_refresh_token_valid() {
+        let mut credentials = KiroCredentials::default();
+        credentials.refresh_token = Some("a".repeat(150));
+        let result = validate_refresh_token(&credentials);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_sha256_hex() {
+        let result = sha256_hex("test");
+        assert_eq!(
+            result,
+            "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_add_credential_reject_duplicate_refresh_token() {
+        let config = Config::default();
+
+        let mut existing = KiroCredentials::default();
+        existing.refresh_token = Some("a".repeat(150));
+
+        let manager = MultiTokenManager::new(config, vec![existing], None, None, false).unwrap();
+
+        let mut duplicate = KiroCredentials::default();
+        duplicate.refresh_token = Some("a".repeat(150));
+
+        let result = manager.add_credential(duplicate).await;
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("凭据已存在"));
+    }
+
+    // MultiTokenManager 测试
+
+    #[test]
+    fn test_multi_token_manager_new() {
+        let config = Config::default();
+        let mut cred1 = KiroCredentials::default();
+        cred1.priority = 0;
+        let mut cred2 = KiroCredentials::default();
+        cred2.priority = 1;
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
+        assert_eq!(manager.total_count(), 2);
+        assert_eq!(manager.available_count(), 2);
+    }
+
+    #[test]
+    fn test_invalidate_access_token_marks_expired() {
+        let config = Config::default();
+        let mut credentials = KiroCredentials::default();
+        credentials.refresh_token = Some("a".repeat(150));
+        credentials.access_token = Some("some_token".to_string());
+        credentials.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager = MultiTokenManager::new(config, vec![credentials], None, None, false).unwrap();
+        assert!(manager.invalidate_access_token(1));
+
+        let snapshot = manager.snapshot();
+        let entry = snapshot.entries.iter().find(|e| e.id == 1).unwrap();
+        let mut cred = KiroCredentials::default();
+        cred.expires_at = entry.expires_at.clone();
+        assert!(is_token_expired(&cred));
+    }
+
+    #[test]
+    fn test_multi_token_manager_empty_credentials() {
+        let config = Config::default();
+        let result = MultiTokenManager::new(config, vec![], None, None, false);
+        // 支持 0 个凭据启动（可通过管理面板添加）
+        assert!(result.is_ok());
+        let manager = result.unwrap();
+        assert_eq!(manager.total_count(), 0);
+        assert_eq!(manager.available_count(), 0);
+    }
+
+    #[test]
+    fn test_multi_token_manager_duplicate_ids() {
+        let config = Config::default();
+        let mut cred1 = KiroCredentials::default();
+        cred1.id = Some(1);
+        let mut cred2 = KiroCredentials::default();
+        cred2.id = Some(1); // 重复 ID
+
+        let result = MultiTokenManager::new(config, vec![cred1, cred2], None, None, false);
+        assert!(result.is_err());
+        let err_msg = result.err().unwrap().to_string();
+        assert!(
+            err_msg.contains("重复的凭据 ID"),
+            "错误消息应包含 '重复的凭据 ID'，实际: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_multi_token_manager_report_failure() {
+        let config = Config::default();
+        let cred1 = KiroCredentials::default();
+        let cred2 = KiroCredentials::default();
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
+
+        // 凭据会自动分配 ID（从 1 开始）
+        // MAX_FAILURES_PER_CREDENTIAL = 3，所以前两次失败不会禁用
+        assert!(manager.report_failure(1));
+        assert_eq!(manager.available_count(), 2);
+        assert!(manager.report_failure(1));
+        assert_eq!(manager.available_count(), 2);
+
+        // 第三次失败会禁用第一个凭据
+        assert!(manager.report_failure(1));
+        assert_eq!(manager.available_count(), 1);
+
+        // 继续失败第二个凭据（使用 ID 2），需要 3 次才会禁用
+        assert!(manager.report_failure(2));
+        assert!(manager.report_failure(2));
+        assert!(!manager.report_failure(2)); // 所有凭据都禁用了
+        assert_eq!(manager.available_count(), 0);
+    }
+
+    #[test]
+    fn test_multi_token_manager_report_success() {
+        let config = Config::default();
+        let cred = KiroCredentials::default();
+
+        let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
+
+        // 失败一次（使用 ID 1）
+        manager.report_failure(1);
+
+        // 成功后重置计数（使用 ID 1）
+        manager.report_success(1);
+
+        // 再失败一次不会禁用（因为计数已重置）
+        manager.report_failure(1);
+        assert_eq!(manager.available_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_multi_token_manager_acquire_context_auto_recovers_all_disabled() {
+        let config = Config::default();
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("t1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        let mut cred2 = KiroCredentials::default();
+        cred2.access_token = Some("t2".to_string());
+        cred2.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
+
+        // 凭据会自动分配 ID（从 1 开始）
+        for _ in 0..MAX_FAILURES_PER_CREDENTIAL {
+            manager.report_failure(1);
+        }
+        for _ in 0..MAX_FAILURES_PER_CREDENTIAL {
+            manager.report_failure(2);
+        }
+
+        assert_eq!(manager.available_count(), 0);
+
+        // 应触发自愈：重置失败计数并重新启用，避免必须重启进程
+        let ctx = manager.acquire_context().await.unwrap();
+        assert!(ctx.token == "t1" || ctx.token == "t2");
+        assert_eq!(manager.available_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_multi_token_manager_acquire_context_prefers_higher_balance_when_usage_equal() {
+        let config = Config::default();
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("t1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        let mut cred2 = KiroCredentials::default();
+        cred2.access_token = Some("t2".to_string());
+        cred2.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
+
+        // 两个凭据使用次数都为 0 时，应优先选择余额更高的
+        manager.update_balance_cache(1, 100.0);
+        manager.update_balance_cache(2, 200.0);
+
+        let ctx = manager.acquire_context().await.unwrap();
+        assert_eq!(ctx.id, 2);
+    }
+
+    #[tokio::test]
+    async fn test_multi_token_manager_acquire_context_round_robin_when_balance_and_usage_equal() {
+        let config = Config::default();
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("t1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        let mut cred2 = KiroCredentials::default();
+        cred2.access_token = Some("t2".to_string());
+        cred2.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
+
+        manager.update_balance_cache(1, 100.0);
+        manager.update_balance_cache(2, 100.0);
+
+        let ctx1 = manager.acquire_context().await.unwrap();
+        let ctx2 = manager.acquire_context().await.unwrap();
+        assert_ne!(ctx1.id, ctx2.id);
+    }
+
+    #[test]
+    fn test_multi_token_manager_report_quota_exhausted() {
+        let config = Config::default();
+        let cred1 = KiroCredentials::default();
+        let cred2 = KiroCredentials::default();
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
+
+        // 凭据会自动分配 ID（从 1 开始）
+        assert_eq!(manager.available_count(), 2);
+        assert!(manager.report_quota_exhausted(1));
+        assert_eq!(manager.available_count(), 1);
+
+        // 再禁用第二个后，无可用凭据
+        assert!(!manager.report_quota_exhausted(2));
+        assert_eq!(manager.available_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_multi_token_manager_quota_disabled_is_not_auto_recovered() {
+        let config = Config::default();
+        let cred1 = KiroCredentials::default();
+        let cred2 = KiroCredentials::default();
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
+
+        manager.report_quota_exhausted(1);
+        manager.report_quota_exhausted(2);
+        assert_eq!(manager.available_count(), 0);
+
+        let err = manager.acquire_context().await.err().unwrap().to_string();
+        assert!(
+            err.contains("所有凭据均已禁用"),
+            "错误应提示所有凭据禁用，实际: {}",
+            err
+        );
+        assert_eq!(manager.available_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_multi_token_manager_rate_limited_with_some_disabled_does_not_report_all_disabled()
+    {
+        // 复现线上日志：
+        // - total > available（部分凭据被禁用）
+        // - 所有可用凭据都被速率限制/冷却暂时挡住
+        // 期望：等待最短可用时间后继续尝试，而不是误报“所有凭据均已禁用（x/y）”。
+
+        let mut config = Config::default();
+        // 固定间隔 10ms，避免测试过慢且消除抖动带来的不确定性
+        config.credential_rpm = Some(6000);
+
+        let cred1 = KiroCredentials {
+            access_token: Some("token-1".to_string()),
+            expires_at: Some("2999-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+        let cred2 = KiroCredentials {
+            access_token: Some("token-2".to_string()),
+            expires_at: Some("2999-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
+
+        // 禁用 #2，仅保留一个可用凭据
+        assert!(manager.report_quota_exhausted(2));
+        assert_eq!(manager.available_count(), 1);
+
+        // 预先占位：让 #1 在下一次 acquire_context() 时必然触发速率限制
+        assert!(manager.rate_limiter().try_acquire(1).is_ok());
+
+        // 关键断言：不会抛出“所有凭据均已禁用（1/2）”，而是等待后成功返回。
+        let ctx = manager.acquire_context().await.unwrap();
+        assert_eq!(ctx.id, 1);
+    }
+
+    #[test]
+    fn test_set_credential_cooldown_with_duration_does_not_increment_failure_count() {
+        let config = Config::default();
+        let manager =
+            MultiTokenManager::new(config, vec![KiroCredentials::default()], None, None, false)
+                .unwrap();
+
+        let cooldown = manager.set_credential_cooldown_with_duration(
+            1,
+            CooldownReason::RateLimitExceeded,
+            Some(std::time::Duration::from_secs(120)),
+        );
+        assert_eq!(cooldown, std::time::Duration::from_secs(120));
+
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(snapshot.entries[0].failure_count, 0);
+        assert!(!snapshot.entries[0].disabled);
+        assert!(snapshot.entries[0].last_used_at.is_some());
+
+        let (reason, remaining) = manager.cooldown_manager().check_cooldown(1).unwrap();
+        assert_eq!(reason, CooldownReason::RateLimitExceeded);
+        assert!(remaining <= std::time::Duration::from_secs(120));
+        assert!(remaining > std::time::Duration::from_secs(100));
+    }
+
+    #[tokio::test]
+    async fn test_multi_token_manager_acquire_context_skips_rate_limited_credential() {
+        let config = Config::default();
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("t1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        cred1.priority = 0;
+
+        let mut cred2 = KiroCredentials::default();
+        cred2.access_token = Some("t2".to_string());
+        cred2.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        cred2.priority = 0;
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
+
+        manager.set_credential_cooldown_with_duration(
+            1,
+            CooldownReason::RateLimitExceeded,
+            Some(std::time::Duration::from_millis(200)),
+        );
+
+        let ctx = manager.acquire_context().await.unwrap();
+        assert_eq!(ctx.id, 2);
+    }
+
+    #[tokio::test]
+    async fn test_multi_token_manager_acquire_context_waits_until_rate_limit_cooldown_expires() {
+        let config = Config::default();
+        let mut cred = KiroCredentials::default();
+        cred.access_token = Some("t1".to_string());
+        cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
+
+        manager.set_credential_cooldown_with_duration(
+            1,
+            CooldownReason::RateLimitExceeded,
+            Some(std::time::Duration::from_millis(150)),
+        );
+
+        let started = std::time::Instant::now();
+        let ctx = manager.acquire_context().await.unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(ctx.id, 1);
+        assert!(elapsed >= std::time::Duration::from_millis(120));
+    }
+
+    #[tokio::test]
+    async fn test_acquire_context_bails_when_all_credentials_cooling_longer_than_threshold() {
+        let config = Config::default();
+        let mut cred = KiroCredentials::default();
+        cred.access_token = Some("t1".to_string());
+        cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
+
+        // 设置 10 秒冷却，超过 2 秒阈值
+        manager.set_credential_cooldown_with_duration(
+            1,
+            CooldownReason::RateLimitExceeded,
+            Some(std::time::Duration::from_secs(10)),
+        );
+
+        let started = std::time::Instant::now();
+        let err = manager.acquire_context().await.err().unwrap();
+        let elapsed = started.elapsed();
+
+        // 应立即返回错误，不会长睡
+        assert!(elapsed < std::time::Duration::from_secs(2));
+        assert!(err.to_string().contains("所有凭据均处于冷却/速率限制"));
+        assert!(err.to_string().contains("retry_after_secs="));
+    }
+
+    #[tokio::test]
+    async fn test_acquire_context_bails_with_total_exhausted_branch() {
+        let config = Config::default();
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("t1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        cred1.priority = 0;
+
+        let mut cred2 = KiroCredentials::default();
+        cred2.access_token = Some("t2".to_string());
+        cred2.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        cred2.priority = 1; // 不同优先级，确保两个都被尝试
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
+
+        // 两个凭据都设置长冷却
+        manager.set_credential_cooldown_with_duration(
+            1,
+            CooldownReason::RateLimitExceeded,
+            Some(std::time::Duration::from_secs(10)),
+        );
+        manager.set_credential_cooldown_with_duration(
+            2,
+            CooldownReason::ServerError,
+            Some(std::time::Duration::from_secs(10)),
+        );
+
+        let started = std::time::Instant::now();
+        let err = manager.acquire_context().await.err().unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(elapsed < std::time::Duration::from_secs(2));
+        assert!(err.to_string().contains("所有凭据均处于冷却/速率限制"));
+        assert!(err.to_string().contains("retry_after_secs="));
+    }
+
+    /// 混合故障场景：一个凭据长冷却，一个凭据 token 刷新失败（access_token/refresh_token 均缺失）。
+    /// 期望：不应快速返回 429（会错误吞掉真实的 token 刷新失败语义），应走常规 sleep 路径。
+    /// 用 tokio::time::timeout 做短超时，避免测试卡在长 sleep 循环里。
+    #[tokio::test]
+    async fn test_acquire_context_does_not_bail_429_on_mixed_failures() {
+        let config = Config::default();
+
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("t1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        cred1.priority = 0;
+
+        // 无 access_token / refresh_token / kiro_api_key —— try_ensure_token 会失败
+        let mut cred2 = KiroCredentials::default();
+        cred2.access_token = None;
+        cred2.refresh_token = None;
+        cred2.expires_at = None;
+        cred2.priority = 0;
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
+
+        // cred1 长冷却（超过 2s 阈值），cred2 不设冷却但 token 刷新会失败
+        manager.set_credential_cooldown_with_duration(
+            1,
+            CooldownReason::RateLimitExceeded,
+            Some(std::time::Duration::from_secs(10)),
+        );
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            manager.acquire_context(),
+        )
+        .await;
+
+        match result {
+            Err(_timeout) => {
+                // 超时说明进入了 sleep 循环——正是期望的行为（未提前 bail 429）。
+            }
+            Ok(Ok(_)) => panic!("混合故障场景不应成功获取 context"),
+            Ok(Err(err)) => {
+                assert!(
+                    !err.to_string().contains("所有凭据均处于冷却/速率限制"),
+                    "混合故障场景不应 bail 429：{}",
+                    err
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multi_token_manager_acquire_context_for_user_keeps_affinity_when_bound_credential_rate_limited()
+     {
+        let mut config = Config::default();
+        config.credential_rpm = Some(60_000);
+
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("t1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        cred1.priority = 0;
+
+        let mut cred2 = KiroCredentials::default();
+        cred2.access_token = Some("t2".to_string());
+        cred2.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        cred2.priority = 0;
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
+
+        let first = manager
+            .acquire_context_for_user(Some("user-a"))
+            .await
+            .unwrap();
+        assert_eq!(first.id, 1);
+
+        manager.set_credential_cooldown_with_duration(
+            1,
+            CooldownReason::RateLimitExceeded,
+            Some(std::time::Duration::from_millis(200)),
+        );
+
+        let diverted = manager
+            .acquire_context_for_user(Some("user-a"))
+            .await
+            .unwrap();
+        assert_eq!(diverted.id, 2);
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let while_cooling = manager
+            .acquire_context_for_user(Some("user-a"))
+            .await
+            .unwrap();
+        assert_eq!(while_cooling.id, 2);
+
+        tokio::time::sleep(std::time::Duration::from_millis(220)).await;
+        let rebound = manager
+            .acquire_context_for_user(Some("user-a"))
+            .await
+            .unwrap();
+        assert_eq!(rebound.id, 1);
+    }
+
+    // ============ 凭据级 Region 优先级测试 ============
+
+    /// 辅助函数：获取 OIDC 刷新使用的 region（用于测试）
+    fn get_oidc_region_for_credential<'a>(
+        credentials: &'a KiroCredentials,
+        config: &'a Config,
+    ) -> &'a str {
+        credentials.region.as_ref().unwrap_or(&config.region)
+    }
+
+    #[test]
+    fn test_build_idc_refresh_user_agents_uses_config_versions() {
+        let mut config = Config::default();
+        config.system_version = "darwin#25.4.0".to_string();
+        config.node_version = "22.22.0".to_string();
+
+        let (amz_user_agent, user_agent) = build_idc_refresh_user_agents(&config);
+
+        assert_eq!(amz_user_agent, "aws-sdk-js/3.980.0 KiroIDE");
+        assert!(user_agent.contains("os/darwin#25.4.0"));
+        assert!(user_agent.contains("md/nodejs#22.22.0"));
+        assert!(user_agent.contains("api/sso-oidc#3.980.0"));
+    }
+
+    #[test]
+    fn test_build_usage_limit_user_agents_uses_config_versions() {
+        let mut config = Config::default();
+        config.kiro_version = "0.11.107".to_string();
+        config.system_version = "win32#10.0.22631".to_string();
+        config.node_version = "22.22.0".to_string();
+        let credentials = KiroCredentials::default();
+        let endpoint = IdeEndpoint::new();
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: "machine123",
+            config: &config,
+        };
+
+        let usage = endpoint.usage_request_parts(&ctx).unwrap();
+        let amz_user_agent = usage
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "x-amz-user-agent")
+            .map(|(_, value)| value.clone())
+            .unwrap();
+        let user_agent = usage
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "user-agent")
+            .map(|(_, value)| value.clone())
+            .unwrap();
+
+        assert_eq!(
+            amz_user_agent,
+            "aws-sdk-js/1.0.0 KiroIDE-0.11.107-machine123"
+        );
+        assert!(user_agent.contains("os/win32#10.0.22631"));
+        assert!(user_agent.contains("md/nodejs#22.22.0"));
+        assert!(user_agent.contains("KiroIDE-0.11.107-machine123"));
+    }
+
+    #[test]
+    fn test_credential_region_priority_uses_credential_region() {
+        // 凭据配置了 region 时，应使用凭据的 region
+        let mut config = Config::default();
+        config.region = "us-west-2".to_string();
+
+        let mut credentials = KiroCredentials::default();
+        credentials.region = Some("eu-west-1".to_string());
+
+        let region = get_oidc_region_for_credential(&credentials, &config);
+        assert_eq!(region, "eu-west-1");
+    }
+
+    #[test]
+    fn test_credential_region_priority_fallback_to_config() {
+        // 凭据未配置 region 时，应回退到 config.region
+        let mut config = Config::default();
+        config.region = "us-west-2".to_string();
+
+        let credentials = KiroCredentials::default();
+        assert!(credentials.region.is_none());
+
+        let region = get_oidc_region_for_credential(&credentials, &config);
+        assert_eq!(region, "us-west-2");
+    }
+
+    #[test]
+    fn test_multiple_credentials_use_respective_regions() {
+        // 多凭据场景下，不同凭据使用各自的 region
+        let mut config = Config::default();
+        config.region = "ap-northeast-1".to_string();
+
+        let mut cred1 = KiroCredentials::default();
+        cred1.region = Some("us-east-1".to_string());
+
+        let mut cred2 = KiroCredentials::default();
+        cred2.region = Some("eu-west-1".to_string());
+
+        let cred3 = KiroCredentials::default(); // 无 region，使用 config
+
+        assert_eq!(get_oidc_region_for_credential(&cred1, &config), "us-east-1");
+        assert_eq!(get_oidc_region_for_credential(&cred2, &config), "eu-west-1");
+        assert_eq!(
+            get_oidc_region_for_credential(&cred3, &config),
+            "ap-northeast-1"
+        );
+    }
+
+    #[test]
+    fn test_idc_oidc_endpoint_uses_credential_region() {
+        // 验证 IdC OIDC endpoint URL 使用凭据 region
+        let mut config = Config::default();
+        config.region = "us-west-2".to_string();
+
+        let mut credentials = KiroCredentials::default();
+        credentials.region = Some("eu-central-1".to_string());
+
+        let region = get_oidc_region_for_credential(&credentials, &config);
+        let refresh_url = format!("https://oidc.{}.amazonaws.com/token", region);
+
+        assert_eq!(refresh_url, "https://oidc.eu-central-1.amazonaws.com/token");
+    }
+
+    #[test]
+    fn test_social_refresh_endpoint_uses_credential_region() {
+        // 验证 Social refresh endpoint URL 使用凭据 region
+        let mut config = Config::default();
+        config.region = "us-west-2".to_string();
+
+        let mut credentials = KiroCredentials::default();
+        credentials.region = Some("ap-southeast-1".to_string());
+
+        let region = get_oidc_region_for_credential(&credentials, &config);
+        let refresh_url = format!("https://prod.{}.auth.desktop.kiro.dev/refreshToken", region);
+
+        assert_eq!(
+            refresh_url,
+            "https://prod.ap-southeast-1.auth.desktop.kiro.dev/refreshToken"
+        );
+    }
+
+    /// Round 7 corrected: this test used to assert `api_host` used config.region
+    /// even when credentials had its own region — but it only did a local
+    /// `format!()`, never invoked `effective_api_region` / `host()`. The actual
+    /// code uses **credentials.region first, falling back to config**. This
+    /// test now exercises the real `effective_api_region` to lock in that
+    /// behavior.
+    #[test]
+    fn test_api_call_uses_credentials_region_when_set() {
+        let mut config = Config::default();
+        config.region = "us-west-2".to_string();
+
+        let mut credentials = KiroCredentials::default();
+        credentials.region = Some("eu-west-1".to_string());
+
+        // The real production behavior: credentials.region wins.
+        let api_region = credentials.effective_api_region(&config);
+        assert_eq!(
+            api_region, "eu-west-1",
+            "credentials.region must take precedence over config.region"
+        );
+
+        let api_host = format!("q.{}.amazonaws.com", api_region);
+        assert_eq!(api_host, "q.eu-west-1.amazonaws.com");
+    }
+
+    /// Mirror: when credentials.region is None, falls back to config.region.
+    #[test]
+    fn test_api_call_falls_back_to_config_region() {
+        let mut config = Config::default();
+        config.region = "us-west-2".to_string();
+
+        let credentials = KiroCredentials::default(); // region: None
+
+        let api_region = credentials.effective_api_region(&config);
+        assert_eq!(api_region, "us-west-2");
+    }
+
+    #[test]
+    fn test_credential_region_empty_string_fallback_to_config() {
+        // 空字符串 region 应回退到 config.region
+        let mut config = Config::default();
+        config.region = "us-west-2".to_string();
+
+        let mut credentials = KiroCredentials::default();
+        credentials.region = Some("".to_string());
+
+        let region = credentials
+            .region
+            .as_ref()
+            .filter(|r| !r.trim().is_empty())
+            .unwrap_or(&config.region);
+        // 空字符串应回退到 config.region
+        assert_eq!(region, "us-west-2");
+    }
+
+    #[test]
+    fn test_credential_region_whitespace_fallback_to_config() {
+        // 纯空白字符 region 应回退到 config.region
+        let mut config = Config::default();
+        config.region = "us-west-2".to_string();
+
+        let mut credentials = KiroCredentials::default();
+        credentials.region = Some("   ".to_string());
+
+        let region = credentials
+            .region
+            .as_ref()
+            .filter(|r| !r.trim().is_empty())
+            .unwrap_or(&config.region);
+        assert_eq!(region, "us-west-2");
+    }
+
+    #[test]
+    fn test_update_default_endpoint() {
+        let mut config = Config::default();
+        config.default_endpoint = "ide".to_string();
+
+        let credentials = KiroCredentials::default();
+        let manager = MultiTokenManager::new(config, vec![credentials], None, None, false).unwrap();
+
+        assert_eq!(manager.config().default_endpoint, "ide");
+
+        manager.update_default_endpoint("cli".to_string());
+        assert_eq!(manager.config().default_endpoint, "cli");
+
+        manager.update_default_endpoint("ide".to_string());
+        assert_eq!(manager.config().default_endpoint, "ide");
+    }
+}
