@@ -15,6 +15,7 @@ use crate::metrics::MetricsCollector;
 use crate::model::config::CompressionConfig;
 
 use super::{
+    cross_request_cache::CrossRequestCache,
     handlers::{count_tokens, get_models, post_messages},
     middleware::{AppState, PromptCacheRuntime, auth_middleware, cors_layer},
 };
@@ -46,6 +47,7 @@ pub fn create_router_with_provider(
     compression_config: Arc<RwLock<CompressionConfig>>,
     prompt_cache_runtime: Arc<RwLock<PromptCacheRuntime>>,
     metrics: Option<Arc<MetricsCollector>>,
+    cross_request_cache: Option<Arc<CrossRequestCache>>,
 ) -> Router {
     let mut state = AppState::new(api_key, prompt_cache_runtime);
     if let Some(provider) = kiro_provider {
@@ -57,6 +59,9 @@ pub fn create_router_with_provider(
     state = state.with_compression_config(compression_config);
     if let Some(m) = metrics {
         state = state.with_metrics(m);
+    }
+    if let Some(cache) = cross_request_cache {
+        state = state.with_cross_request_cache(cache);
     }
 
     // 需要认证的 /v1 路由

@@ -110,6 +110,14 @@ pub struct Config {
     #[serde(default = "default_metrics_ring_buffer_size")]
     pub metrics_ring_buffer_size: usize,
 
+    /// 是否启用跨请求缓存，默认 true
+    #[serde(default = "default_true")]
+    pub cross_request_cache_enabled: bool,
+
+    /// 跨请求缓存最大条目数，默认 1000
+    #[serde(default = "default_cross_request_cache_max_entries")]
+    pub cross_request_cache_max_entries: usize,
+
     /// 配置文件路径（运行时元数据，不写入 JSON）
     #[serde(skip)]
     config_path: Option<PathBuf>,
@@ -154,6 +162,10 @@ fn default_prompt_cache_ttl_seconds() -> u64 {
 
 fn default_metrics_ring_buffer_size() -> usize {
     10_000
+}
+
+fn default_cross_request_cache_max_entries() -> usize {
+    1_000
 }
 
 fn default_tls_backend() -> TlsBackend {
@@ -321,6 +333,8 @@ impl Default for Config {
             default_endpoint: default_endpoint(),
             metrics_enabled: default_true(),
             metrics_ring_buffer_size: default_metrics_ring_buffer_size(),
+            cross_request_cache_enabled: default_true(),
+            cross_request_cache_max_entries: default_cross_request_cache_max_entries(),
             config_path: None,
         }
     }

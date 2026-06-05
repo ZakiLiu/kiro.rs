@@ -18,6 +18,7 @@ use crate::metrics::MetricsCollector;
 use crate::model::config::CompressionConfig;
 
 use super::cache_tracker::CacheTracker;
+use super::cross_request_cache::CrossRequestCache;
 use super::types::ErrorResponse;
 
 #[derive(Clone)]
@@ -80,6 +81,7 @@ pub struct AppState {
     pub prompt_cache_runtime: Arc<RwLock<PromptCacheRuntime>>,
     /// 请求指标收集器（可选，禁用时为 None）
     pub metrics: Option<Arc<MetricsCollector>>,
+    pub cross_request_cache: Option<Arc<CrossRequestCache>>,
 }
 
 impl AppState {
@@ -95,6 +97,7 @@ impl AppState {
             compression_config: Arc::new(RwLock::new(CompressionConfig::default())),
             prompt_cache_runtime,
             metrics: None,
+            cross_request_cache: None,
         }
     }
 
@@ -119,6 +122,11 @@ impl AppState {
     /// 设置指标收集器
     pub fn with_metrics(mut self, metrics: Arc<MetricsCollector>) -> Self {
         self.metrics = Some(metrics);
+        self
+    }
+
+    pub fn with_cross_request_cache(mut self, cache: Arc<CrossRequestCache>) -> Self {
+        self.cross_request_cache = Some(cache);
         self
     }
 

@@ -411,6 +411,7 @@ fn create_placeholder_tool(name: &str) -> KiroTool {
 pub fn convert_request(
     req: &MessagesRequest,
     compression_config: &CompressionConfig,
+    forced_conversation_id: Option<&str>,
 ) -> Result<ConversionResult, ConversionError> {
     // 1. 映射模型
     let model_id = map_model(&req.model)
@@ -475,13 +476,20 @@ pub fn convert_request(
     // 重要：旧实现在 (a) 失败时直接 Uuid::v4，导致 Anthropic SDK 默认配置
     // （不传 metadata.user_id）下每请求一个新 conversation_id，
     // patch #6 (agentContinuationId v5 派生) 完全空操作 → 多轮 prefix cache 失效。
-    let conversation_id = req
-        .metadata
-        .as_ref()
-        .and_then(|m| m.user_id.as_ref())
-        .and_then(|user_id| extract_session_id(user_id))
-        .or_else(|| messages_history_fingerprint(messages))
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let conversation_id = if let Some(forced) = forced_conversation_id {
+        tracing::debug!(
+            forced_conversation_id = forced,
+            "使用 CrossRequestCache 注入的 conversation_id"
+        );
+        forced.to_string()
+    } else {
+        req.metadata
+            .as_ref()
+            .and_then(|m| m.user_id.as_ref())
+            .and_then(|user_id| extract_session_id(user_id))
+            .or_else(|| messages_history_fingerprint(messages))
+            .unwrap_or_else(|| Uuid::new_v4().to_string())
+    };
     // kiro-cli 2.3.0 multi-turn capture (gar-body-1.json & gar-body-3.json)
     // shows the same `agentContinuationId` across every turn of one session —
     // it's a session-stable ID, not per-request. We derive it deterministically
@@ -1822,7 +1830,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = convert_request(&req, &CompressionConfig::default()).unwrap();
+        let result = convert_request(&req, &CompressionConfig::default(), None).unwrap();
 
         // 验证 tools 列表中包含了历史中使用的工具的占位符定义
         let tools = &result
@@ -1993,7 +2001,7 @@ mod tests {
             }),
         };
 
-        let result = convert_request(&req, &CompressionConfig::default()).unwrap();
+        let result = convert_request(&req, &CompressionConfig::default(), None).unwrap();
         assert_eq!(
             result.conversation_state.conversation_id,
             "a0662283-7fd3-4399-a7eb-52b9a717ae88"
@@ -2021,7 +2029,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = convert_request(&req, &CompressionConfig::default()).unwrap();
+        let result = convert_request(&req, &CompressionConfig::default(), None).unwrap();
         // 验证生成的是有效的 UUID 格式
         assert_eq!(result.conversation_state.conversation_id.len(), 36);
         assert_eq!(
@@ -2473,7 +2481,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = convert_request(&req, &CompressionConfig::default()).unwrap();
+        let result = convert_request(&req, &CompressionConfig::default(), None).unwrap();
         let tools = &result
             .conversation_state
             .current_message
@@ -2535,7 +2543,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = convert_request(&req, &CompressionConfig::default()).unwrap();
+        let result = convert_request(&req, &CompressionConfig::default(), None).unwrap();
         let content = &result
             .conversation_state
             .current_message
@@ -2591,7 +2599,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = convert_request(&req, &CompressionConfig::default()).unwrap();
+        let result = convert_request(&req, &CompressionConfig::default(), None).unwrap();
 
         let mut found = false;
         for msg in &result.conversation_state.history {
@@ -2655,7 +2663,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = convert_request(&req, &CompressionConfig::default()).unwrap();
+        let result = convert_request(&req, &CompressionConfig::default(), None).unwrap();
 
         // 孤立 tool_result 会被过滤
         assert!(
@@ -2817,7 +2825,7 @@ mod tests {
                 output_config: None,
                 metadata: None,
             };
-            let result = convert_request(&req, &CompressionConfig::default()).unwrap();
+            let result = convert_request(&req, &CompressionConfig::default(), None).unwrap();
             let imgs = &result
                 .conversation_state
                 .current_message
@@ -2901,7 +2909,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = convert_request(&req_no_tools, &CompressionConfig::default()).unwrap();
+        let result = convert_request(&req_no_tools, &CompressionConfig::default(), None).unwrap();
         let first_user = &result.conversation_state.history[0];
         match first_user {
             Message::User(u) => {
@@ -2937,7 +2945,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = convert_request(&req_with_write, &CompressionConfig::default()).unwrap();
+        let result = convert_request(&req_with_write, &CompressionConfig::default(), None).unwrap();
         let first_user = &result.conversation_state.history[0];
         match first_user {
             Message::User(u) => {
@@ -2974,7 +2982,7 @@ mod tests {
         };
 
         let result =
-            convert_request(&req_no_system_with_edit, &CompressionConfig::default()).unwrap();
+            convert_request(&req_no_system_with_edit, &CompressionConfig::default(), None).unwrap();
         let first_user = &result.conversation_state.history[0];
         match first_user {
             Message::User(u) => {
@@ -3110,7 +3118,7 @@ mod tests {
             metadata: None,
         };
 
-        let result = convert_request(&req, &CompressionConfig::default());
+        let result = convert_request(&req, &CompressionConfig::default(), None);
         assert!(result.is_ok(), "prefill 场景不应报错: {:?}", result.err());
         let state = result.unwrap().conversation_state;
         assert_eq!(
@@ -3140,7 +3148,7 @@ mod tests {
             metadata: None,
         };
 
-        let err = convert_request(&req, &CompressionConfig::default()).unwrap_err();
+        let err = convert_request(&req, &CompressionConfig::default(), None).unwrap_err();
         assert!(
             matches!(err, ConversionError::EmptyMessages),
             "只有 assistant 消息时应返回 EmptyMessages，实际: {:?}",
@@ -3169,7 +3177,7 @@ mod tests {
             metadata: None,
         };
 
-        let err = convert_request(&req, &CompressionConfig::default()).unwrap_err();
+        let err = convert_request(&req, &CompressionConfig::default(), None).unwrap_err();
         assert!(
             matches!(err, ConversionError::EmptyMessageContent),
             "空消息内容应返回 EmptyMessageContent，实际: {:?}",
@@ -3201,7 +3209,7 @@ mod tests {
             metadata: None,
         };
 
-        let err = convert_request(&req, &CompressionConfig::default()).unwrap_err();
+        let err = convert_request(&req, &CompressionConfig::default(), None).unwrap_err();
         assert!(
             matches!(err, ConversionError::EmptyMessageContent),
             "仅包含空白文本的消息应返回 EmptyMessageContent，实际: {:?}",
@@ -3236,7 +3244,7 @@ mod tests {
             metadata: None,
         };
 
-        let err = convert_request(&req, &CompressionConfig::default()).unwrap_err();
+        let err = convert_request(&req, &CompressionConfig::default(), None).unwrap_err();
         assert!(
             matches!(err, ConversionError::EmptyMessageContent),
             "prefill 回退后的空 user 消息应返回 EmptyMessageContent，实际: {:?}",
@@ -3338,7 +3346,7 @@ mod tests {
         };
 
         // 转换应成功，不应因 tool_use/tool_result 配对失败而报错
-        let result = convert_request(&req, &CompressionConfig::default());
+        let result = convert_request(&req, &CompressionConfig::default(), None);
         assert!(
             result.is_ok(),
             "连续 assistant 消息场景不应报错: {:?}",

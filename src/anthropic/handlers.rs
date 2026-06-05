@@ -1104,8 +1104,27 @@ pub async fn post_messages(
         "Computed provisional cache usage for /v1/messages"
     );
 
+    // 跨请求缓存查找
+    let content_fingerprint = state
+        .cross_request_cache
+        .as_ref()
+        .map(|_| super::cross_request_cache::CrossRequestCache::content_fingerprint(&payload.messages));
+    let forced_conversation_id = content_fingerprint.as_ref().and_then(|fp| {
+        state
+            .cross_request_cache
+            .as_ref()
+            .and_then(|cache| cache.lookup(0, fp))
+    });
+    if forced_conversation_id.is_some() {
+        tracing::debug!("跨请求缓存命中，将注入 forced_conversation_id");
+    }
+
     // 转换请求
-    let conversion_result = match convert_request(&payload, &compression_config) {
+    let conversion_result = match convert_request(
+        &payload,
+        &compression_config,
+        forced_conversation_id.as_deref(),
+    ) {
         Ok(result) => result,
         Err(e) => {
             let (error_type, message) = match &e {
@@ -1241,6 +1260,13 @@ pub async fn post_messages(
         kiro_request_body_bytes = request_body.len(),
         "已构建 Kiro 请求体"
     );
+
+    // 跨请求缓存插入
+    if let (Some(cache), Some(fp)) = (&state.cross_request_cache, &content_fingerprint) {
+        let conv_id = kiro_request.conversation_state.conversation_id.clone();
+        cache.insert(0, *fp, conv_id);
+        tracing::debug!("已缓存 conversation_id 到跨请求缓存");
+    }
 
     // 检查是否启用了thinking
     let thinking_enabled = payload

@@ -213,6 +213,18 @@ async fn main() {
         None
     };
 
+    // 构建跨请求缓存（可通过配置禁用）
+    let cross_request_cache = if config.read().cross_request_cache_enabled {
+        let max_entries = config.read().cross_request_cache_max_entries;
+        tracing::info!(max_entries, "跨请求缓存已启用");
+        Some(Arc::new(
+            anthropic::cross_request_cache::CrossRequestCache::new(max_entries),
+        ))
+    } else {
+        tracing::info!("跨请求缓存已禁用");
+        None
+    };
+
     // 构建 Anthropic API 路由（从第一个凭据获取 profile_arn）
     let anthropic_app = anthropic::create_router_with_provider(
         &api_key,
@@ -221,6 +233,7 @@ async fn main() {
         compression_config.clone(),
         prompt_cache_runtime.clone(),
         metrics_collector.clone(),
+        cross_request_cache,
     );
 
     // 构建 Admin API 路由（如果配置了非空的 admin_api_key）

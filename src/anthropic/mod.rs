@@ -20,6 +20,7 @@
 mod cache_tracker;
 mod compressor;
 mod converter;
+pub(crate) mod cross_request_cache;
 mod handlers;
 mod middleware;
 mod router;
