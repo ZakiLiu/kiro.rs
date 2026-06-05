@@ -15,6 +15,7 @@ strip = true
 default = []
 # 显式启用才允许打印潜在敏感信息（仅用于排障）
 sensitive-logs = []
+pdf-support = ["dep:lopdf"]
 
 [dependencies]
 axum = "0.8"
@@ -44,3 +45,4 @@ rust-embed = "8"      # 嵌入静态文件
 mime_guess = "2"      # MIME 类型推断
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }  # 图片处理
 base64 = "0.22"       # Base64 编解码
+lopdf = { version = "0.39", optional = true }  # PDF 文本提取（pdf-support feature）
