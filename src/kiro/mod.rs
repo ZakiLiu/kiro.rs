@@ -5,6 +5,7 @@ pub mod background_refresh;
 pub mod cooldown;
 pub mod endpoint;
 pub mod fingerprint;
+pub mod identity;
 pub mod machine_id;
 pub mod model;
 pub mod parser;
