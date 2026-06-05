@@ -102,6 +102,14 @@ pub struct Config {
     #[serde(default = "default_endpoint")]
     pub default_endpoint: String,
 
+    /// 是否启用请求指标收集，默认 true
+    #[serde(default = "default_true")]
+    pub metrics_enabled: bool,
+
+    /// 指标环形缓冲区大小，默认 10000
+    #[serde(default = "default_metrics_ring_buffer_size")]
+    pub metrics_ring_buffer_size: usize,
+
     /// 配置文件路径（运行时元数据，不写入 JSON）
     #[serde(skip)]
     config_path: Option<PathBuf>,
@@ -142,6 +150,10 @@ fn default_endpoint() -> String {
 
 fn default_prompt_cache_ttl_seconds() -> u64 {
     300
+}
+
+fn default_metrics_ring_buffer_size() -> usize {
+    10_000
 }
 
 fn default_tls_backend() -> TlsBackend {
@@ -307,6 +319,8 @@ impl Default for Config {
             prompt_cache_ttl_seconds: default_prompt_cache_ttl_seconds(),
             prompt_cache_accounting_enabled: default_true(),
             default_endpoint: default_endpoint(),
+            metrics_enabled: default_true(),
+            metrics_ring_buffer_size: default_metrics_ring_buffer_size(),
             config_path: None,
         }
     }

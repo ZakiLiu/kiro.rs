@@ -32,6 +32,8 @@ const ADAPTIVE_HISTORY_PRESERVE_MESSAGES: usize = 2;
 /// 消息内容二次压缩的最低阈值（字符数）
 const ADAPTIVE_MIN_MESSAGE_CONTENT_MAX_CHARS: usize = 8192;
 
+use crate::metrics::{MetricEvent, MetricEventType};
+
 use super::converter::{ConversionError, convert_request};
 use super::middleware::AppState;
 use super::stream::{CacheUsageBreakdown, SseEvent, StreamContext};
@@ -58,6 +60,8 @@ struct StreamRequestContext<'a> {
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
     user_id: Option<&'a str>,
+    metrics: Option<&'a std::sync::Arc<crate::metrics::MetricsCollector>>,
+    request_start: std::time::Instant,
 }
 
 struct NonStreamRequestContext<'a> {
@@ -68,6 +72,8 @@ struct NonStreamRequestContext<'a> {
     user_id: Option<&'a str>,
     cache_tracker: Option<&'a std::sync::Arc<crate::anthropic::cache_tracker::CacheTracker>>,
     cache_profile: Option<&'a crate::anthropic::cache_tracker::CacheProfile>,
+    metrics: Option<&'a std::sync::Arc<crate::metrics::MetricsCollector>>,
+    request_start: std::time::Instant,
 }
 
 fn build_cache_profile(
@@ -1013,6 +1019,18 @@ pub async fn post_messages(
         estimated_input_tokens,
         "Received request"
     );
+
+    // 记录 RequestReceived 指标
+    if let Some(metrics) = &state.metrics {
+        metrics.record(
+            MetricEvent::new(MetricEventType::RequestReceived)
+                .with_model(&payload.model),
+        );
+    }
+
+    // 记录请求开始时间（用于计算延迟）
+    let request_start = std::time::Instant::now();
+
     // 检查 KiroProvider 是否可用
     let provider = match &state.kiro_provider {
         Some(p) => p.clone(),
@@ -1244,6 +1262,8 @@ pub async fn post_messages(
             thinking_enabled,
             tool_name_map: tool_name_map.clone(),
             user_id: user_id.as_deref(),
+            metrics: state.metrics.as_ref(),
+            request_start,
         };
         handle_stream_request(provider, stream_request).await
     } else {
@@ -1258,6 +1278,8 @@ pub async fn post_messages(
                 .accounting_enabled
                 .then_some(&prompt_cache.tracker),
             cache_profile: cache_profile.as_ref(),
+            metrics: state.metrics.as_ref(),
+            request_start,
         };
         handle_non_stream_request(provider, non_stream_request).await
     }
@@ -1310,6 +1332,17 @@ async fn handle_stream_request(
 
     // 创建 SSE 流
     let stream = create_sse_stream(api_result.response, ctx, initial_events);
+
+    // 记录 RequestCompleted 指标（流式：记录到首字节的延迟）
+    if let Some(metrics) = context.metrics {
+        metrics.record(
+            MetricEvent::new(MetricEventType::RequestCompleted)
+                .with_model(context.model)
+                .with_status("success")
+                .with_latency_ms(context.request_start.elapsed().as_millis() as u64)
+                .with_tokens(context.input_tokens, 0),
+        );
+    }
 
     // 返回 SSE 响应
     Response::builder()
@@ -1717,6 +1750,17 @@ async fn handle_non_stream_request(
             "usage": usage
         })
     };
+
+    // 记录 RequestCompleted 指标（非流式：完整请求延迟 + token 统计）
+    if let Some(metrics) = context.metrics {
+        metrics.record(
+            MetricEvent::new(MetricEventType::RequestCompleted)
+                .with_model(context.model)
+                .with_status("success")
+                .with_latency_ms(context.request_start.elapsed().as_millis() as u64)
+                .with_tokens(context.input_tokens, output_tokens),
+        );
+    }
 
     (StatusCode::OK, Json(response_body)).into_response()
 }

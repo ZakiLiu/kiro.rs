@@ -14,6 +14,7 @@ use parking_lot::RwLock;
 
 use crate::common::auth;
 use crate::kiro::provider::KiroProvider;
+use crate::metrics::MetricsCollector;
 use crate::model::config::CompressionConfig;
 
 use super::cache_tracker::CacheTracker;
@@ -77,6 +78,8 @@ pub struct AppState {
     pub compression_config: Arc<RwLock<CompressionConfig>>,
     /// Prompt Cache 运行时配置（共享引用，支持热更新）
     pub prompt_cache_runtime: Arc<RwLock<PromptCacheRuntime>>,
+    /// 请求指标收集器（可选，禁用时为 None）
+    pub metrics: Option<Arc<MetricsCollector>>,
 }
 
 impl AppState {
@@ -91,6 +94,7 @@ impl AppState {
             profile_arn: None,
             compression_config: Arc::new(RwLock::new(CompressionConfig::default())),
             prompt_cache_runtime,
+            metrics: None,
         }
     }
 
@@ -109,6 +113,12 @@ impl AppState {
     /// 设置压缩配置（接受共享引用）
     pub fn with_compression_config(mut self, config: Arc<RwLock<CompressionConfig>>) -> Self {
         self.compression_config = config;
+        self
+    }
+
+    /// 设置指标收集器
+    pub fn with_metrics(mut self, metrics: Arc<MetricsCollector>) -> Self {
+        self.metrics = Some(metrics);
         self
     }
 

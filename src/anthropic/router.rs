@@ -11,6 +11,7 @@ use axum::{
 use parking_lot::RwLock;
 
 use crate::kiro::provider::KiroProvider;
+use crate::metrics::MetricsCollector;
 use crate::model::config::CompressionConfig;
 
 use super::{
@@ -44,6 +45,7 @@ pub fn create_router_with_provider(
     profile_arn: Option<String>,
     compression_config: Arc<RwLock<CompressionConfig>>,
     prompt_cache_runtime: Arc<RwLock<PromptCacheRuntime>>,
+    metrics: Option<Arc<MetricsCollector>>,
 ) -> Router {
     let mut state = AppState::new(api_key, prompt_cache_runtime);
     if let Some(provider) = kiro_provider {
@@ -53,6 +55,9 @@ pub fn create_router_with_provider(
         state = state.with_profile_arn(arn);
     }
     state = state.with_compression_config(compression_config);
+    if let Some(m) = metrics {
+        state = state.with_metrics(m);
+    }
 
     // 需要认证的 /v1 路由
     let v1_routes = Router::new()

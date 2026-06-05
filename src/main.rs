@@ -5,6 +5,7 @@ mod common;
 mod http_client;
 pub mod image;
 mod kiro;
+pub mod metrics;
 mod model;
 pub mod token;
 
@@ -202,6 +203,16 @@ async fn main() {
         config.read().prompt_cache_accounting_enabled,
     )));
 
+    // 构建指标收集器（可通过配置禁用）
+    let metrics_collector = if config.read().metrics_enabled {
+        let size = config.read().metrics_ring_buffer_size;
+        tracing::info!(ring_buffer_size = size, "指标收集已启用");
+        Some(Arc::new(metrics::MetricsCollector::new(size)))
+    } else {
+        tracing::info!("指标收集已禁用");
+        None
+    };
+
     // 构建 Anthropic API 路由（从第一个凭据获取 profile_arn）
     let anthropic_app = anthropic::create_router_with_provider(
         &api_key,
@@ -209,6 +220,7 @@ async fn main() {
         first_credentials.profile_arn.clone(),
         compression_config.clone(),
         prompt_cache_runtime.clone(),
+        metrics_collector.clone(),
     );
 
     // 构建 Admin API 路由（如果配置了非空的 admin_api_key）
