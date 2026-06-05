@@ -5,6 +5,8 @@ mod common;
 mod http_client;
 pub mod image;
 mod kiro;
+#[cfg(feature = "pdf-support")]
+pub mod pdf;
 pub mod metrics;
 mod model;
 pub mod token;
@@ -225,6 +227,12 @@ async fn main() {
         None
     };
 
+    // 构建 Prompt 预设（从配置加载，共享引用供 Admin API 运行时 CRUD）
+    let presets = Arc::new(RwLock::new(config.read().presets.clone()));
+    if !presets.read().is_empty() {
+        tracing::info!(count = presets.read().len(), "已加载 Prompt 预设");
+    }
+
     // 构建 Anthropic API 路由（从第一个凭据获取 profile_arn）
     let anthropic_app = anthropic::create_router_with_provider(
         &api_key,
@@ -234,6 +242,7 @@ async fn main() {
         prompt_cache_runtime.clone(),
         metrics_collector.clone(),
         cross_request_cache,
+        presets.clone(),
     );
 
     // 构建 Admin API 路由（如果配置了非空的 admin_api_key）
@@ -261,7 +270,8 @@ async fn main() {
                     metrics_collector.clone(),
                     endpoint_names.clone(),
                 );
-                let admin_state = admin::AdminState::new(admin_key, admin_service);
+                let admin_state =
+                    admin::AdminState::new(admin_key, admin_service).with_presets(presets.clone());
                 let admin_app = admin::create_admin_router(admin_state);
 
                 // 创建 Admin UI 路由

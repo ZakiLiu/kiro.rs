@@ -12,7 +12,7 @@ use parking_lot::RwLock;
 
 use crate::kiro::provider::KiroProvider;
 use crate::metrics::MetricsCollector;
-use crate::model::config::CompressionConfig;
+use crate::model::config::{CompressionConfig, Preset};
 
 use super::{
     cross_request_cache::CrossRequestCache,
@@ -40,6 +40,7 @@ const MAX_BODY_SIZE: usize = 50 * 1024 * 1024;
 /// - `kiro_provider`: 可选的 KiroProvider，用于调用上游 API
 ///
 /// 创建带有 KiroProvider 的 Anthropic API 路由
+#[allow(clippy::too_many_arguments)]
 pub fn create_router_with_provider(
     api_key: impl Into<String>,
     kiro_provider: Option<Arc<KiroProvider>>,
@@ -48,8 +49,10 @@ pub fn create_router_with_provider(
     prompt_cache_runtime: Arc<RwLock<PromptCacheRuntime>>,
     metrics: Option<Arc<MetricsCollector>>,
     cross_request_cache: Option<Arc<CrossRequestCache>>,
+    presets: Arc<RwLock<Vec<Preset>>>,
 ) -> Router {
     let mut state = AppState::new(api_key, prompt_cache_runtime);
+    state = state.with_presets(presets);
     if let Some(provider) = kiro_provider {
         state = state.with_kiro_provider(provider);
     }

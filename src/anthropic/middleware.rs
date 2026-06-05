@@ -15,7 +15,7 @@ use parking_lot::RwLock;
 use crate::common::auth;
 use crate::kiro::provider::KiroProvider;
 use crate::metrics::MetricsCollector;
-use crate::model::config::CompressionConfig;
+use crate::model::config::{CompressionConfig, Preset};
 
 use super::cache_tracker::CacheTracker;
 use super::cross_request_cache::CrossRequestCache;
@@ -82,6 +82,8 @@ pub struct AppState {
     /// 请求指标收集器（可选，禁用时为 None）
     pub metrics: Option<Arc<MetricsCollector>>,
     pub cross_request_cache: Option<Arc<CrossRequestCache>>,
+    /// Prompt 预设列表（共享引用，支持 Admin API 运行时 CRUD）
+    pub presets: Arc<RwLock<Vec<Preset>>>,
 }
 
 impl AppState {
@@ -98,6 +100,7 @@ impl AppState {
             prompt_cache_runtime,
             metrics: None,
             cross_request_cache: None,
+            presets: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -127,6 +130,12 @@ impl AppState {
 
     pub fn with_cross_request_cache(mut self, cache: Arc<CrossRequestCache>) -> Self {
         self.cross_request_cache = Some(cache);
+        self
+    }
+
+    /// 设置 Prompt 预设（接受共享引用，支持 Admin API 运行时 CRUD）
+    pub fn with_presets(mut self, presets: Arc<RwLock<Vec<Preset>>>) -> Self {
+        self.presets = presets;
         self
     }
 

@@ -2,16 +2,17 @@
 
 use axum::{
     Router, middleware,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 
 use super::{
     handlers::{
-        add_credential, delete_credential, force_refresh_token, get_all_credentials,
-        get_cached_balances, get_credential_balance, get_global_config, get_metrics_by_credential,
-        get_metrics_by_model, get_metrics_summary, get_proxy_config, import_token_json,
-        reset_failure_count, set_credential_disabled, set_credential_endpoint,
-        set_credential_priority, set_credential_region, update_global_config, update_proxy_config,
+        add_credential, create_preset, delete_credential, delete_preset, force_refresh_token,
+        get_all_credentials, get_cached_balances, get_credential_balance, get_global_config,
+        get_metrics_by_credential, get_metrics_by_model, get_metrics_summary, get_presets,
+        get_proxy_config, import_token_json, reset_failure_count, set_credential_disabled,
+        set_credential_endpoint, set_credential_priority, set_credential_region, update_global_config,
+        update_preset, update_proxy_config,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -57,6 +58,8 @@ pub fn create_admin_router(state: AdminState) -> Router {
             "/config/global",
             get(get_global_config).put(update_global_config),
         )
+        .route("/presets", get(get_presets).post(create_preset))
+        .route("/presets/{id}", put(update_preset).delete(delete_preset))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_auth_middleware,

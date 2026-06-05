@@ -11,6 +11,23 @@ pub enum TlsBackend {
     NativeTls,
 }
 
+/// Prompt Preset 预设
+///
+/// 可通过 `x-preset-id` 请求头选择，将 system_prompt 前置注入到请求中。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Preset {
+    /// 预设唯一 ID（用于 x-preset-id 匹配）
+    pub id: String,
+    /// 预设名称（用于展示）
+    pub name: String,
+    /// 要前置注入的 system prompt
+    pub system_prompt: String,
+    /// 是否启用
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
 /// KNA 应用配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,6 +134,10 @@ pub struct Config {
     /// 跨请求缓存最大条目数，默认 1000
     #[serde(default = "default_cross_request_cache_max_entries")]
     pub cross_request_cache_max_entries: usize,
+
+    /// Prompt 预设列表
+    #[serde(default)]
+    pub presets: Vec<Preset>,
 
     /// 配置文件路径（运行时元数据，不写入 JSON）
     #[serde(skip)]
@@ -335,6 +356,7 @@ impl Default for Config {
             metrics_ring_buffer_size: default_metrics_ring_buffer_size(),
             cross_request_cache_enabled: default_true(),
             cross_request_cache_max_entries: default_cross_request_cache_max_entries(),
+            presets: Vec::new(),
             config_path: None,
         }
     }
@@ -406,5 +428,33 @@ mod tests {
         let config: Config = serde_json::from_str(r#"{"promptCacheAccountingEnabled":false}"#)
             .expect("config should deserialize");
         assert!(!config.prompt_cache_accounting_enabled);
+    }
+
+    #[test]
+    fn test_config_deserializes_presets_array() {
+        let config: Config = serde_json::from_str(
+            r#"{"presets":[{"id":"test","name":"Test","systemPrompt":"You are helpful","enabled":true}]}"#,
+        )
+        .expect("config with presets should deserialize");
+        assert_eq!(config.presets.len(), 1);
+        assert_eq!(config.presets[0].id, "test");
+        assert_eq!(config.presets[0].name, "Test");
+        assert_eq!(config.presets[0].system_prompt, "You are helpful");
+        assert!(config.presets[0].enabled);
+    }
+
+    #[test]
+    fn test_config_defaults_presets_empty() {
+        let config: Config =
+            serde_json::from_str(r#"{}"#).expect("config without presets should deserialize");
+        assert!(config.presets.is_empty());
+    }
+
+    #[test]
+    fn test_preset_enabled_defaults_true() {
+        let preset: Preset =
+            serde_json::from_str(r#"{"id":"p1","name":"P1","systemPrompt":"hi"}"#)
+                .expect("preset should deserialize without enabled field");
+        assert!(preset.enabled);
     }
 }

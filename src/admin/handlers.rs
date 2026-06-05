@@ -6,11 +6,14 @@ use axum::{
     response::IntoResponse,
 };
 
+use axum::http::StatusCode;
+
 use super::{
     middleware::AdminState,
     types::{
-        AddCredentialRequest, ImportTokenJsonRequest, SetDisabledRequest, SetEndpointRequest,
-        SetPriorityRequest, SetRegionRequest, SuccessResponse, UpdateProxyConfigRequest,
+        AddCredentialRequest, CreatePresetRequest, ImportTokenJsonRequest, SetDisabledRequest,
+        SetEndpointRequest, SetPriorityRequest, SetRegionRequest, SuccessResponse,
+        UpdatePresetRequest, UpdateProxyConfigRequest,
     },
 };
 
@@ -217,4 +220,103 @@ pub async fn update_global_config(
         Ok(_) => Json(SuccessResponse::new("全局配置已更新")).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
+}
+
+// ============ Prompt 预设 CRUD ============
+
+/// GET /api/admin/presets - 获取所有预设
+pub async fn get_presets(State(state): State<AdminState>) -> impl IntoResponse {
+    let presets = state.presets.read().clone();
+    Json(presets)
+}
+
+/// POST /api/admin/presets - 创建新预设
+pub async fn create_preset(
+    State(state): State<AdminState>,
+    Json(payload): Json<CreatePresetRequest>,
+) -> impl IntoResponse {
+    let mut presets = state.presets.write();
+
+    // 检查 ID 唯一性
+    if presets.iter().any(|p| p.id == payload.id) {
+        return (
+            StatusCode::CONFLICT,
+            Json(super::types::AdminErrorResponse::invalid_request(format!(
+                "预设 ID '{}' 已存在",
+                payload.id
+            ))),
+        )
+            .into_response();
+    }
+
+    let preset = crate::model::config::Preset {
+        id: payload.id,
+        name: payload.name,
+        system_prompt: payload.system_prompt,
+        enabled: payload.enabled,
+    };
+
+    presets.push(preset.clone());
+    tracing::info!(preset_id = %preset.id, "已创建 Prompt Preset");
+
+    (StatusCode::CREATED, Json(preset)).into_response()
+}
+
+/// PUT /api/admin/presets/:id - 更新预设
+pub async fn update_preset(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    Json(payload): Json<UpdatePresetRequest>,
+) -> impl IntoResponse {
+    let mut presets = state.presets.write();
+
+    let Some(preset) = presets.iter_mut().find(|p| p.id == id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(super::types::AdminErrorResponse::not_found(format!(
+                "预设 '{}' 不存在",
+                id
+            ))),
+        )
+            .into_response();
+    };
+
+    if let Some(name) = payload.name {
+        preset.name = name;
+    }
+    if let Some(system_prompt) = payload.system_prompt {
+        preset.system_prompt = system_prompt;
+    }
+    if let Some(enabled) = payload.enabled {
+        preset.enabled = enabled;
+    }
+
+    let updated = preset.clone();
+    tracing::info!(preset_id = %id, "已更新 Prompt Preset");
+
+    Json(updated).into_response()
+}
+
+/// DELETE /api/admin/presets/:id - 删除预设
+pub async fn delete_preset(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let mut presets = state.presets.write();
+    let before = presets.len();
+    presets.retain(|p| p.id != id);
+
+    if presets.len() == before {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(super::types::AdminErrorResponse::not_found(format!(
+                "预设 '{}' 不存在",
+                id
+            ))),
+        )
+            .into_response();
+    }
+
+    tracing::info!(preset_id = %id, "已删除 Prompt Preset");
+    StatusCode::NO_CONTENT.into_response()
 }

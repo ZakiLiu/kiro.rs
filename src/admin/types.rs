@@ -492,6 +492,39 @@ pub struct UpdateGlobalConfigRequest {
     pub compression: Option<UpdateCompressionConfigRequest>,
 }
 
+// ============ Prompt 预设 ============
+
+/// 创建预设请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePresetRequest {
+    /// 预设唯一 ID
+    pub id: String,
+    /// 预设名称
+    pub name: String,
+    /// 要前置注入的 system prompt
+    pub system_prompt: String,
+    /// 是否启用（默认 true）
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+/// 更新预设请求（所有字段可选）
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePresetRequest {
+    /// 预设名称
+    pub name: Option<String>,
+    /// 要前置注入的 system prompt
+    pub system_prompt: Option<String>,
+    /// 是否启用
+    pub enabled: Option<bool>,
+}
+
 /// 更新压缩配置请求
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -11,7 +11,7 @@ use axum::{
     Json as JsonExtractor,
     body::Body,
     extract::{OriginalUri, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Json, Response},
 };
 use bytes::Bytes;
@@ -434,7 +434,7 @@ fn mask_user_id(user_id: Option<&str>) -> String {
 ///
 /// 说明：
 /// - Claude Code/claude-cli 在某些 tool_use-only 场景下可能会把空 text block 写回 history；
-/// 从 assistant 文本中提取 `<thinking>...</thinking>` XML 标签作为独立 thinking 块。
+///   从 assistant 文本中提取 `<thinking>...</thinking>` XML 标签作为独立 thinking 块。
 ///
 /// Q 上游对非流式请求把推理嵌在 assistantResponseEvent 文本里（不发独立的
 /// reasoningContentEvent），需要在非流式响应聚合时拆出来：
@@ -825,11 +825,38 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
 pub async fn post_messages(
     OriginalUri(uri): OriginalUri,
     State(state): State<AppState>,
+    headers: HeaderMap,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
     // 读取压缩配置快照（读锁 + clone，避免持锁跨 await）
     let compression_config = state.compression_config.read().clone();
     let prompt_cache = state.prompt_cache_snapshot();
+
+    // Preset 注入：从 x-preset-id header 查找预设，前置注入 system prompt
+    if let Some(preset_id) = headers
+        .get("x-preset-id")
+        .and_then(|v| v.to_str().ok())
+    {
+        let presets = state.presets.read();
+        if let Some(preset) = presets.iter().find(|p| p.id == preset_id && p.enabled) {
+            tracing::info!(preset_id = %preset.id, preset_name = %preset.name, "应用 Prompt Preset");
+            let preset_msg = super::types::SystemMessage {
+                text: preset.system_prompt.clone(),
+                block_type: Some("text".to_string()),
+                cache_control: None,
+            };
+            match &mut payload.system {
+                Some(system_messages) => {
+                    system_messages.insert(0, preset_msg);
+                }
+                None => {
+                    payload.system = Some(vec![preset_msg]);
+                }
+            }
+        } else {
+            tracing::debug!(preset_id = %preset_id, "未找到匹配的 Preset 或 Preset 未启用");
+        }
+    }
 
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
@@ -1521,10 +1548,10 @@ async fn handle_non_stream_request(
                             );
                             metering = Some(event_metering);
                         }
-                        Event::Exception { exception_type, .. } => {
-                            if exception_type == "ContentLengthExceededException" {
-                                stop_reason = "max_tokens".to_string();
-                            }
+                        Event::Exception { exception_type, .. }
+                            if exception_type == "ContentLengthExceededException" =>
+                        {
+                            stop_reason = "max_tokens".to_string();
                         }
                         _ => {}
                     }
@@ -1729,7 +1756,7 @@ pub async fn count_tokens(
     ) as i32;
 
     Json(CountTokensResponse {
-        input_tokens: total_tokens.max(1) as i32,
+        input_tokens: total_tokens.max(1),
     })
 }
 

@@ -10,9 +10,12 @@ use axum::{
     response::{IntoResponse, Json, Response},
 };
 
+use parking_lot::RwLock;
+
 use super::service::AdminService;
 use super::types::AdminErrorResponse;
 use crate::common::auth;
+use crate::model::config::Preset;
 
 /// Admin API 共享状态
 #[derive(Clone)]
@@ -21,6 +24,8 @@ pub struct AdminState {
     pub admin_api_key: String,
     /// Admin 服务
     pub service: Arc<AdminService>,
+    /// Prompt 预设（与 AppState 共享同一 Arc，运行时可变）
+    pub presets: Arc<RwLock<Vec<Preset>>>,
 }
 
 impl AdminState {
@@ -28,7 +33,14 @@ impl AdminState {
         Self {
             admin_api_key: admin_api_key.into(),
             service: Arc::new(service),
+            presets: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+
+    /// 设置 Prompt 预设（共享引用）
+    pub fn with_presets(mut self, presets: Arc<RwLock<Vec<Preset>>>) -> Self {
+        self.presets = presets;
+        self
     }
 }
 
