@@ -35,7 +35,9 @@ pub fn extract_api_key(request: &Request<Body>) -> Option<String> {
 /// 无论字符串内容如何，比较所需的时间都是恒定的，
 /// 这可以防止攻击者通过测量响应时间来猜测 API Key。
 ///
-/// 使用经过安全审计的 `subtle` crate 实现
+/// 使用经过安全审计的 `subtle` crate 实现。
+/// 已知限制：ct_eq 对内容常量时间，但长度不等时返回 false 的耗时可暴露 key 长度。
+/// 风险低（仅泄露长度，不泄露内容），如需加固可先 SHA-256 再比较。
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
     a.as_bytes().ct_eq(b.as_bytes()).into()
 }

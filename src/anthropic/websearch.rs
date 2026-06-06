@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use super::stream::SseEvent;
 use super::types::{ErrorResponse, MessagesRequest};
+use crate::token;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WebSearchCacheContext {
@@ -579,7 +580,7 @@ fn generate_websearch_events(
 
     // 10. message_delta
     // 官方 API 的 message_delta.delta 中没有 stop_sequence 字段
-    let output_tokens = (summary.len() as i32 + 3) / 4; // 简单估算
+    let output_tokens = token::count_tokens(&summary) as i32;
     let mut message_delta_usage = json!({
         "input_tokens": billed_input_tokens,
         "output_tokens": output_tokens,
@@ -744,7 +745,7 @@ pub async fn handle_websearch_request(
         vec![]
     };
 
-    let output_tokens = (summary.len() as i32 + 3) / 4; // 简单估算
+    let output_tokens = token::count_tokens(&summary) as i32;
     let billed_input_tokens = final_cache_context
         .map(|ctx| {
             billed_input_tokens(
@@ -954,7 +955,7 @@ mod tests {
     #[test]
     fn test_websearch_failure_path_keeps_zero_cache_usage_when_accounting_enabled() {
         let summary = generate_search_summary("rust", &None);
-        let output_tokens = (summary.len() as i32 + 3) / 4;
+        let output_tokens = token::count_tokens(&summary) as i32;
         let cache_context = Some(WebSearchCacheContext::default());
         let billed = billed_input_tokens(123, 0, 0);
 

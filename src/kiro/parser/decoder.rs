@@ -221,9 +221,12 @@ impl EventStreamDecoder {
                     });
                 }
 
-                // 根据错误类型采用不同的恢复策略
+                // 根据错误类型采用不同的恢复策略（已跳过损坏字节/帧）
                 self.try_recover(&e);
-                self.state = DecoderState::Recovering;
+                // 恢复后立即转回 Ready：try_recover 已推进缓冲区，下一次 decode()
+                // 可继续解析剩余数据。若停留在 Recovering，DecodeIter 会提前终止，
+                // 导致损坏帧之后的有效帧永远无法被读取（COR-001）。
+                self.state = DecoderState::Ready;
                 Err(e)
             }
         }
@@ -389,11 +392,10 @@ impl<'a> Iterator for DecodeIter<'a> {
     type Item = ParseResult<Frame>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // 如果处于 Stopped 或 Recovering 状态，停止迭代
-        match self.decoder.state {
-            DecoderState::Stopped => return None,
-            DecoderState::Recovering => return None,
-            _ => {}
+        // 仅在 Stopped（错误超限熔断）时停止迭代。
+        // Recovering 状态不再终止迭代：单帧恢复后应继续读取后续有效帧（COR-001）。
+        if self.decoder.state == DecoderState::Stopped {
+            return None;
         }
 
         match self.decoder.decode() {
@@ -472,5 +474,79 @@ mod tests {
         decoder.try_resume();
         assert!(decoder.is_ready());
         assert_eq!(decoder.error_count(), 0);
+    }
+
+    /// 构造一个最小合法帧：header_length=0、空 payload。
+    /// 布局：total_length(4) | header_length(4) | prelude_crc(4) | message_crc(4) = 16 字节
+    use super::super::crc::crc32;
+
+    fn build_minimal_valid_frame() -> Vec<u8> {
+        let total_length: u32 = 16;
+        let header_length: u32 = 0;
+        let mut frame = Vec::with_capacity(16);
+        frame.extend_from_slice(&total_length.to_be_bytes());
+        frame.extend_from_slice(&header_length.to_be_bytes());
+        let prelude_crc = crc32(&frame[0..8]);
+        frame.extend_from_slice(&prelude_crc.to_be_bytes());
+        // message_crc 覆盖前 12 字节（total_length-4）
+        let message_crc = crc32(&frame[..12]);
+        frame.extend_from_slice(&message_crc.to_be_bytes());
+        frame
+    }
+
+    #[test]
+    fn test_minimal_valid_frame_decodes() {
+        // 先确认我们构造的帧本身是合法的
+        let frame = build_minimal_valid_frame();
+        let mut decoder = EventStreamDecoder::new();
+        decoder.feed(&frame).unwrap();
+        let frames: Vec<_> = decoder.decode_iter().filter_map(|r| r.ok()).collect();
+        assert_eq!(frames.len(), 1, "最小合法帧应被成功解码");
+    }
+
+    /// COR-001 回归测试：[valid][corrupt][valid] 必须吐出两个有效帧。
+    /// 修复前：首个损坏帧使解码器停留在 Recovering，DecodeIter 提前终止，
+    /// 第二个有效帧永远无法读取。
+    #[test]
+    fn test_decoder_recovers_after_corrupt_frame() {
+        let valid = build_minimal_valid_frame();
+
+        // 构造一段触发 MessageCrcMismatch 的损坏帧：prelude CRC 正确但 message CRC 错误。
+        // 用 MessageCrcMismatch 而非 PreludeCrcMismatch，因为前者的恢复策略是跳过
+        // 整帧（1 次错误计数），后者逐字节跳（16 字节需 16 次，超过 max_errors=5 熔断）。
+        let mut corrupt = vec![0u8; 16];
+        corrupt[0..4].copy_from_slice(&16u32.to_be_bytes()); // total_length
+        corrupt[4..8].copy_from_slice(&0u32.to_be_bytes()); // header_length
+        let prelude_crc = crc32(&corrupt[0..8]);
+        corrupt[8..12].copy_from_slice(&prelude_crc.to_be_bytes()); // 正确 prelude_crc
+        corrupt[12..16].copy_from_slice(&0xDEAD_BEEFu32.to_be_bytes()); // 错误 message_crc
+
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&valid);
+        stream.extend_from_slice(&corrupt);
+        stream.extend_from_slice(&valid);
+
+        let mut decoder = EventStreamDecoder::new();
+        decoder.feed(&stream).unwrap();
+
+        // 反复调用 decode()，直到数据耗尽或熔断，收集所有成功帧
+        let mut valid_frames = 0usize;
+        loop {
+            match decoder.decode() {
+                Ok(Some(_)) => valid_frames += 1,
+                Ok(None) => break,
+                Err(_) => {
+                    // 单帧错误：恢复后应能继续；若已 Stopped 则退出
+                    if decoder.is_stopped() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            valid_frames, 2,
+            "损坏帧前后的两个有效帧都应被解码（COR-001 回归）"
+        );
     }
 }

@@ -151,7 +151,11 @@ pub async fn auth_middleware(
     next: Next,
 ) -> Response {
     match auth::extract_api_key(&request) {
-        Some(key) if auth::constant_time_eq(&key, &state.api_key) => next.run(request).await,
+        // 纵深防御：拒绝空提取 key。即使配置层已校验非空 apiKey，
+        // 也避免空 key 在任何异常配置下绕过认证。
+        Some(key) if !key.is_empty() && auth::constant_time_eq(&key, &state.api_key) => {
+            next.run(request).await
+        }
         _ => {
             let error = ErrorResponse::authentication_error();
             (StatusCode::UNAUTHORIZED, Json(error)).into_response()
@@ -161,8 +165,11 @@ pub async fn auth_middleware(
 
 /// CORS 中间件层
 ///
-/// **安全说明**：当前配置允许所有来源（Any），这是为了支持公开 API 服务。
-/// 如果需要更严格的安全控制，请根据实际需求配置具体的允许来源、方法和头信息。
+/// **安全说明 (SEC-003, 有意设计)**：当前配置允许所有来源（Any），这是为了支持公开 API 服务。
+/// 此处宽松 CORS **不构成 CSRF 风险**：本服务认证完全基于显式请求头
+/// （`x-api-key` / `Authorization: Bearer`），不依赖 Cookie 等浏览器自动携带的环境凭据，
+/// 因此跨站请求无法借用受害者的认证态。若未来引入基于 Cookie 的会话，必须收紧 CORS 并加 CSRF 防护。
+/// 如需更严格的安全控制，请根据实际需求配置具体的允许来源、方法和头信息。
 ///
 /// # 配置说明
 /// - `allow_origin(Any)`: 允许任何来源的请求

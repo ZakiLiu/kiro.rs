@@ -241,6 +241,16 @@ fn truncate_thinking_blocks(text: &str, max_chars: usize) -> String {
 
 // ============ tool_result 智能截断 ============
 
+/// 硬截断兜底：确保字符串字符数不超过 max_chars。
+/// 供 smart_truncate_by_lines 的两个分支共用，避免格式化（含 marker）后反而超限。
+fn clamp_to_max_chars(s: String, max_chars: usize) -> String {
+    if s.chars().count() > max_chars {
+        safe_char_truncate(&s, max_chars).to_string()
+    } else {
+        s
+    }
+}
+
 /// 按行智能截断，保留头尾行
 fn smart_truncate_by_lines(
     text: &str,
@@ -269,6 +279,8 @@ fn smart_truncate_by_lines(
         let tail = &text[tail_start..];
         let omitted = char_count.saturating_sub(head.chars().count() + tail.chars().count());
         let result = format!("{}\n... [{} chars omitted] ...\n{}", head, omitted, tail);
+        // 硬截断兜底：head+tail+marker 拼接后仍可能超过 max_chars（COR-002）
+        let result = clamp_to_max_chars(result, max_chars);
         let saved = text.len().saturating_sub(result.len());
         return (result, saved);
     }
@@ -279,16 +291,13 @@ fn smart_truncate_by_lines(
     let omitted_chars =
         char_count.saturating_sub(head_part.chars().count() + tail_part.chars().count());
 
-    let mut result = format!(
+    let result = format!(
         "{}\n... [{} lines omitted ({} chars)] ...\n{}",
         head_part, omitted_lines, omitted_chars, tail_part
     );
 
     // 硬截断兜底：确保结果不超过 max_chars
-    if result.chars().count() > max_chars {
-        let truncated = safe_char_truncate(&result, max_chars);
-        result = truncated.to_string();
-    }
+    let result = clamp_to_max_chars(result, max_chars);
 
     let saved = text.len().saturating_sub(result.len());
     (result, saved)
@@ -444,6 +453,14 @@ fn compress_history_pass(
         }
     }
 
+    /// 计算一条消息的字符数
+    fn msg_chars(msg: &Message) -> usize {
+        match msg {
+            Message::User(u) => u.user_input_message.content.chars().count(),
+            Message::Assistant(a) => a.assistant_response_message.content.chars().count(),
+        }
+    }
+
     // 按轮数截断
     if max_turns > 0 {
         let max_messages = preserve_count + max_turns * 2;
@@ -457,25 +474,20 @@ fn compress_history_pass(
     }
 
     // 按字符数截断
+    // PRF-001：循环外只算一次 total_chars，每轮减去被移除两条的字符数，
+    // 避免每次迭代重新 sum 整个 history（原 O(n²)）。
     if max_chars > 0 {
-        loop {
-            let total_chars: usize = state
-                .history
-                .iter()
-                .map(|msg| match msg {
-                    Message::User(u) => u.user_input_message.content.chars().count(),
-                    Message::Assistant(a) => a.assistant_response_message.content.chars().count(),
-                })
-                .sum();
+        let mut total_chars: usize = state.history.iter().map(msg_chars).sum();
 
-            if total_chars <= max_chars || state.history.len() <= preserve_count + 2 {
-                break;
-            }
-
+        while total_chars > max_chars && state.history.len() > preserve_count + 2 {
+            total_chars -= msg_chars(&state.history[preserve_count]);
             bytes_saved += msg_bytes(&state.history[preserve_count]);
             state.history.remove(preserve_count);
+
+            total_chars -= msg_chars(&state.history[preserve_count]);
             bytes_saved += msg_bytes(&state.history[preserve_count]);
             state.history.remove(preserve_count);
+
             removed += 1;
         }
     }

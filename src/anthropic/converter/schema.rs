@@ -49,7 +49,24 @@ pub(super) fn normalize_json_schema(schema: serde_json::Value) -> serde_json::Va
 
     // properties（必须是 object）—— 保留 null/缺失兜底。
     match obj.get("properties") {
-        Some(serde_json::Value::Object(_)) => {}
+        Some(serde_json::Value::Object(props)) => {
+            // COR-003 可观测性：本函数刻意非递归（Round-6 wire 对齐结论，见模块顶部
+            // 文档）。若某 property 自身是 object/array schema，其内部不会被规范化。
+            // 当前实测无害，仅记录 debug 日志，便于未来上游若收紧校验时快速定位。
+            for (name, value) in props.iter() {
+                if let Some(child) = value.as_object()
+                    && matches!(
+                        child.get("type").and_then(|t| t.as_str()),
+                        Some("object") | Some("array")
+                    )
+                {
+                    tracing::debug!(
+                        property = %name,
+                        "normalize_json_schema 遇到嵌套 object/array schema（按 Round-6 决策不递归规范化）"
+                    );
+                }
+            }
+        }
         _ => {
             obj.insert(
                 "properties".to_string(),

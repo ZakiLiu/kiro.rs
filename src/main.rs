@@ -130,6 +130,13 @@ async fn main() {
         std::process::exit(1);
     });
 
+    // 安全检查：空字符串 / 纯空白 apiKey 会让认证中间件对空 key 放行，
+    // 等同于关闭代理端点认证。与 admin_api_key 的空值校验保持一致，启动即退出。
+    if api_key.trim().is_empty() {
+        tracing::error!("apiKey 不能为空字符串，否则代理端点将失去认证保护");
+        std::process::exit(1);
+    }
+
     // 构建代理配置
     let proxy_config = {
         let cfg = config.read();
