@@ -182,7 +182,10 @@ const STATS_SAVE_DEBOUNCE: StdDuration = StdDuration::from_secs(30);
 /// 当所有可用凭据都进入冷却/速率限制时，如果最短等待时间不超过该阈值，
 /// 继续短睡重试（平滑瞬时抖动）；超过则立即 bail，由上层返回 429 + Retry-After，
 /// 避免 HTTP handler 挂到客户端超时。
-const ALL_CREDENTIALS_COOLDOWN_BAIL_THRESHOLD: StdDuration = StdDuration::from_secs(2);
+///
+/// 当配置了 credential_rpm 时，阈值会自动提升到至少一个 RPM 间隔（例如 RPM=5 → 12s），
+/// 避免在正常限速窗口内过早放弃。参见 `cooldown_bail_threshold()`。
+const DEFAULT_COOLDOWN_BAIL_THRESHOLD: StdDuration = StdDuration::from_secs(2);
 
 /// API 调用上下文
 ///
@@ -419,6 +422,21 @@ impl MultiTokenManager {
         self.rate_limiter.update_config(cfg);
     }
 
+    /// 计算当前的冷却 bail 阈值
+    ///
+    /// 当配置了 credential_rpm 时，阈值提升到至少一个 RPM 间隔，
+    /// 确保系统在正常限速窗口内等待凭据可用，而非过早放弃。
+    fn cooldown_bail_threshold(&self) -> StdDuration {
+        let rpm_interval = self
+            .config
+            .read()
+            .credential_rpm
+            .filter(|&v| v > 0)
+            .map(|rpm| StdDuration::from_millis(60_000u64 / rpm as u64))
+            .unwrap_or(StdDuration::ZERO);
+        DEFAULT_COOLDOWN_BAIL_THRESHOLD.max(rpm_interval)
+    }
+
     /// 获取凭据总数
     pub fn total_count(&self) -> usize {
         self.entries.lock().len()
@@ -623,7 +641,7 @@ impl MultiTokenManager {
                     // 仅当本轮所有被跳过的凭据都因冷却/限流时，才以 429 + Retry-After 快速返回；
                     // 若混杂 token 刷新失败等非临时性错误，保留原有 sleep-retry 语义以避免吞掉真实错误。
                     let all_due_to_cooling = cooling_skipped == tried_ids.len();
-                    if all_due_to_cooling && wait > ALL_CREDENTIALS_COOLDOWN_BAIL_THRESHOLD {
+                    if all_due_to_cooling && wait > self.cooldown_bail_threshold() {
                         self.debug_log_availability_diagnostics(
                             "enabled_exhausted_bail_long_wait",
                             &tried_ids,
@@ -671,7 +689,7 @@ impl MultiTokenManager {
             if tried_ids.len() >= total {
                 if let Some(wait) = min_wait {
                     let all_due_to_cooling = cooling_skipped == tried_ids.len();
-                    if all_due_to_cooling && wait > ALL_CREDENTIALS_COOLDOWN_BAIL_THRESHOLD {
+                    if all_due_to_cooling && wait > self.cooldown_bail_threshold() {
                         self.debug_log_availability_diagnostics(
                             "total_exhausted_bail_long_wait",
                             &tried_ids,

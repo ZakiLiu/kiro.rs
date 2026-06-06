@@ -251,7 +251,9 @@ pub fn to_anthropic_response(
         }
 
         ErrorCategory::AllCredentialsCooling { retry_after_secs } => {
-            let secs = retry_after_secs.unwrap_or(60).clamp(60, 300);
+            // 下限从 60s 降到 5s：当配置了低 RPM 时，实际等待可能只需几秒，
+            // 硬钳到 60s 会让客户端白等。上限 300s 保持不变。
+            let secs = retry_after_secs.unwrap_or(60).clamp(5, 300);
             tracing::warn!(
                 error = %err,
                 retry_after_secs = secs,
@@ -583,16 +585,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_response_retry_after_clamping_low() {
-        let err = make_err("所有凭据均处于冷却/速率限制中 retry_after_secs=10");
+        let err = make_err("所有凭据均处于冷却/速率限制中 retry_after_secs=3");
         let ctx = default_ctx();
         let category = ErrorCategory::AllCredentialsCooling {
-            retry_after_secs: Some(10),
+            retry_after_secs: Some(3),
         };
 
         let resp = to_anthropic_response(&category, &err, &ctx);
         let retry_after = resp.headers().get(header::RETRY_AFTER).unwrap();
-        // 应当 clamp 到最小 60
-        assert_eq!(retry_after.to_str().unwrap(), "60");
+        // 应当 clamp 到最小 5
+        assert_eq!(retry_after.to_str().unwrap(), "5");
     }
 
     #[tokio::test]
@@ -619,7 +621,7 @@ mod tests {
 
         let resp = to_anthropic_response(&category, &err, &ctx);
         let retry_after = resp.headers().get(header::RETRY_AFTER).unwrap();
-        // None → default 60, clamp [60, 300] → 60
+        // None → default 60, clamp [5, 300] → 60
         assert_eq!(retry_after.to_str().unwrap(), "60");
     }
 
