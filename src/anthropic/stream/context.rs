@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::anthropic::error_map::{self, ErrorCategory, ErrorRequestContext};
 use crate::common::utf8::floor_char_boundary;
-use crate::kiro::model::events::{Event, MeteringEvent};
+use crate::kiro::model::events::{Event, MeteringEvent, TokenUsageEvent};
 
 use super::event::SseEvent;
 use super::state::SseStateManager;
@@ -30,8 +30,10 @@ pub struct StreamContext {
     pub cache_usage: Option<CacheUsageBreakdown>,
     /// 从 contextUsageEvent 计算的实际输入 tokens
     pub context_input_tokens: Option<i32>,
-    /// 输出 tokens 累计
+    /// 输出 tokens 累计（不含 thinking）
     pub output_tokens: i32,
+    /// thinking tokens 累计（独立计数，不计入 output_tokens）
+    pub thinking_tokens: i32,
     /// 工具块索引映射 (tool_id -> block_index)
     pub tool_block_indices: HashMap<String, i32>,
     /// 工具名称反向映射（短名称 → 原始名称），用于响应时还原
@@ -56,6 +58,8 @@ pub struct StreamContext {
     pub text_block_index: Option<i32>,
     /// 上游 meteringEvent 透传的 credit usage，仅用于最终 usage 统计，不生成独立 SSE 事件
     pub metering: Option<MeteringEvent>,
+    /// 上游 tokenUsageEvent 精确计量（流末端下发），有值时覆盖本地估算
+    pub token_usage: Option<TokenUsageEvent>,
     /// 是否需要剥离 thinking 内容开头的换行符
     /// 模型输出 `<thinking>\n` 时，`\n` 可能与标签在同一 chunk 或下一 chunk
     strip_thinking_leading_newline: bool,
@@ -78,6 +82,7 @@ impl StreamContext {
             cache_usage,
             context_input_tokens: None,
             output_tokens: 0,
+            thinking_tokens: 0,
             tool_block_indices: HashMap::new(),
             tool_name_map,
             thinking_enabled,
@@ -89,6 +94,7 @@ impl StreamContext {
             pending_reasoning_signature: None,
             text_block_index: None,
             metering: None,
+            token_usage: None,
             strip_thinking_leading_newline: false,
         }
     }
@@ -201,6 +207,20 @@ impl StreamContext {
                 );
                 Vec::new()
             }
+            Event::TokenUsage(token_usage) => {
+                if token_usage.has_real_usage() {
+                    self.token_usage = Some(token_usage.clone());
+                    tracing::info!(
+                        uncached_input = token_usage.uncached_input_tokens,
+                        output = token_usage.output_tokens,
+                        total = token_usage.total_tokens,
+                        cache_read = ?token_usage.cache_read_input_tokens,
+                        cache_write = ?token_usage.cache_write_input_tokens,
+                        "收到 tokenUsageEvent — 使用上游精确值替代本地估算"
+                    );
+                }
+                Vec::new()
+            }
             Event::Error {
                 error_code,
                 error_message,
@@ -292,7 +312,7 @@ impl StreamContext {
         };
 
         if !reasoning.text.is_empty() {
-            self.output_tokens += estimate_tokens(&reasoning.text);
+            self.thinking_tokens += estimate_tokens(&reasoning.text);
             if let Some(delta_event) = self
                 .state_manager
                 .handle_content_block_delta(
@@ -865,20 +885,47 @@ impl StreamContext {
             context_input_tokens = ?self.context_input_tokens,
             final_input_tokens,
             output_tokens = self.output_tokens,
-            "StreamContext usage: final_input_tokens={} (估算值), billed_input_tokens={}, context_input_tokens={} (上游值), output_tokens={}",
+            thinking_tokens = self.thinking_tokens,
+            "StreamContext usage: final_input_tokens={} (估算值), billed_input_tokens={}, context_input_tokens={} (上游值), output_tokens={}, thinking_tokens={}",
             final_input_tokens,
             billed_input_tokens,
             self.context_input_tokens.map_or("N/A".to_string(), |v| v.to_string()),
-            self.output_tokens
+            self.output_tokens,
+            self.thinking_tokens
         );
 
-        // 生成最终事件
-        events.extend(self.state_manager.generate_final_events(FinalUsage {
-            input_tokens: billed_input_tokens,
-            output_tokens: self.output_tokens,
-            cache_usage: self.cache_usage,
-            metering: self.metering.as_ref(),
-        }));
+        // 生成最终事件：优先使用上游 tokenUsageEvent 精确值，回退到本地估算
+        let final_usage = if let Some(ref tu) = self.token_usage {
+            let split = tu.billing_split();
+            tracing::info!(
+                "tokenUsageEvent 覆盖本地估算: input {} → {}, output {} → {}, cache_read {} → {}, cache_write {} → {}",
+                billed_input_tokens, split.input_tokens,
+                self.output_tokens, split.output_tokens,
+                self.cache_usage.map_or(0, |c| c.cache_read_input_tokens), split.cache_read_input_tokens,
+                self.cache_usage.map_or(0, |c| c.cache_creation_input_tokens), split.cache_creation_input_tokens,
+            );
+            FinalUsage {
+                input_tokens: split.input_tokens,
+                output_tokens: split.output_tokens,
+                thinking_tokens: self.thinking_tokens,
+                cache_usage: Some(CacheUsageBreakdown {
+                    cache_creation_input_tokens: split.cache_creation_input_tokens,
+                    cache_read_input_tokens: split.cache_read_input_tokens,
+                    cache_creation_5m_input_tokens: split.cache_creation_input_tokens,
+                    cache_creation_1h_input_tokens: 0,
+                }),
+                metering: self.metering.as_ref(),
+            }
+        } else {
+            FinalUsage {
+                input_tokens: billed_input_tokens,
+                output_tokens: self.output_tokens,
+                thinking_tokens: self.thinking_tokens,
+                cache_usage: self.cache_usage,
+                metering: self.metering.as_ref(),
+            }
+        };
+        events.extend(self.state_manager.generate_final_events(final_usage));
         events
     }
 }

@@ -20,6 +20,8 @@ pub enum EventType {
     InitialResponse,
     /// 推理内容事件（thinking 模型的服务端推理流，对应 Anthropic 的 `thinking` content_block）
     ReasoningContent,
+    /// Token 使用事件（流末端精确计量）
+    TokenUsage,
     /// 未知事件类型
     Unknown,
 }
@@ -34,6 +36,7 @@ impl EventType {
             "contextUsageEvent" => Self::ContextUsage,
             "initialResponseEvent" => Self::InitialResponse,
             "reasoningContentEvent" => Self::ReasoningContent,
+            "tokenUsageEvent" => Self::TokenUsage,
             _ => Self::Unknown,
         }
     }
@@ -47,6 +50,7 @@ impl EventType {
             Self::ContextUsage => "contextUsageEvent",
             Self::InitialResponse => "initialResponseEvent",
             Self::ReasoningContent => "reasoningContentEvent",
+            Self::TokenUsage => "tokenUsageEvent",
             Self::Unknown => "unknown",
         }
     }
@@ -81,6 +85,8 @@ pub enum Event {
     ContextUsage(super::ContextUsageEvent),
     /// 推理内容（thinking 模型的服务端推理流）
     ReasoningContent(super::ReasoningContentEvent),
+    /// Token 使用事件（流末端精确计量）
+    TokenUsage(super::TokenUsageEvent),
     /// 初始响应（首帧，含 conversationId）
     InitialResponse {
         /// 服务端分配的 conversationId（可能为空字符串）。
@@ -160,6 +166,10 @@ impl Event {
             EventType::ReasoningContent => {
                 let payload = super::ReasoningContentEvent::from_frame(&frame)?;
                 Ok(Self::ReasoningContent(payload))
+            }
+            EventType::TokenUsage => {
+                let payload = super::TokenUsageEvent::from_frame(&frame)?;
+                Ok(Self::TokenUsage(payload))
             }
             EventType::Unknown => Ok(Self::Unknown {}),
         }

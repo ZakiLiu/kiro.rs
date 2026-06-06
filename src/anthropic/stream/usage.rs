@@ -6,6 +6,7 @@ use crate::kiro::model::events::MeteringEvent;
 pub(crate) struct FinalUsage<'a> {
     pub input_tokens: i32,
     pub output_tokens: i32,
+    pub thinking_tokens: i32,
     pub cache_usage: Option<CacheUsageBreakdown>,
     pub metering: Option<&'a MeteringEvent>,
 }

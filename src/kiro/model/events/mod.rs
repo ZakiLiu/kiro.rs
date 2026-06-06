@@ -7,6 +7,7 @@ mod base;
 mod context_usage;
 mod metering;
 mod reasoning;
+mod token_usage;
 mod tool_use;
 
 pub use assistant::AssistantResponseEvent;
@@ -14,4 +15,5 @@ pub use base::Event;
 pub use context_usage::ContextUsageEvent;
 pub use metering::MeteringEvent;
 pub use reasoning::ReasoningContentEvent;
+pub use token_usage::TokenUsageEvent;
 pub use tool_use::ToolUseEvent;

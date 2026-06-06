@@ -266,6 +266,9 @@ impl SseStateManager {
                 "input_tokens": usage.input_tokens,
                 "output_tokens": usage.output_tokens,
             });
+            if usage.thinking_tokens > 0 {
+                usage_json["thinking_tokens"] = json!(usage.thinking_tokens);
+            }
             if let Some(cache_usage) = usage.cache_usage {
                 usage_json["cache_creation_input_tokens"] =
                     json!(cache_usage.cache_creation_input_tokens);
