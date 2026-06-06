@@ -12,8 +12,13 @@ use sha2::{Digest, Sha256};
 
 use crate::anthropic::types::Message;
 
-/// 缓存键：(credential_id, content_fingerprint)
-type CacheKey = (u64, [u8; 32]);
+/// 缓存键：content_fingerprint
+///
+/// 设计说明：最初计划用 (credential_id, content_fingerprint) 做 per-credential 隔离，
+/// 但 cache lookup 发生在凭据选择之前（凭据在 provider.call_api 内部按优先级选定），
+/// 无法在 lookup 时获得真实 credential_id。conversation_id 在内容确定性分支下与
+/// 凭据无关，因此 content_fingerprint 单独作为 key 是正确的。
+type CacheKey = [u8; 32];
 
 /// 缓存条目
 #[derive(Debug, Clone)]
@@ -54,8 +59,8 @@ impl CrossRequestCache {
     /// 查找缓存的 conversation_id
     ///
     /// 如果命中，将该条目移到 LRU 队列尾部（最近使用）
-    pub fn lookup(&self, credential_id: u64, fingerprint: &[u8; 32]) -> Option<String> {
-        let key = (credential_id, *fingerprint);
+    pub fn lookup(&self, fingerprint: &[u8; 32]) -> Option<String> {
+        let key = *fingerprint;
         let mut inner = self.inner.lock();
 
         if let Some(entry) = inner.map.get(&key) {
@@ -75,8 +80,8 @@ impl CrossRequestCache {
     ///
     /// 如果 key 已存在，更新 value 并移到队列尾部。
     /// 如果超过 max_entries，淘汰最旧的条目。
-    pub fn insert(&self, credential_id: u64, fingerprint: [u8; 32], conversation_id: String) {
-        let key = (credential_id, fingerprint);
+    pub fn insert(&self, fingerprint: [u8; 32], conversation_id: String) {
+        let key = fingerprint;
         let mut inner = self.inner.lock();
 
         if inner.map.contains_key(&key) {
@@ -156,16 +161,16 @@ mod tests {
     fn test_lookup_miss() {
         let cache = CrossRequestCache::new(10);
         let fp = CrossRequestCache::content_fingerprint(&make_messages(&["hello"]));
-        assert!(cache.lookup(1, &fp).is_none());
+        assert!(cache.lookup(&fp).is_none());
     }
 
     #[test]
     fn test_insert_and_lookup_hit() {
         let cache = CrossRequestCache::new(10);
         let fp = CrossRequestCache::content_fingerprint(&make_messages(&["hello"]));
-        cache.insert(1, fp, "conv-123".to_string());
+        cache.insert(fp, "conv-123".to_string());
 
-        let result = cache.lookup(1, &fp);
+        let result = cache.lookup(&fp);
         assert_eq!(result, Some("conv-123".to_string()));
     }
 
@@ -178,17 +183,17 @@ mod tests {
         let fp3 = CrossRequestCache::content_fingerprint(&make_messages(&["msg3"]));
         let fp4 = CrossRequestCache::content_fingerprint(&make_messages(&["msg4"]));
 
-        cache.insert(1, fp1, "conv-1".to_string());
-        cache.insert(1, fp2, "conv-2".to_string());
-        cache.insert(1, fp3, "conv-3".to_string());
+        cache.insert(fp1, "conv-1".to_string());
+        cache.insert(fp2, "conv-2".to_string());
+        cache.insert(fp3, "conv-3".to_string());
 
         // 缓存满了，插入第 4 个应该淘汰第 1 个
-        cache.insert(1, fp4, "conv-4".to_string());
+        cache.insert(fp4, "conv-4".to_string());
 
-        assert!(cache.lookup(1, &fp1).is_none(), "fp1 should be evicted");
-        assert_eq!(cache.lookup(1, &fp2), Some("conv-2".to_string()));
-        assert_eq!(cache.lookup(1, &fp3), Some("conv-3".to_string()));
-        assert_eq!(cache.lookup(1, &fp4), Some("conv-4".to_string()));
+        assert!(cache.lookup(&fp1).is_none(), "fp1 should be evicted");
+        assert_eq!(cache.lookup(&fp2), Some("conv-2".to_string()));
+        assert_eq!(cache.lookup(&fp3), Some("conv-3".to_string()));
+        assert_eq!(cache.lookup(&fp4), Some("conv-4".to_string()));
     }
 
     #[test]
@@ -200,34 +205,32 @@ mod tests {
         let fp3 = CrossRequestCache::content_fingerprint(&make_messages(&["msg3"]));
         let fp4 = CrossRequestCache::content_fingerprint(&make_messages(&["msg4"]));
 
-        cache.insert(1, fp1, "conv-1".to_string());
-        cache.insert(1, fp2, "conv-2".to_string());
-        cache.insert(1, fp3, "conv-3".to_string());
+        cache.insert(fp1, "conv-1".to_string());
+        cache.insert(fp2, "conv-2".to_string());
+        cache.insert(fp3, "conv-3".to_string());
 
         // 访问 fp1，使其变为最近使用
-        cache.lookup(1, &fp1);
+        cache.lookup(&fp1);
 
         // 插入 fp4 应该淘汰 fp2（最久未使用），而非 fp1
-        cache.insert(1, fp4, "conv-4".to_string());
+        cache.insert(fp4, "conv-4".to_string());
 
-        assert_eq!(cache.lookup(1, &fp1), Some("conv-1".to_string()));
-        assert!(cache.lookup(1, &fp2).is_none(), "fp2 should be evicted");
-        assert_eq!(cache.lookup(1, &fp3), Some("conv-3".to_string()));
-        assert_eq!(cache.lookup(1, &fp4), Some("conv-4".to_string()));
+        assert_eq!(cache.lookup(&fp1), Some("conv-1".to_string()));
+        assert!(cache.lookup(&fp2).is_none(), "fp2 should be evicted");
+        assert_eq!(cache.lookup(&fp3), Some("conv-3".to_string()));
+        assert_eq!(cache.lookup(&fp4), Some("conv-4".to_string()));
     }
 
     #[test]
-    fn test_per_credential_isolation() {
+    fn test_same_content_overwrites() {
+        // content-only keying: 同内容再次 insert 会覆盖旧值
         let cache = CrossRequestCache::new(10);
         let fp = CrossRequestCache::content_fingerprint(&make_messages(&["hello"]));
 
-        cache.insert(1, fp, "conv-cred1".to_string());
-        cache.insert(2, fp, "conv-cred2".to_string());
+        cache.insert(fp, "conv-old".to_string());
+        cache.insert(fp, "conv-new".to_string());
 
-        assert_eq!(cache.lookup(1, &fp), Some("conv-cred1".to_string()));
-        assert_eq!(cache.lookup(2, &fp), Some("conv-cred2".to_string()));
-        // 不同凭据的同指纹互不干扰
-        assert!(cache.lookup(3, &fp).is_none());
+        assert_eq!(cache.lookup(&fp), Some("conv-new".to_string()));
     }
 
     #[test]
@@ -252,10 +255,10 @@ mod tests {
         let cache = CrossRequestCache::new(10);
         let fp = CrossRequestCache::content_fingerprint(&make_messages(&["hello"]));
 
-        cache.insert(1, fp, "conv-old".to_string());
-        cache.insert(1, fp, "conv-new".to_string());
+        cache.insert(fp, "conv-old".to_string());
+        cache.insert(fp, "conv-new".to_string());
 
-        assert_eq!(cache.lookup(1, &fp), Some("conv-new".to_string()));
+        assert_eq!(cache.lookup(&fp), Some("conv-new".to_string()));
 
         // 更新不应增加条目数
         let inner = cache.inner.lock();

@@ -287,7 +287,7 @@ pub fn to_anthropic_response(
             tracing::warn!(error = %err, "上游瞬态错误（429/5xx），不输出请求体");
             (
                 StatusCode::TOO_MANY_REQUESTS,
-                Json(ErrorResponse::new("rate_limit_error", err.to_string())),
+                Json(ErrorResponse::new("rate_limit_error", "Rate limited by upstream. Please retry after backoff.")),
             )
                 .into_response()
         }
@@ -298,7 +298,7 @@ pub fn to_anthropic_response(
                 StatusCode::BAD_GATEWAY,
                 Json(ErrorResponse::new(
                     "api_error",
-                    format!("上游网络错误: {}", err),
+                    "Upstream network error. Please retry.",
                 )),
             )
                 .into_response()
@@ -337,7 +337,7 @@ pub fn to_anthropic_response(
                 StatusCode::BAD_GATEWAY,
                 Json(ErrorResponse::new(
                     "api_error",
-                    format!("上游 API 调用失败: {}", err),
+                    "Upstream API error. Please retry.",
                 )),
             )
                 .into_response()
@@ -355,7 +355,7 @@ pub fn to_anthropic_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
                     "api_error",
-                    format!("上游 API 调用失败: {}", err),
+                    "Upstream API error. Please retry.",
                 )),
             )
                 .into_response()

@@ -57,12 +57,20 @@ impl std::error::Error for PdfError {}
 /// - `PdfError::TooLarge`: PDF 原始大小超过 10MB
 /// - `PdfError::ExtractionFailed`: lopdf 解析或文本提取失败
 pub fn extract_text_from_pdf(base64_data: &str) -> Result<String, PdfError> {
+    // 0. Pre-decode 大小预检（O(1)，防内存放大 DoS）
+    let estimated_size = base64_data.len() / 4 * 3;
+    if estimated_size > MAX_PDF_SIZE {
+        return Err(PdfError::TooLarge {
+            size: estimated_size,
+        });
+    }
+
     // 1. Base64 解码
     let pdf_bytes = BASE64
         .decode(base64_data)
         .map_err(|e| PdfError::InvalidBase64(e.to_string()))?;
 
-    // 2. 大小检查
+    // 2. 大小检查（精确值二次校验）
     if pdf_bytes.len() > MAX_PDF_SIZE {
         return Err(PdfError::TooLarge {
             size: pdf_bytes.len(),

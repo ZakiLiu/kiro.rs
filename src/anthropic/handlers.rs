@@ -976,7 +976,7 @@ pub async fn post_messages(
         state
             .cross_request_cache
             .as_ref()
-            .and_then(|cache| cache.lookup(0, fp))
+            .and_then(|cache| cache.lookup(fp))
     });
     if forced_conversation_id.is_some() {
         tracing::debug!("跨请求缓存命中，将注入 forced_conversation_id");
@@ -1129,7 +1129,7 @@ pub async fn post_messages(
     // 跨请求缓存插入
     if let (Some(cache), Some(fp)) = (&state.cross_request_cache, &content_fingerprint) {
         let conv_id = kiro_request.conversation_state.conversation_id.clone();
-        cache.insert(0, *fp, conv_id);
+        cache.insert(*fp, conv_id);
         tracing::debug!("已缓存 conversation_id 到跨请求缓存");
     }
 

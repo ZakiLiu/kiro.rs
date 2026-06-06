@@ -29,7 +29,10 @@ impl EventPayload for TokenUsageEvent {
     fn from_frame(frame: &Frame) -> ParseResult<Self> {
         match frame.payload_as_json::<Self>() {
             Ok(ev) => Ok(ev),
-            Err(_) => Ok(Self::default()),
+            Err(e) => {
+                tracing::warn!("tokenUsageEvent 解析失败，回退默认值: {e}");
+                Ok(Self::default())
+            }
         }
     }
 }
