@@ -65,3 +65,28 @@ HTTP Request → anthropic/ (Axum handlers)
 
 ## Entries
 
+
+
+<spec-entry category="arch" keywords="token,估算,metering,cache,kiro-protocol" date="2026-06-06" source="analyze-output-token-growth">
+
+### Kiro 上游无 token 计数 — 全量本地估算
+
+Kiro Event Stream 不返回任何 token 数（input/output/thinking/cache 全部没有）。只返回 MeteringEvent.usage（credit 消耗 float）和 ContextUsageEvent.contextUsagePercentage（上下文窗口百分比）。proxy 通过 estimate_tokens() 启发式估算所有 token 数，CacheTracker 完全模拟缓存命中。参考：src/kiro/model/events/（6 种事件类型）、src/anthropic/stream/usage.rs（估算函数）、src/anthropic/cache_tracker.rs（缓存模拟）。
+
+</spec-entry>
+
+<spec-entry category="arch" keywords="thinking,output,token,分离,估算" date="2026-06-06" source="quick-thinking-tokens-separation">
+
+### Output/Thinking tokens 分离计数
+
+output_tokens 不含 thinking 内容。thinking tokens 通过 StreamContext.thinking_tokens 独立累计（从 reasoningContentEvent 估算），在 message_delta usage 中以 thinking_tokens 字段单独报告（仅 >0 时输出）。修复于 2026-06-06：stream/context.rs:295 从 output_tokens 移到 thinking_tokens。参考：src/anthropic/stream/context.rs、src/anthropic/stream/usage.rs。
+
+</spec-entry>
+
+<spec-entry category="arch" keywords="token,tokenusageevent,精确,计量,cache,billing" date="2026-06-06" source="analyze-kiro-cli-debug">
+
+### tokenUsageEvent 上游精确 token 计量
+
+Kiro 后端在流末端下发 tokenUsageEvent 事件，包含精确的 uncachedInputTokens、outputTokens(含thinking)、totalTokens、cacheReadInputTokens、cacheWriteInputTokens。proxy 通过 BillingSplit 转换为 Anthropic 三段不重叠计费口径（fresh 1×、cache_read 0.1×、cache_write 1.25×）。有 tokenUsageEvent 时覆盖本地估算；无此事件时回退到 estimate_tokens 启发式。参考：src/kiro/model/events/token_usage.rs、src/anthropic/stream/context.rs generate_final_events。
+
+</spec-entry>

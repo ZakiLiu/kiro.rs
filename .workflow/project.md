@@ -41,6 +41,8 @@ Anthropic Claude API 兼容的 Kiro 代理服务，用 Rust 编写。将 Anthrop
 
 项目已进入稳定维护阶段（v1.1.31），核心功能完备。主要工作集中在跟进上游 API 变更、修复边缘 case、优化性能。Docker 镜像发布到 Docker Hub（myuan6/kiro-rs）。
 
+**Milestone 1: Foundation (MVP) completed 2026-06-05** — 新增 CredentialIdentity trait（域分离身份抽象）、CrossRequestCache（LRU 跨请求缓存）、MetricsCollector（ring buffer 请求指标 + Admin API 聚合端点）。415 测试全绿，零回归。当前推进 Milestone 2: Reliability（ErrorMapper + Converter Enhancement）。
+
 ## Constraints
 
 - **兼容性**: 必须保持 Anthropic API 格式兼容 — 下游客户端（Claude Code、Cursor 等）依赖标准格式

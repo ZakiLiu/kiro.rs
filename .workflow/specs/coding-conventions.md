@@ -73,3 +73,12 @@ Auto-generated from project analysis. Update manually as patterns evolve.
 可变配置使用 RwLock 包装，通过 update_* 方法原子替换。热更新全局代理时同步重建 default_client 并清空 client_cache。热更新 endpoint 时验证注册表包含目标名称。模式：读多写少 → RwLock；写时验证 → assert/Result；副作用清理 → 同步执行。参考实现：`src/kiro/provider.rs:115-139`。
 </spec-entry>
 
+
+
+<spec-entry category="coding" keywords="estimate,token,精度,启发式,metering" date="2026-06-06" source="analyze-output-token-growth">
+
+### estimate_tokens 启发式精度限制
+
+estimate_tokens() 使用简单字符分类估算（CJK ~0.67 tok/char, ASCII ~0.25 tok/char），无法对照真实值验证精度。input_tokens 有 contextUsagePercentage 交叉校准（context.rs:182），output/thinking 完全依赖估算。改进方向：可利用 MeteringEvent.usage(credit) 反推总 token 做一致性检查，但需要 credit→token 换算公式。参考：src/anthropic/stream/usage.rs:34-52。
+
+</spec-entry>
