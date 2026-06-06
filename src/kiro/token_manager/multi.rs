@@ -424,17 +424,23 @@ impl MultiTokenManager {
 
     /// 计算当前的冷却 bail 阈值
     ///
-    /// 当配置了 credential_rpm 时，阈值提升到至少一个 RPM 间隔，
-    /// 确保系统在正常限速窗口内等待凭据可用，而非过早放弃。
+    /// 阈值 = max(默认 2s, 单凭据间隔 / 可用凭据数)。
+    /// 含义：下一个凭据可用的期望等待时间。如果 min_wait 超过这个值，
+    /// 说明所有凭据同时被限住，继续等也不会好转，应 bail 返回 429。
+    ///
+    /// 例：20 凭据 × 5 RPM → 间隔 12s / 20 = 0.6s → 阈值 2s（用默认下限）
+    /// 例：2 凭据 × 5 RPM → 间隔 12s / 2 = 6s → 阈值 6s（等一个轮转周期）
     fn cooldown_bail_threshold(&self) -> StdDuration {
-        let rpm_interval = self
+        let rpm_interval_ms = self
             .config
             .read()
             .credential_rpm
             .filter(|&v| v > 0)
-            .map(|rpm| StdDuration::from_millis(60_000u64 / rpm as u64))
-            .unwrap_or(StdDuration::ZERO);
-        DEFAULT_COOLDOWN_BAIL_THRESHOLD.max(rpm_interval)
+            .map(|rpm| 60_000u64 / rpm as u64)
+            .unwrap_or(0);
+        let available = self.available_count().max(1) as u64;
+        let effective_interval = StdDuration::from_millis(rpm_interval_ms / available);
+        DEFAULT_COOLDOWN_BAIL_THRESHOLD.max(effective_interval)
     }
 
     /// 获取凭据总数
