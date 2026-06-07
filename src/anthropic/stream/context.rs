@@ -894,26 +894,25 @@ impl StreamContext {
             self.thinking_tokens
         );
 
-        // 生成最终事件：优先使用上游 tokenUsageEvent 精确值，回退到本地估算
+        // 生成最终事件：
+        // - input/output tokens：优先使用上游 tokenUsageEvent 精确值（比本地估算准）
+        // - cache usage：始终使用本地 CacheTracker 模拟值（Anthropic prompt caching 语义）
+        //   上游 cacheWrite/cacheRead 是 Kiro 服务端缓存，语义不同于 Anthropic 前缀缓存，
+        //   直接透传会导致客户端缓存命中率从 ~98% 骤降到 ~34%。
         let final_usage = if let Some(ref tu) = self.token_usage {
             let split = tu.billing_split();
             tracing::info!(
-                "tokenUsageEvent 覆盖本地估算: input {} → {}, output {} → {}, cache_read {} → {}, cache_write {} → {}",
+                "tokenUsageEvent 覆盖本地估算 (仅 input/output): input {} → {}, output {} → {} | cache 保留本地模拟: read={}, write={}",
                 billed_input_tokens, split.input_tokens,
                 self.output_tokens, split.output_tokens,
-                self.cache_usage.map_or(0, |c| c.cache_read_input_tokens), split.cache_read_input_tokens,
-                self.cache_usage.map_or(0, |c| c.cache_creation_input_tokens), split.cache_creation_input_tokens,
+                self.cache_usage.map_or(0, |c| c.cache_read_input_tokens),
+                self.cache_usage.map_or(0, |c| c.cache_creation_input_tokens),
             );
             FinalUsage {
                 input_tokens: split.input_tokens,
                 output_tokens: split.output_tokens,
                 thinking_tokens: self.thinking_tokens,
-                cache_usage: Some(CacheUsageBreakdown {
-                    cache_creation_input_tokens: split.cache_creation_input_tokens,
-                    cache_read_input_tokens: split.cache_read_input_tokens,
-                    cache_creation_5m_input_tokens: split.cache_creation_input_tokens,
-                    cache_creation_1h_input_tokens: 0,
-                }),
+                cache_usage: self.cache_usage,
                 metering: self.metering.as_ref(),
             }
         } else {
