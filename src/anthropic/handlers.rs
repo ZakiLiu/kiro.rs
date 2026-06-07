@@ -44,35 +44,38 @@ use super::types::{
 };
 use super::websearch;
 
-/// 生成 Anthropic 标准 response headers
+/// 生成 Anthropic 标准 response headers（完整 rate limit 头集合）
 fn anthropic_response_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
     let request_id = format!("req_{}", Uuid::new_v4().to_string().replace('-', ""));
     headers.insert("x-request-id", request_id.parse().unwrap());
     headers.insert("request-id", request_id.parse().unwrap());
-    // rate limit headers（静态合理值，避免检测平台因缺失而判定异常）
-    headers.insert("anthropic-ratelimit-requests-limit", "1000".parse().unwrap());
-    headers.insert("anthropic-ratelimit-requests-remaining", "999".parse().unwrap());
-    headers.insert(
-        "anthropic-ratelimit-requests-reset",
-        chrono::Utc::now()
-            .checked_add_signed(chrono::Duration::seconds(60))
-            .unwrap_or_else(chrono::Utc::now)
-            .to_rfc3339()
-            .parse()
-            .unwrap(),
-    );
-    headers.insert("anthropic-ratelimit-tokens-limit", "100000".parse().unwrap());
-    headers.insert("anthropic-ratelimit-tokens-remaining", "99000".parse().unwrap());
-    headers.insert(
-        "anthropic-ratelimit-tokens-reset",
-        chrono::Utc::now()
-            .checked_add_signed(chrono::Duration::seconds(60))
-            .unwrap_or_else(chrono::Utc::now)
-            .to_rfc3339()
-            .parse()
-            .unwrap(),
-    );
+
+    let reset_time: String = chrono::Utc::now()
+        .checked_add_signed(chrono::Duration::seconds(60))
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+    // requests rate limit
+    headers.insert("anthropic-ratelimit-requests-limit", "4000".parse().unwrap());
+    headers.insert("anthropic-ratelimit-requests-remaining", "3999".parse().unwrap());
+    headers.insert("anthropic-ratelimit-requests-reset", reset_time.parse().unwrap());
+
+    // combined tokens rate limit
+    headers.insert("anthropic-ratelimit-tokens-limit", "400000".parse().unwrap());
+    headers.insert("anthropic-ratelimit-tokens-remaining", "399000".parse().unwrap());
+    headers.insert("anthropic-ratelimit-tokens-reset", reset_time.parse().unwrap());
+
+    // input tokens rate limit
+    headers.insert("anthropic-ratelimit-input-tokens-limit", "2000000".parse().unwrap());
+    headers.insert("anthropic-ratelimit-input-tokens-remaining", "1999000".parse().unwrap());
+    headers.insert("anthropic-ratelimit-input-tokens-reset", reset_time.parse().unwrap());
+
+    // output tokens rate limit
+    headers.insert("anthropic-ratelimit-output-tokens-limit", "400000".parse().unwrap());
+    headers.insert("anthropic-ratelimit-output-tokens-remaining", "399000".parse().unwrap());
+    headers.insert("anthropic-ratelimit-output-tokens-reset", reset_time.parse().unwrap());
+
     headers
 }
 
