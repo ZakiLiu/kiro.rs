@@ -16,9 +16,11 @@ pub struct CacheControl {
 
 // === 错误响应 ===
 
-/// API 错误响应
+/// API 错误响应（Anthropic 格式：顶层 type + error 嵌套）
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
+    #[serde(rename = "type")]
+    pub response_type: &'static str,
     pub error: ErrorDetail,
 }
 
@@ -34,6 +36,7 @@ impl ErrorResponse {
     /// 创建新的错误响应
     pub fn new(error_type: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
+            response_type: "error",
             error: ErrorDetail {
                 error_type: error_type.into(),
                 message: message.into(),

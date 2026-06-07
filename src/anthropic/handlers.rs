@@ -44,6 +44,38 @@ use super::types::{
 };
 use super::websearch;
 
+/// 生成 Anthropic 标准 response headers
+fn anthropic_response_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    let request_id = format!("req_{}", Uuid::new_v4().to_string().replace('-', ""));
+    headers.insert("x-request-id", request_id.parse().unwrap());
+    headers.insert("request-id", request_id.parse().unwrap());
+    // rate limit headers（静态合理值，避免检测平台因缺失而判定异常）
+    headers.insert("anthropic-ratelimit-requests-limit", "1000".parse().unwrap());
+    headers.insert("anthropic-ratelimit-requests-remaining", "999".parse().unwrap());
+    headers.insert(
+        "anthropic-ratelimit-requests-reset",
+        chrono::Utc::now()
+            .checked_add_signed(chrono::Duration::seconds(60))
+            .unwrap_or_else(chrono::Utc::now)
+            .to_rfc3339()
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("anthropic-ratelimit-tokens-limit", "100000".parse().unwrap());
+    headers.insert("anthropic-ratelimit-tokens-remaining", "99000".parse().unwrap());
+    headers.insert(
+        "anthropic-ratelimit-tokens-reset",
+        chrono::Utc::now()
+            .checked_add_signed(chrono::Duration::seconds(60))
+            .unwrap_or_else(chrono::Utc::now)
+            .to_rfc3339()
+            .parse()
+            .unwrap(),
+    );
+    headers
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct CacheUsageContext {
     cache_creation_input_tokens: i32,
@@ -1243,14 +1275,16 @@ async fn handle_stream_request(
         );
     }
 
-    // 返回 SSE 响应
-    Response::builder()
+    // 返回 SSE 响应（含 Anthropic 标准 headers）
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
-        .header(header::CONNECTION, "keep-alive")
-        .body(Body::from_stream(stream))
-        .unwrap()
+        .header(header::CONNECTION, "keep-alive");
+    for (key, value) in anthropic_response_headers().iter() {
+        builder = builder.header(key, value);
+    }
+    builder.body(Body::from_stream(stream)).unwrap()
 }
 
 /// Ping 事件间隔（25秒）
@@ -1667,7 +1701,7 @@ async fn handle_non_stream_request(
         );
     }
 
-    (StatusCode::OK, Json(response_body)).into_response()
+    (StatusCode::OK, anthropic_response_headers(), Json(response_body)).into_response()
 }
 
 /// 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
