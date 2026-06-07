@@ -49,21 +49,17 @@ struct CacheEntry {
     expires_at: Instant,
 }
 
-struct CachedCheckpointStore {
-    by_credential: HashMap<u64, HashMap<[u8; 32], CacheEntry>>,
-}
-
+/// 全局共享缓存池。Kiro 后端所有凭据共享同一缓存，无需 per-credential 隔离。
+/// credential_id 参数保留在 API 上以保持向后兼容，但内部不使用。
 pub struct CacheTracker {
-    entries: Mutex<CachedCheckpointStore>,
+    entries: Mutex<HashMap<[u8; 32], CacheEntry>>,
     max_supported_ttl: Duration,
 }
 
 impl CacheTracker {
     pub fn new(max_supported_ttl: Duration) -> Self {
         Self {
-            entries: Mutex::new(CachedCheckpointStore {
-                by_credential: HashMap::new(),
-            }),
+            entries: Mutex::new(HashMap::new()),
             max_supported_ttl,
         }
     }
@@ -141,7 +137,7 @@ impl CacheTracker {
         }
     }
 
-    pub fn compute(&self, credential_id: u64, profile: &CacheProfile) -> CacheResult {
+    pub fn compute(&self, _credential_id: u64, profile: &CacheProfile) -> CacheResult {
         let Some(last_breakpoint) = profile.last_cacheable_breakpoint() else {
             return CacheResult::default();
         };
@@ -150,77 +146,21 @@ impl CacheTracker {
             .min(profile.total_input_tokens);
 
         let now = Instant::now();
-        let mut entries = self.entries.lock();
-        prune_expired(&mut entries.by_credential, now);
+        let mut pool = self.entries.lock();
+        pool.retain(|_, entry| entry.expires_at > now);
 
-        let credential_entries = if let Some(ce) = entries.by_credential.get_mut(&credential_id) {
-            ce
-        } else {
-            // 首次使用的凭据：从最近活跃的其他凭据继承缓存条目。
-            // Kiro 后端所有凭据共享同一缓存池（同一 AWS endpoint），
-            // per-credential 隔离会在凭据轮转时造成不必要的缓存冷启动。
-            let donor = entries
-                .by_credential
-                .iter()
-                .filter(|(id, _)| **id != credential_id)
-                .flat_map(|(_, ce)| ce.values().map(|e| (e.expires_at, e)))
-                .max_by_key(|(exp, _)| *exp)
-                .map(|(_, _)| ())
-                .is_some();
+        if pool.is_empty() {
+            tracing::debug!("缓存池为空，首次请求");
+            let (cache_5m, cache_1h) = compute_ttl_breakdown(profile, 0);
+            return CacheResult {
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: last_breakpoint_tokens,
+                cache_creation_5m_input_tokens: cache_5m,
+                cache_creation_1h_input_tokens: cache_1h,
+            };
+        }
 
-            if donor {
-                // 找到最多有效条目的凭据，复制其缓存
-                let best_donor_id = entries
-                    .by_credential
-                    .iter()
-                    .filter(|(id, _)| **id != credential_id)
-                    .max_by_key(|(_, ce)| ce.values().filter(|e| e.expires_at > now).count())
-                    .map(|(id, _)| *id);
-
-                if let Some(donor_id) = best_donor_id {
-                    let inherited: HashMap<[u8; 32], CacheEntry> = entries
-                        .by_credential
-                        .get(&donor_id)
-                        .map(|ce| {
-                            ce.iter()
-                                .filter(|(_, e)| e.expires_at > now)
-                                .map(|(k, e)| (*k, e.clone()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-
-                    if !inherited.is_empty() {
-                        tracing::debug!(
-                            credential_id,
-                            donor_id,
-                            inherited_entries = inherited.len(),
-                            "新凭据继承缓存条目（共享后端缓存池）"
-                        );
-                        entries
-                            .by_credential
-                            .insert(credential_id, inherited);
-                    }
-                }
-            }
-
-            if !entries.by_credential.contains_key(&credential_id) {
-                tracing::debug!(credential_id, "首次请求，无可继承的缓存条目");
-                let (cache_5m, cache_1h) = compute_ttl_breakdown(profile, 0);
-                return CacheResult {
-                    cache_read_input_tokens: 0,
-                    cache_creation_input_tokens: last_breakpoint_tokens,
-                    cache_creation_5m_input_tokens: cache_5m,
-                    cache_creation_1h_input_tokens: cache_1h,
-                };
-            }
-            entries.by_credential.get_mut(&credential_id).unwrap()
-        };
-
-        tracing::debug!(
-            credential_id,
-            entry_count = credential_entries.len(),
-            "查找缓存匹配"
-        );
+        tracing::debug!(entry_count = pool.len(), "查找缓存匹配");
 
         let mut matched_tokens = 0;
 
@@ -234,13 +174,10 @@ impl CacheTracker {
 
         'outer: for breakpoint in candidate_breakpoints {
             let candidate = &profile.blocks[breakpoint.block_index];
-            if let Some(entry) = credential_entries.get(&candidate.prefix_fingerprint) {
+            if let Some(entry) = pool.get(&candidate.prefix_fingerprint) {
                 if entry.expires_at <= now {
                     continue;
                 }
-                // 不在命中时刷新 expires_at。Anthropic 真实 prompt cache TTL 从首次写入计算，
-                // 命中不延期；本地 expires_at 续命会让活动会话的 cache 在本地表里几乎不过期，
-                // 导致 cache_read 数字虚高、与上游真实命中率脱节。
                 matched_tokens = breakpoint.cumulative_tokens.min(profile.total_input_tokens);
                 break 'outer;
             }
@@ -250,7 +187,6 @@ impl CacheTracker {
         let (cache_5m, cache_1h) = compute_ttl_breakdown(profile, matched_tokens);
 
         tracing::debug!(
-            credential_id,
             matched_tokens,
             new_tokens,
             cache_5m,
@@ -266,27 +202,22 @@ impl CacheTracker {
         }
     }
 
-    pub fn update(&self, credential_id: u64, profile: &CacheProfile) {
+    pub fn update(&self, _credential_id: u64, profile: &CacheProfile) {
         let now = Instant::now();
-        let mut entries = self.entries.lock();
-        prune_expired(&mut entries.by_credential, now);
-
-        let credential_entries = entries.by_credential.entry(credential_id).or_default();
+        let mut pool = self.entries.lock();
+        pool.retain(|_, entry| entry.expires_at > now);
 
         for breakpoint in profile.cacheable_breakpoints() {
             let block = &profile.blocks[breakpoint.block_index];
             let next_expiry = now + breakpoint.ttl;
 
-            match credential_entries.get_mut(&block.prefix_fingerprint) {
+            match pool.get_mut(&block.prefix_fingerprint) {
                 Some(existing) => {
-                    // 不刷新 expires_at：Anthropic 真实 prompt cache TTL 从首次写入起算，
-                    // 重写已存在的 prefix 不会续 TTL（命中前到期就过期）。
-                    // 仅更新可单调增长的字段，TTL 完全保留旧值，与上游对齐。
                     existing.token_count = existing.token_count.max(block.cumulative_tokens);
                     existing.ttl = existing.ttl.max(breakpoint.ttl);
                 }
                 None => {
-                    credential_entries.insert(
+                    pool.insert(
                         block.prefix_fingerprint,
                         CacheEntry {
                             token_count: block.cumulative_tokens,
@@ -555,12 +486,6 @@ fn minimum_cacheable_tokens_for_model(model: &str) -> i32 {
     }
 }
 
-fn prune_expired(entries: &mut HashMap<u64, HashMap<[u8; 32], CacheEntry>>, now: Instant) {
-    entries.retain(|_, credential_entries| {
-        credential_entries.retain(|_, entry| entry.expires_at > now);
-        !credential_entries.is_empty()
-    });
-}
 
 fn canonicalize_json(value: serde_json::Value) -> serde_json::Value {
     match value {
