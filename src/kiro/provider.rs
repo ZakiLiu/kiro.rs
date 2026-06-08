@@ -39,9 +39,10 @@ pub struct McpCallResult {
 /// 总重试次数下限（凭据数不足时的保底值）
 const MIN_TOTAL_RETRIES: usize = 3;
 
-/// 总重试次数上限。防止 81+ 凭据场景下一个请求遍历所有凭据——
-/// 上游 429 通常是全局限制，换凭据也一样 429，只是白白烧掉凭据冷却配额。
-const MAX_TOTAL_RETRIES: usize = 5;
+/// 重试次数上限因子：尝试 max(3, 凭据数/3) 次。
+/// 上游 429 可能是 per-credential 限制，需要足够的重试找到可用凭据；
+/// 但也不能遍历全部凭据（81 个 × 0.3s = 24s），取 1/3 是平衡点。
+const RETRY_FRACTION_DIVISOR: usize = 3;
 
 /// 429 冷却默认时长（无 Retry-After header 时的基线冷却）
 /// 旧值 60s 在级联 429 场景下导致所有凭据同时挂死 60s，系统完全瘫痪。
@@ -448,7 +449,7 @@ impl KiroProvider {
         if available == 0 {
             anyhow::bail!("没有可用的凭据");
         }
-        let max_retries = total_credentials.clamp(MIN_TOTAL_RETRIES, MAX_TOTAL_RETRIES);
+        let max_retries = (total_credentials / RETRY_FRACTION_DIVISOR).max(MIN_TOTAL_RETRIES);
         let mut last_error: Option<anyhow::Error> = None;
         let mut forced_token_refresh: HashSet<u64> = HashSet::new();
         let mut failed_ids: Vec<u64> = Vec::new();
@@ -738,7 +739,7 @@ impl KiroProvider {
         if available == 0 {
             anyhow::bail!("没有可用的凭据");
         }
-        let max_retries = total_credentials.clamp(MIN_TOTAL_RETRIES, MAX_TOTAL_RETRIES);
+        let max_retries = (total_credentials / RETRY_FRACTION_DIVISOR).max(MIN_TOTAL_RETRIES);
         let mut last_error: Option<anyhow::Error> = None;
         let mut forced_token_refresh: HashSet<u64> = HashSet::new();
         // P0#1 修复：retry 链路必须排除上次失败的凭据，否则 acquire_context_for_user
