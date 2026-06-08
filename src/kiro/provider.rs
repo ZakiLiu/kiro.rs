@@ -39,11 +39,16 @@ pub struct McpCallResult {
 /// 总重试次数下限（凭据数不足时的保底值）
 const MIN_TOTAL_RETRIES: usize = 3;
 
-/// 429 冷却默认时长（无 Retry-After 时使用 CooldownManager 的默认递增策略）
-const DEFAULT_RATE_LIMIT_COOLDOWN_SECS: u64 = 60;
+/// 429 冷却默认时长（无 Retry-After header 时的基线冷却）
+/// 旧值 60s 在级联 429 场景下导致所有凭据同时挂死 60s，系统完全瘫痪。
+/// 降到 10s：Kiro 上游 429 通常 5-15s 恢复，10s 是合理的默认等待。
+const DEFAULT_RATE_LIMIT_COOLDOWN_SECS: u64 = 10;
+
+/// 429 冷却最小时长下限（防止 Retry-After=0 或极短值导致疯狂重试）
+const MIN_RATE_LIMIT_COOLDOWN_SECS: u64 = 5;
 
 /// 429 冷却最大时长上限（避免异常 Retry-After 把单号挂死太久）
-const MAX_RATE_LIMIT_COOLDOWN_SECS: u64 = 300;
+const MAX_RATE_LIMIT_COOLDOWN_SECS: u64 = 120;
 
 /// Kiro API Provider
 ///
@@ -1177,7 +1182,7 @@ impl KiroProvider {
 
     fn clamp_rate_limit_cooldown(duration: Duration) -> Duration {
         duration.clamp(
-            Duration::from_secs(DEFAULT_RATE_LIMIT_COOLDOWN_SECS),
+            Duration::from_secs(MIN_RATE_LIMIT_COOLDOWN_SECS),
             Duration::from_secs(MAX_RATE_LIMIT_COOLDOWN_SECS),
         )
     }
@@ -1951,7 +1956,7 @@ mod tests {
         headers.insert("retry-after", HeaderValue::from_str(&future).unwrap());
 
         let wait = KiroProvider::parse_retry_after(&headers).unwrap();
-        assert!(wait >= Duration::from_secs(60));
+        assert!(wait >= Duration::from_secs(5));
         assert!(wait <= Duration::from_secs(120));
     }
 
@@ -1966,16 +1971,25 @@ mod tests {
     #[test]
     fn test_parse_retry_after_clamps_range() {
         let mut headers = HeaderMap::new();
-        headers.insert("retry-after", HeaderValue::from_static("5"));
+        // 下限 5s
+        headers.insert("retry-after", HeaderValue::from_static("2"));
         assert_eq!(
             KiroProvider::parse_retry_after(&headers).unwrap(),
-            Duration::from_secs(60)
+            Duration::from_secs(5)
         );
 
+        // 上限 120s
         headers.insert("retry-after", HeaderValue::from_static("600"));
         assert_eq!(
             KiroProvider::parse_retry_after(&headers).unwrap(),
-            Duration::from_secs(300)
+            Duration::from_secs(120)
+        );
+
+        // 正常值透传
+        headers.insert("retry-after", HeaderValue::from_static("15"));
+        assert_eq!(
+            KiroProvider::parse_retry_after(&headers).unwrap(),
+            Duration::from_secs(15)
         );
     }
 
@@ -2033,6 +2047,8 @@ mod tests {
         let credentials = KiroCredentials::default();
         let provider = create_test_provider(config, credentials);
 
+        // handle_rate_limited_response 传 None → CooldownManager 用 default_duration() = 60s
+        // 注意：此函数为 dead code（Round 8 后不再调用），实际 429 路径直接用 DEFAULT_RATE_LIMIT_COOLDOWN_SECS
         let cooldown = provider.handle_rate_limited_response(1, "Too many requests", None);
         assert_eq!(cooldown, Duration::from_secs(60));
 
