@@ -115,7 +115,12 @@ pub fn classify(err: &anyhow::Error, ctx: &ErrorRequestContext) -> ErrorCategory
         };
     }
 
-    // 3. 无可用凭据
+    // 3a. 账户暂停（403 suspended → 归入 NoCredentials，返回 503 而非 500）
+    if s.contains("账户暂停") || s.contains("suspended") {
+        return ErrorCategory::NoCredentials;
+    }
+
+    // 3b. 无可用凭据
     if s.contains("没有可用的凭据") {
         return ErrorCategory::NoCredentials;
     }

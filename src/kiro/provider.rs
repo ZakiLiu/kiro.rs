@@ -623,6 +623,17 @@ impl KiroProvider {
 
             // 401/403 凭据问题
             if matches!(status.as_u16(), 401 | 403) {
+                // 账户暂停：立即永久禁用
+                if body.contains("suspended") {
+                    tracing::error!(
+                        "凭据 #{} 账户已暂停，永久禁用: {} {}", ctx.id, status, body
+                    );
+                    self.token_manager.mark_account_suspended(ctx.id);
+                    failed_ids.push(ctx.id);
+                    last_error = Some(anyhow::anyhow!("MCP 请求失败（账户暂停）: {} {}", status, body));
+                    continue;
+                }
+
                 // bearer token 失效：优先触发刷新再重试（避免因 expiresAt 不准导致误判/误禁用）
                 if endpoint.is_bearer_token_invalid(&body) && forced_token_refresh.insert(ctx.id) {
                     tracing::warn!(
@@ -964,6 +975,21 @@ impl KiroProvider {
 
             // 401/403 - 更可能是凭据/权限问题：计入失败并允许故障转移
             if matches!(status.as_u16(), 401 | 403) {
+                // 账户暂停：立即永久禁用，不计入普通失败（避免自动恢复后反复重试）
+                if body.contains("suspended") {
+                    tracing::error!(
+                        "凭据 #{} 账户已暂停，永久禁用（不自动恢复）: {} {}",
+                        ctx.id, status, body
+                    );
+                    self.token_manager.mark_account_suspended(ctx.id);
+                    failed_ids.push(ctx.id);
+                    last_error = Some(anyhow::anyhow!(
+                        "{} API 请求失败（账户暂停）: {} {}",
+                        api_type, status, body
+                    ));
+                    continue;
+                }
+
                 // bearer token 失效：优先触发刷新再重试（避免因 expiresAt 不准导致误判/误禁用）
                 if endpoint.is_bearer_token_invalid(&body) && forced_token_refresh.insert(ctx.id) {
                     tracing::warn!(
