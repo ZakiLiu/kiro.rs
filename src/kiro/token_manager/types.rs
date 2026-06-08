@@ -115,7 +115,8 @@ pub enum DisableReason {
     /// 余额不足
     #[allow(dead_code)]
     InsufficientBalance,
-    /// 模型临时不可用（全局禁用）
+    /// 模型临时不可用（全局禁用，已废弃——改为 per-credential cooldown）
+    #[allow(dead_code)]
     ModelUnavailable,
     /// 手动禁用
     Manual,

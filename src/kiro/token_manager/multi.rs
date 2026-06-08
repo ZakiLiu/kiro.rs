@@ -170,13 +170,11 @@ struct RateLimitedCredentialDiag {
 /// 每个凭据最大 API 调用失败次数
 pub(super) const MAX_FAILURES_PER_CREDENTIAL: u32 = 3;
 
-/// MODEL_TEMPORARILY_UNAVAILABLE 触发全局禁用的阈值
-/// 旧值 2 太敏感：2 个并发请求碰上瞬态过载就触发 5 分钟熔断。
-/// 10 次能过滤掉瞬态抖动，真正持续过载时才熔断。
+/// MODEL_TEMPORARILY_UNAVAILABLE 全局熔断已废弃（改为 per-credential cooldown）。
+/// 保留常量以备回退。
+#[allow(dead_code)]
 const MODEL_UNAVAILABLE_THRESHOLD: u32 = 10;
-
-/// 全局禁用恢复时间（秒）
-/// 旧值 5 分钟太长：Kiro 过载通常秒级恢复，5s 足够等待。
+#[allow(dead_code)]
 const GLOBAL_DISABLE_RECOVERY_SECS: i64 = 5;
 
 /// 统计数据持久化防抖间隔
@@ -1646,10 +1644,8 @@ impl MultiTokenManager {
         result
     }
 
-    /// 报告 MODEL_TEMPORARILY_UNAVAILABLE 错误
-    ///
-    /// 累计达到阈值后禁用所有凭据，5分钟后自动恢复
-    /// 返回是否触发了全局禁用
+    /// 报告 MODEL_TEMPORARILY_UNAVAILABLE 错误（已废弃，改为 per-credential cooldown）
+    #[allow(dead_code)]
     pub fn report_model_unavailable(&self) -> bool {
         let count = self.model_unavailable_count.fetch_add(1, Ordering::SeqCst) + 1;
         tracing::warn!(
@@ -1666,7 +1662,8 @@ impl MultiTokenManager {
         }
     }
 
-    /// 禁用所有凭据
+    /// 禁用所有凭据（已废弃）
+    #[allow(dead_code)]
     fn disable_all_credentials(&self, reason: DisableReason) {
         let mut entries = self.entries.lock();
         let mut recovery_time = self.global_recovery_time.lock();

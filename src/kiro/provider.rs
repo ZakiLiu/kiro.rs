@@ -666,14 +666,10 @@ impl KiroProvider {
             }
 
             if status.as_u16() == 429 {
-                // MODEL_TEMPORARILY_UNAVAILABLE：保留 5min 全局熔断
-                if Self::is_model_temporarily_unavailable(&body)
-                    && self.token_manager.report_model_unavailable()
-                {
-                    anyhow::bail!(
-                        "MCP 请求失败（模型暂时不可用，已触发熔断）: {} {}",
-                        status,
-                        body
+                if Self::is_model_temporarily_unavailable(&body) {
+                    tracing::warn!(
+                        credential_id = %ctx.id,
+                        "MCP 请求遇到 MODEL_TEMPORARILY_UNAVAILABLE（上游过载），按普通 429 处理"
                     );
                 }
 
@@ -723,15 +719,10 @@ impl KiroProvider {
                     body
                 );
 
-                // 检测 MODEL_TEMPORARILY_UNAVAILABLE 并触发熔断机制
-                if Self::is_model_temporarily_unavailable(&body)
-                    && self.token_manager.report_model_unavailable()
-                {
-                    // 熔断已触发，所有凭据已禁用，立即返回错误
-                    anyhow::bail!(
-                        "MCP 请求失败（模型暂时不可用，已触发熔断）: {} {}",
-                        status,
-                        body
+                if Self::is_model_temporarily_unavailable(&body) {
+                    tracing::warn!(
+                        credential_id = %ctx.id,
+                        "MCP 5xx 遇到 MODEL_TEMPORARILY_UNAVAILABLE（上游过载），按瞬态错误重试"
                     );
                 }
 
@@ -1069,15 +1060,13 @@ impl KiroProvider {
             }
 
             if status.as_u16() == 429 {
-                // MODEL_TEMPORARILY_UNAVAILABLE：保留 5min 全局熔断
-                if Self::is_model_temporarily_unavailable(&body)
-                    && self.token_manager.report_model_unavailable()
-                {
-                    anyhow::bail!(
-                        "{} API 请求失败（模型暂时不可用，已触发熔断）: {} {}",
-                        api_type,
-                        status,
-                        body
+                // MODEL_TEMPORARILY_UNAVAILABLE 不再触发全局熔断，改为普通 429 冷却。
+                // 上游过载是平台级问题，不应该禁用所有凭据。
+                if Self::is_model_temporarily_unavailable(&body) {
+                    tracing::warn!(
+                        credential_id = %ctx.id,
+                        "{} API 请求遇到 MODEL_TEMPORARILY_UNAVAILABLE（上游过载），按普通 429 处理",
+                        api_type
                     );
                 }
 
@@ -1138,14 +1127,11 @@ impl KiroProvider {
                     body
                 );
 
-                if Self::is_model_temporarily_unavailable(&body)
-                    && self.token_manager.report_model_unavailable()
-                {
-                    anyhow::bail!(
-                        "{} API 请求失败（模型暂时不可用，已触发熔断）: {} {}",
-                        api_type,
-                        status,
-                        body
+                if Self::is_model_temporarily_unavailable(&body) {
+                    tracing::warn!(
+                        credential_id = %ctx.id,
+                        "{} API 5xx 遇到 MODEL_TEMPORARILY_UNAVAILABLE（上游过载），按瞬态错误重试",
+                        api_type
                     );
                 }
 
