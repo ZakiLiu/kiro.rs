@@ -449,12 +449,14 @@ impl KiroProvider {
         if available == 0 {
             anyhow::bail!("没有可用的凭据");
         }
-        let max_retries = (total_credentials / RETRY_FRACTION_DIVISOR).max(MIN_TOTAL_RETRIES);
+        let max_retries = (available / 2).max(total_credentials / RETRY_FRACTION_DIVISOR).max(MIN_TOTAL_RETRIES);
         let mut last_error: Option<anyhow::Error> = None;
         let mut forced_token_refresh: HashSet<u64> = HashSet::new();
         let mut failed_ids: Vec<u64> = Vec::new();
+        // 连续 429 计数器：连续 N 个不同凭据都返回 429 → 判定全局限流。
+        // 阈值 = max(3, 可用凭据数/2)：给足够机会找到可用凭据，又不会烧光整个池。
         let mut consecutive_429_count: usize = 0;
-        const MAX_CONSECUTIVE_429: usize = 3;
+        let max_consecutive_429: usize = (available / 2).max(MIN_TOTAL_RETRIES);
 
         for attempt in 0..max_retries {
             // 获取调用上下文（支持排除已失败凭据）
@@ -692,7 +694,7 @@ impl KiroProvider {
                     cooldown_duration.as_secs()
                 );
 
-                if consecutive_429_count >= MAX_CONSECUTIVE_429 {
+                if consecutive_429_count >= max_consecutive_429 {
                     let retry_secs = cooldown_duration.as_millis().div_ceil(1000) as u64;
                     tracing::warn!(
                         consecutive_429 = consecutive_429_count,
@@ -773,17 +775,15 @@ impl KiroProvider {
         if available == 0 {
             anyhow::bail!("没有可用的凭据");
         }
-        let max_retries = (total_credentials / RETRY_FRACTION_DIVISOR).max(MIN_TOTAL_RETRIES);
+        let max_retries = (available / 2).max(total_credentials / RETRY_FRACTION_DIVISOR).max(MIN_TOTAL_RETRIES);
         let mut last_error: Option<anyhow::Error> = None;
         let mut forced_token_refresh: HashSet<u64> = HashSet::new();
         // P0#1 修复：retry 链路必须排除上次失败的凭据，否则 acquire_context_for_user
         // 会因 affinity 命中而反复返回同一个绑定凭据。实测未修前 100 burst 切换率 0%。
         let mut failed_ids: Vec<u64> = Vec::new();
         let api_type = if is_stream { "流式" } else { "非流式" };
-        // 连续 429 计数器：连续 N 个不同凭据都返回 429 → 判定全局限流，立即停止重试。
-        // 避免全局限流时遍历 27 个凭据（每个 0.3s），白白烧掉冷却配额。
         let mut consecutive_429_count: usize = 0;
-        const MAX_CONSECUTIVE_429: usize = 3;
+        let max_consecutive_429: usize = (available / 2).max(MIN_TOTAL_RETRIES);
 
         for attempt in 0..max_retries {
             // 获取调用上下文（绑定 index、credentials、token），支持用户亲和性
@@ -1103,7 +1103,7 @@ impl KiroProvider {
                 );
 
                 // 连续 N 个不同凭据都 429 → 全局限流，立即停止重试
-                if consecutive_429_count >= MAX_CONSECUTIVE_429 {
+                if consecutive_429_count >= max_consecutive_429 {
                     let retry_secs = cooldown_duration.as_millis().div_ceil(1000) as u64;
                     tracing::warn!(
                         consecutive_429 = consecutive_429_count,
