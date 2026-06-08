@@ -171,10 +171,13 @@ struct RateLimitedCredentialDiag {
 pub(super) const MAX_FAILURES_PER_CREDENTIAL: u32 = 3;
 
 /// MODEL_TEMPORARILY_UNAVAILABLE 触发全局禁用的阈值
-const MODEL_UNAVAILABLE_THRESHOLD: u32 = 2;
+/// 旧值 2 太敏感：2 个并发请求碰上瞬态过载就触发 5 分钟熔断。
+/// 10 次能过滤掉瞬态抖动，真正持续过载时才熔断。
+const MODEL_UNAVAILABLE_THRESHOLD: u32 = 10;
 
-/// 全局禁用恢复时间（分钟）
-const GLOBAL_DISABLE_RECOVERY_MINUTES: i64 = 5;
+/// 全局禁用恢复时间（秒）
+/// 旧值 5 分钟太长：Kiro 过载通常秒级恢复，5s 足够等待。
+const GLOBAL_DISABLE_RECOVERY_SECS: i64 = 5;
 
 /// 统计数据持久化防抖间隔
 const STATS_SAVE_DEBOUNCE: StdDuration = StdDuration::from_secs(30);
@@ -1678,7 +1681,7 @@ impl MultiTokenManager {
         }
 
         // 设置恢复时间
-        let recover_at = Utc::now() + Duration::minutes(GLOBAL_DISABLE_RECOVERY_MINUTES);
+        let recover_at = Utc::now() + Duration::seconds(GLOBAL_DISABLE_RECOVERY_SECS);
         *recovery_time = Some(recover_at);
 
         tracing::error!(
