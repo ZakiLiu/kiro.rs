@@ -453,6 +453,8 @@ impl KiroProvider {
         let mut last_error: Option<anyhow::Error> = None;
         let mut forced_token_refresh: HashSet<u64> = HashSet::new();
         let mut failed_ids: Vec<u64> = Vec::new();
+        let mut consecutive_429_count: usize = 0;
+        const MAX_CONSECUTIVE_429: usize = 3;
 
         for attempt in 0..max_retries {
             // 获取调用上下文（支持排除已失败凭据）
@@ -567,6 +569,10 @@ impl KiroProvider {
                 continue;
             }
 
+            // 非 429 响应，重置连续 429 计数
+            _ = consecutive_429_count;
+            consecutive_429_count = 0;
+
             // 400 Bad Request
             if status.as_u16() == 400 {
                 let is_too_long = Self::is_input_too_long(&body);
@@ -677,12 +683,29 @@ impl KiroProvider {
                     CooldownReason::RateLimitExceeded,
                     Some(cooldown_duration),
                 );
+                consecutive_429_count += 1;
                 tracing::warn!(
                     credential_id = %ctx.id,
                     cooldown_secs = cooldown_duration.as_secs(),
+                    consecutive_429 = consecutive_429_count,
                     "MCP 请求触发 429，已设置 {}s 冷却，切换凭据重试",
                     cooldown_duration.as_secs()
                 );
+
+                if consecutive_429_count >= MAX_CONSECUTIVE_429 {
+                    let retry_secs = cooldown_duration.as_millis().div_ceil(1000) as u64;
+                    tracing::warn!(
+                        consecutive_429 = consecutive_429_count,
+                        "连续 {} 个凭据均返回 429，判定为全局限流，停止重试",
+                        consecutive_429_count
+                    );
+                    anyhow::bail!(
+                        "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：global_429_detected，来自凭据 #{}）",
+                        retry_secs.max(5),
+                        ctx.id
+                    );
+                }
+
                 last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
                 failed_ids.push(ctx.id);
                 continue;
@@ -757,6 +780,10 @@ impl KiroProvider {
         // 会因 affinity 命中而反复返回同一个绑定凭据。实测未修前 100 burst 切换率 0%。
         let mut failed_ids: Vec<u64> = Vec::new();
         let api_type = if is_stream { "流式" } else { "非流式" };
+        // 连续 429 计数器：连续 N 个不同凭据都返回 429 → 判定全局限流，立即停止重试。
+        // 避免全局限流时遍历 27 个凭据（每个 0.3s），白白烧掉冷却配额。
+        let mut consecutive_429_count: usize = 0;
+        const MAX_CONSECUTIVE_429: usize = 3;
 
         for attempt in 0..max_retries {
             // 获取调用上下文（绑定 index、credentials、token），支持用户亲和性
@@ -917,6 +944,9 @@ impl KiroProvider {
                 continue;
             }
 
+            // 非 429 响应说明上游在处理请求（非全局限流），重置连续 429 计数
+            let _ = std::mem::replace(&mut consecutive_429_count, 0);
+
             // 400 Bad Request - 请求问题，重试/切换凭据无意义
             if status.as_u16() == 400 {
                 let is_too_long = Self::is_input_too_long(&body);
@@ -1062,13 +1092,31 @@ impl KiroProvider {
                     CooldownReason::RateLimitExceeded,
                     Some(cooldown_duration),
                 );
+                consecutive_429_count += 1;
                 tracing::warn!(
                     credential_id = %ctx.id,
                     cooldown_secs = cooldown_duration.as_secs(),
+                    consecutive_429 = consecutive_429_count,
                     "{} API 请求触发 429，已设置 {}s 冷却，切换凭据重试",
                     api_type,
                     cooldown_duration.as_secs()
                 );
+
+                // 连续 N 个不同凭据都 429 → 全局限流，立即停止重试
+                if consecutive_429_count >= MAX_CONSECUTIVE_429 {
+                    let retry_secs = cooldown_duration.as_millis().div_ceil(1000) as u64;
+                    tracing::warn!(
+                        consecutive_429 = consecutive_429_count,
+                        "连续 {} 个凭据均返回 429，判定为全局限流，停止重试",
+                        consecutive_429_count
+                    );
+                    anyhow::bail!(
+                        "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：global_429_detected，来自凭据 #{}）",
+                        retry_secs.max(5),
+                        ctx.id
+                    );
+                }
+
                 last_error = Some(anyhow::anyhow!(
                     "{} API 请求失败: {} {}",
                     api_type,
