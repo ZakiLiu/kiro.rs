@@ -26,11 +26,14 @@ impl Default for UserAffinityManager {
 }
 
 impl UserAffinityManager {
-    /// 创建新的亲和性管理器（默认 TTL 30 分钟）
+    /// 创建新的亲和性管理器（默认 TTL 5 分钟）
+    ///
+    /// 5 分钟足够保持 prompt cache 热度（Anthropic cache TTL = 5min），
+    /// 又短enough让 LB 定期重新分配凭据，避免一个凭据被永久绑死。
     pub fn new() -> Self {
         Self {
             affinity: Mutex::new(HashMap::new()),
-            ttl: Duration::from_secs(30 * 60),
+            ttl: Duration::from_secs(5 * 60),
         }
     }
 

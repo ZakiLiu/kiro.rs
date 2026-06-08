@@ -18,9 +18,9 @@ pub(super) const BALANCE_TTL_HIGH_FREQ_SECS: u64 = 600;
 pub(super) const BALANCE_TTL_LOW_FREQ_SECS: u64 = 1800;
 /// 低余额渠道 TTL（24 小时）
 pub(super) const BALANCE_TTL_LOW_BALANCE_SECS: u64 = 86400;
-/// 高频判定阈值（10分钟内使用超过此次数视为高频）
-pub(super) const HIGH_FREQ_THRESHOLD: u32 = 20;
-/// 使用计数重置周期（10 分钟）
-pub(super) const USAGE_COUNT_RESET_SECS: u64 = 600;
+/// 高频判定阈值（2分钟内使用超过此次数视为高频）
+pub(super) const HIGH_FREQ_THRESHOLD: u32 = 8;
+/// 使用计数重置周期（2 分钟，更快反映凭据忙闲变化）
+pub(super) const USAGE_COUNT_RESET_SECS: u64 = 120;
 /// 低余额阈值（用于动态 TTL 判断）
 pub(super) const LOW_BALANCE_THRESHOLD: f64 = 1.0;

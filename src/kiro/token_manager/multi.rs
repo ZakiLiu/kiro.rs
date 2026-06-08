@@ -567,15 +567,14 @@ impl MultiTokenManager {
 
         let mut scored: Vec<(u64, u32, f64)> = Vec::with_capacity(candidate_ids.len());
         for &id in candidate_ids {
-            let (usage, balance, initialized) = cache
+            let (usage, balance) = cache
                 .get(&id)
-                .map(|c| (c.recent_usage, c.remaining, c.initialized))
-                .unwrap_or((0, 0.0, false));
-            // 未初始化的凭据视为使用次数最大，避免被优先选中
-            let effective_usage = if initialized { usage } else { u32::MAX };
-            // NaN 余额归一化为 0.0，避免 total_cmp 将 NaN 视为最大值
+                .map(|c| (c.recent_usage, c.remaining))
+                .unwrap_or((0, 0.0));
+            // 直接用 recent_usage 做 LB，不再用 initialized 门控。
+            // 旧逻辑把未刷新余额的凭据设为 u32::MAX → 大量凭据被排除 → 流量集中在少数几个。
             let effective_balance = if balance.is_finite() { balance } else { 0.0 };
-            scored.push((id, effective_usage, effective_balance));
+            scored.push((id, usage, effective_balance));
         }
 
         // 第一优先级：使用次数最少
