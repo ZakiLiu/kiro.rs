@@ -454,9 +454,11 @@ impl KiroProvider {
         let mut forced_token_refresh: HashSet<u64> = HashSet::new();
         let mut failed_ids: Vec<u64> = Vec::new();
         // 连续 429 计数器：连续 N 个不同凭据都返回 429 → 判定全局限流。
-        // 阈值 = max(3, 可用凭据数/2)：给足够机会找到可用凭据，又不会烧光整个池。
         let mut consecutive_429_count: usize = 0;
         let max_consecutive_429: usize = (available / 2).max(MIN_TOTAL_RETRIES);
+        // 全局限流等待次数：检测到全局限流时先 sleep 等凭据冷却恢复再继续，而非立即 bail。
+        let mut global_rate_limit_waits: usize = 0;
+        const MAX_GLOBAL_RATE_LIMIT_WAITS: usize = 2;
 
         for attempt in 0..max_retries {
             // 获取调用上下文（支持排除已失败凭据）
@@ -691,11 +693,28 @@ impl KiroProvider {
                 );
 
                 if consecutive_429_count >= max_consecutive_429 {
+                    if global_rate_limit_waits < MAX_GLOBAL_RATE_LIMIT_WAITS {
+                        global_rate_limit_waits += 1;
+                        tracing::warn!(
+                            consecutive_429 = consecutive_429_count,
+                            wait_round = global_rate_limit_waits,
+                            max_wait_rounds = MAX_GLOBAL_RATE_LIMIT_WAITS,
+                            "检测到全局限流，等待 {}s 让凭据冷却后重试（第 {}/{} 轮等待）",
+                            cooldown_duration.as_secs(),
+                            global_rate_limit_waits,
+                            MAX_GLOBAL_RATE_LIMIT_WAITS
+                        );
+                        sleep(cooldown_duration).await;
+                        consecutive_429_count = 0;
+                        failed_ids.clear();
+                        continue;
+                    }
                     let retry_secs = cooldown_duration.as_millis().div_ceil(1000) as u64;
                     tracing::warn!(
                         consecutive_429 = consecutive_429_count,
-                        "连续 {} 个凭据均返回 429，判定为全局限流，停止重试",
-                        consecutive_429_count
+                        "连续 {} 个凭据均返回 429，已等待 {} 轮仍未恢复，停止重试",
+                        consecutive_429_count,
+                        global_rate_limit_waits
                     );
                     anyhow::bail!(
                         "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：global_429_detected，来自凭据 #{}）",
@@ -706,6 +725,10 @@ impl KiroProvider {
 
                 last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
                 failed_ids.push(ctx.id);
+                // 429 也需要 backoff，避免毫秒级疯狂轮转造成 thundering herd
+                if attempt + 1 < max_retries {
+                    sleep(Self::retry_delay(attempt)).await;
+                }
                 continue;
             }
 
@@ -775,6 +798,8 @@ impl KiroProvider {
         let api_type = if is_stream { "流式" } else { "非流式" };
         let mut consecutive_429_count: usize = 0;
         let max_consecutive_429: usize = (available / 2).max(MIN_TOTAL_RETRIES);
+        let mut global_rate_limit_waits: usize = 0;
+        const MAX_GLOBAL_RATE_LIMIT_WAITS: usize = 2;
 
         for attempt in 0..max_retries {
             // 获取调用上下文（绑定 index、credentials、token），支持用户亲和性
@@ -1091,13 +1116,30 @@ impl KiroProvider {
                     cooldown_duration.as_secs()
                 );
 
-                // 连续 N 个不同凭据都 429 → 全局限流，立即停止重试
+                // 连续 N 个不同凭据都 429 → 全局限流，等待冷却后重试而非立即 bail
                 if consecutive_429_count >= max_consecutive_429 {
+                    if global_rate_limit_waits < MAX_GLOBAL_RATE_LIMIT_WAITS {
+                        global_rate_limit_waits += 1;
+                        tracing::warn!(
+                            consecutive_429 = consecutive_429_count,
+                            wait_round = global_rate_limit_waits,
+                            max_wait_rounds = MAX_GLOBAL_RATE_LIMIT_WAITS,
+                            "检测到全局限流，等待 {}s 让凭据冷却后重试（第 {}/{} 轮等待）",
+                            cooldown_duration.as_secs(),
+                            global_rate_limit_waits,
+                            MAX_GLOBAL_RATE_LIMIT_WAITS
+                        );
+                        sleep(cooldown_duration).await;
+                        consecutive_429_count = 0;
+                        failed_ids.clear();
+                        continue;
+                    }
                     let retry_secs = cooldown_duration.as_millis().div_ceil(1000) as u64;
                     tracing::warn!(
                         consecutive_429 = consecutive_429_count,
-                        "连续 {} 个凭据均返回 429，判定为全局限流，停止重试",
-                        consecutive_429_count
+                        "连续 {} 个凭据均返回 429，已等待 {} 轮仍未恢复，停止重试",
+                        consecutive_429_count,
+                        global_rate_limit_waits
                     );
                     anyhow::bail!(
                         "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：global_429_detected，来自凭据 #{}）",
@@ -1113,6 +1155,10 @@ impl KiroProvider {
                     body
                 ));
                 failed_ids.push(ctx.id);
+                // 429 也需要 backoff，避免毫秒级疯狂轮转造成 thundering herd
+                if attempt + 1 < max_retries {
+                    sleep(Self::retry_delay(attempt)).await;
+                }
                 continue;
             }
 
