@@ -139,7 +139,10 @@ pub fn classify(err: &anyhow::Error, ctx: &ErrorRequestContext) -> ErrorCategory
     }
 
     // 5. 配额耗尽
-    if s.contains("所有凭据已用尽") {
+    if s.contains("所有凭据已用尽")
+        || s.contains("OVERAGE_REQUEST_LIMIT_EXCEEDED")
+        || s.contains("MONTHLY_REQUEST_COUNT")
+    {
         return ErrorCategory::QuotaExhausted;
     }
 

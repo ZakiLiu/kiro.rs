@@ -54,8 +54,13 @@ pub struct RequestContext<'a> {
     pub config: &'a Config,
 }
 
+const QUOTA_LIMIT_REASONS: &[&str] = &[
+    "MONTHLY_REQUEST_COUNT",
+    "OVERAGE_REQUEST_LIMIT_EXCEEDED",
+];
+
 pub fn default_is_monthly_request_limit(body: &str) -> bool {
-    if body.contains("MONTHLY_REQUEST_COUNT") {
+    if QUOTA_LIMIT_REASONS.iter().any(|r| body.contains(r)) {
         return true;
     }
 
@@ -63,18 +68,12 @@ pub fn default_is_monthly_request_limit(body: &str) -> bool {
         return false;
     };
 
-    if value
-        .get("reason")
-        .and_then(|v| v.as_str())
-        .is_some_and(|v| v == "MONTHLY_REQUEST_COUNT")
-    {
-        return true;
-    }
+    let check_reason = |v: Option<&serde_json::Value>| {
+        v.and_then(|v| v.as_str())
+            .is_some_and(|r| QUOTA_LIMIT_REASONS.iter().any(|q| *q == r))
+    };
 
-    value
-        .pointer("/error/reason")
-        .and_then(|v| v.as_str())
-        .is_some_and(|v| v == "MONTHLY_REQUEST_COUNT")
+    check_reason(value.get("reason")) || check_reason(value.pointer("/error/reason"))
 }
 
 pub fn default_is_bearer_token_invalid(body: &str) -> bool {
