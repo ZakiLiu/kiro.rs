@@ -1223,6 +1223,12 @@ async fn handle_stream_request(
     {
         Ok(resp) => resp,
         Err(e) => {
+            let elapsed_ms = context.request_start.elapsed().as_millis() as u64;
+            tracing::warn!(
+                elapsed_ms = elapsed_ms,
+                model = %context.model,
+                "请求失败（流式，含重试耗时）"
+            );
             return map_kiro_provider_error_to_response(
                 context.request_body,
                 e,
@@ -1268,12 +1274,19 @@ async fn handle_stream_request(
     let stream = create_sse_stream(api_result.response, ctx, initial_events);
 
     // 记录 RequestCompleted 指标（流式：记录到首字节的延迟）
+    let ttfb_ms = context.request_start.elapsed().as_millis() as u64;
+    tracing::info!(
+        ttfb_ms = ttfb_ms,
+        credential_id = api_result.credential_id,
+        model = %context.model,
+        "请求完成（流式 TTFB）"
+    );
     if let Some(metrics) = context.metrics {
         metrics.record(
             MetricEvent::new(MetricEventType::RequestCompleted)
                 .with_model(context.model)
                 .with_status("success")
-                .with_latency_ms(context.request_start.elapsed().as_millis() as u64)
+                .with_latency_ms(ttfb_ms)
                 .with_tokens(context.input_tokens, 0),
         );
     }
@@ -1407,6 +1420,12 @@ async fn handle_non_stream_request(
     {
         Ok(resp) => resp,
         Err(e) => {
+            let elapsed_ms = context.request_start.elapsed().as_millis() as u64;
+            tracing::warn!(
+                elapsed_ms = elapsed_ms,
+                model = %context.model,
+                "请求失败（非流式，含重试耗时）"
+            );
             return map_kiro_provider_error_to_response(
                 context.request_body,
                 e,
@@ -1694,12 +1713,20 @@ async fn handle_non_stream_request(
     };
 
     // 记录 RequestCompleted 指标（非流式：完整请求延迟 + token 统计）
+    let total_ms = context.request_start.elapsed().as_millis() as u64;
+    tracing::info!(
+        total_ms = total_ms,
+        credential_id = api_result.credential_id,
+        model = %context.model,
+        output_tokens = output_tokens,
+        "请求完成（非流式）"
+    );
     if let Some(metrics) = context.metrics {
         metrics.record(
             MetricEvent::new(MetricEventType::RequestCompleted)
                 .with_model(context.model)
                 .with_status("success")
-                .with_latency_ms(context.request_start.elapsed().as_millis() as u64)
+                .with_latency_ms(total_ms)
                 .with_tokens(context.input_tokens, output_tokens),
         );
     }
