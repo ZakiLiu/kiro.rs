@@ -10,6 +10,10 @@ pub(super) struct CachedBalance {
     pub(super) recent_usage: u32,
     /// 上次重置使用计数的时间
     pub(super) usage_reset_at: std::time::Instant,
+    /// 滚动窗口内成功次数（与 recent_usage 同周期重置）
+    pub(super) recent_success: u32,
+    /// 滚动窗口内失败次数（429/5xx）
+    pub(super) recent_fail: u32,
 }
 
 /// 高频渠道 TTL（10 分钟）

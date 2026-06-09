@@ -348,6 +348,8 @@ impl MultiTokenManager {
                         initialized: false,
                         recent_usage: 0,
                         usage_reset_at: now,
+                        recent_success: 0,
+                        recent_fail: 0,
                     },
                 )
             })
@@ -557,7 +559,7 @@ impl MultiTokenManager {
         );
     }
 
-    /// 选择最佳凭据（两级排序：使用次数最少 + 余额最多；完全相同则轮询）
+    /// 选择最佳凭据（三级排序：成功率分组 → 使用次数最少 → 余额最多；兜底轮询）
     fn select_best_candidate_id(&self, candidate_ids: &[u64]) -> Option<u64> {
         if candidate_ids.is_empty() {
             return None;
@@ -566,38 +568,49 @@ impl MultiTokenManager {
         let rr = self.selection_rr.fetch_add(1, Ordering::Relaxed) as usize;
         let cache = self.balance_cache.lock();
 
-        let mut scored: Vec<(u64, u32, f64)> = Vec::with_capacity(candidate_ids.len());
+        // (id, usage, balance, success_rate)
+        let mut scored: Vec<(u64, u32, f64, f64)> = Vec::with_capacity(candidate_ids.len());
         for &id in candidate_ids {
-            let (usage, balance) = cache
+            let (usage, balance, success_rate) = cache
                 .get(&id)
-                .map(|c| (c.recent_usage, c.remaining))
-                .unwrap_or((0, 0.0));
-            // 直接用 recent_usage 做 LB，不再用 initialized 门控。
-            // 旧逻辑把未刷新余额的凭据设为 u32::MAX → 大量凭据被排除 → 流量集中在少数几个。
+                .map(|c| {
+                    let total = c.recent_success + c.recent_fail;
+                    let rate = if total > 0 {
+                        c.recent_success as f64 / total as f64
+                    } else {
+                        0.5 // 无数据，中性
+                    };
+                    (c.recent_usage, c.remaining, rate)
+                })
+                .unwrap_or((0, 0.0, 0.5));
             let effective_balance = if balance.is_finite() { balance } else { 0.0 };
-            scored.push((id, usage, effective_balance));
+            scored.push((id, usage, effective_balance, success_rate));
         }
 
-        // 第一优先级：使用次数最少
-        let min_usage = scored.iter().map(|(_, usage, _)| *usage).min()?;
-        scored.retain(|(_, usage, _)| *usage == min_usage);
+        // 第一优先级：按成功率分组（good > 0.3 或无数据，poor <= 0.3）
+        let good: Vec<_> = scored.iter().filter(|(_, _, _, rate)| *rate > 0.3).copied().collect();
+        let candidates = if good.is_empty() { &scored } else { &good };
 
-        // 第二优先级：余额最多（使用次数相同）
-        let mut max_balance = scored.first().map(|(_, _, b)| *b).unwrap_or(0.0);
-        for &(_, _, balance) in &scored {
+        // 第二优先级：使用次数最少
+        let min_usage = candidates.iter().map(|(_, usage, _, _)| *usage).min()?;
+        let mut finalists: Vec<_> = candidates.iter().filter(|(_, usage, _, _)| *usage == min_usage).copied().collect();
+
+        // 第三优先级：余额最多
+        let mut max_balance = finalists.first().map(|(_, _, b, _)| *b).unwrap_or(0.0);
+        for &(_, _, balance, _) in &finalists {
             if balance > max_balance {
                 max_balance = balance;
             }
         }
-        scored.retain(|(_, _, balance)| *balance == max_balance);
+        finalists.retain(|(_, _, balance, _)| *balance == max_balance);
 
-        if scored.len() == 1 {
-            return Some(scored[0].0);
+        if finalists.len() == 1 {
+            return Some(finalists[0].0);
         }
 
-        // 兜底：完全相同则轮询，避免总选第一个
-        let index = rr % scored.len();
-        Some(scored[index].0)
+        // 兜底：完全相同则轮询
+        let index = rr % finalists.len();
+        Some(finalists[index].0)
     }
 
     /// 获取 API 调用上下文
@@ -1010,11 +1023,11 @@ impl MultiTokenManager {
     pub fn update_balance_cache(&self, id: u64, remaining: f64) {
         let mut cache = self.balance_cache.lock();
         let now = std::time::Instant::now();
-        // 保留现有使用计数
-        let (recent_usage, usage_reset_at) = cache
+        // 保留现有使用计数和成功率计数
+        let (recent_usage, usage_reset_at, recent_success, recent_fail) = cache
             .get(&id)
-            .map(|e| (e.recent_usage, e.usage_reset_at))
-            .unwrap_or((0, now));
+            .map(|e| (e.recent_usage, e.usage_reset_at, e.recent_success, e.recent_fail))
+            .unwrap_or((0, now, 0, 0));
         cache.insert(
             id,
             CachedBalance {
@@ -1023,6 +1036,8 @@ impl MultiTokenManager {
                 initialized: true,
                 recent_usage,
                 usage_reset_at,
+                recent_success,
+                recent_fail,
             },
         );
     }
@@ -1046,10 +1061,10 @@ impl MultiTokenManager {
                     .unwrap_or(now_instant)
             });
 
-        let (recent_usage, usage_reset_at) = cache
+        let (recent_usage, usage_reset_at, recent_success, recent_fail) = cache
             .get(&id)
-            .map(|e| (e.recent_usage, e.usage_reset_at))
-            .unwrap_or((0, now_instant));
+            .map(|e| (e.recent_usage, e.usage_reset_at, e.recent_success, e.recent_fail))
+            .unwrap_or((0, now_instant, 0, 0));
 
         cache.insert(
             id,
@@ -1059,6 +1074,8 @@ impl MultiTokenManager {
                 initialized: true,
                 recent_usage,
                 usage_reset_at,
+                recent_success,
+                recent_fail,
             },
         );
     }
@@ -1090,15 +1107,15 @@ impl MultiTokenManager {
         let mut cache = self.balance_cache.lock();
         let now = std::time::Instant::now();
         if let Some(entry) = cache.get_mut(&id) {
-            // 重置周期过期则清零
             if entry.usage_reset_at.elapsed().as_secs() >= USAGE_COUNT_RESET_SECS {
                 entry.recent_usage = 1;
+                entry.recent_success = 0;
+                entry.recent_fail = 0;
                 entry.usage_reset_at = now;
             } else {
                 entry.recent_usage = entry.recent_usage.saturating_add(1);
             }
         } else {
-            // 缓存条目不存在时创建新条目（余额未知设为 0）
             cache.insert(
                 id,
                 CachedBalance {
@@ -1107,8 +1124,26 @@ impl MultiTokenManager {
                     initialized: false,
                     recent_usage: 1,
                     usage_reset_at: now,
+                    recent_success: 0,
+                    recent_fail: 0,
                 },
             );
+        }
+    }
+
+    fn update_recent_success_rate(&self, id: u64, success: bool) {
+        let mut cache = self.balance_cache.lock();
+        if let Some(entry) = cache.get_mut(&id) {
+            if entry.usage_reset_at.elapsed().as_secs() >= USAGE_COUNT_RESET_SECS {
+                entry.recent_success = if success { 1 } else { 0 };
+                entry.recent_fail = if success { 0 } else { 1 };
+                entry.recent_usage = 0;
+                entry.usage_reset_at = std::time::Instant::now();
+            } else if success {
+                entry.recent_success = entry.recent_success.saturating_add(1);
+            } else {
+                entry.recent_fail = entry.recent_fail.saturating_add(1);
+            }
         }
     }
 
@@ -2485,6 +2520,8 @@ impl MultiTokenManager {
                     initialized: true,
                     recent_usage: baseline_usage,
                     usage_reset_at: now,
+                    recent_success: 0,
+                    recent_fail: 0,
                 },
             );
             tracing::info!(
@@ -2762,23 +2799,15 @@ impl MultiTokenManager {
         }
     }
 
-    /// 记录 API 调用成功（更新速率限制器）
-    #[allow(dead_code)]
+    /// 记录 API 调用成功（更新成功率 + 速率限制器）
     pub fn record_api_success(&self, id: u64) {
-        self.report_success(id);
+        self.update_recent_success_rate(id, true);
         self.rate_limiter.record_success(id);
     }
 
-    /// 记录 API 调用失败（更新速率限制器和冷却管理器）
-    #[allow(dead_code)]
-    pub fn record_api_failure(&self, id: u64, error_message: Option<&str>) -> bool {
-        let has_available = self.report_failure(id);
-
-        // 更新速率限制器
-        let backoff = self.rate_limiter.record_failure(id, error_message);
-        tracing::debug!("凭据 #{} 退避时间: {:?}", id, backoff);
-
-        has_available
+    /// 记录 API 调用失败（更新成功率 + 速率限制器 + 冷却管理器）
+    pub fn record_api_fail(&self, id: u64) {
+        self.update_recent_success_rate(id, false);
     }
 
     /// 清理过期的冷却状态

@@ -548,6 +548,7 @@ impl KiroProvider {
             // 成功响应
             if status.is_success() {
                 self.token_manager.report_success(ctx.id);
+                self.token_manager.record_api_success(ctx.id);
                 tracing::info!(
                     credential_id = %ctx.id,
                     endpoint = %endpoint_name,
@@ -687,6 +688,7 @@ impl KiroProvider {
                     CooldownReason::RateLimitExceeded,
                     Some(cooldown_duration),
                 );
+                self.token_manager.record_api_fail(ctx.id);
                 consecutive_429_count += 1;
                 tracing::warn!(
                     credential_id = %ctx.id,
@@ -745,6 +747,7 @@ impl KiroProvider {
                     status,
                     body
                 );
+                self.token_manager.record_api_fail(ctx.id);
 
                 if Self::is_model_temporarily_unavailable(&body) {
                     tracing::warn!(
@@ -916,6 +919,7 @@ impl KiroProvider {
             // 成功响应
             if status.is_success() {
                 self.token_manager.report_success(ctx.id);
+                self.token_manager.record_api_success(ctx.id);
                 tracing::info!(
                     credential_id = %ctx.id,
                     endpoint = %endpoint_name,
@@ -1111,6 +1115,7 @@ impl KiroProvider {
                     CooldownReason::RateLimitExceeded,
                     Some(cooldown_duration),
                 );
+                self.token_manager.record_api_fail(ctx.id);
                 consecutive_429_count += 1;
                 tracing::warn!(
                     credential_id = %ctx.id,
@@ -1177,6 +1182,7 @@ impl KiroProvider {
                     status,
                     body
                 );
+                self.token_manager.record_api_fail(ctx.id);
 
                 if Self::is_model_temporarily_unavailable(&body) {
                     tracing::warn!(
