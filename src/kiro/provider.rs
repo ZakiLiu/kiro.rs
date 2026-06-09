@@ -562,12 +562,16 @@ impl KiroProvider {
             // 失败响应
             let body = response.text().await.unwrap_or_default();
 
-            // 402 额度用尽
-            if status.as_u16() == 402 && endpoint.is_monthly_request_limit(&body) {
-                let has_available = self.token_manager.report_quota_exhausted(ctx.id);
-                if !has_available {
-                    anyhow::bail!("MCP 请求失败（所有凭据已用尽）: {} {}", status, body);
+            // 402 Payment Required
+            if status.as_u16() == 402 {
+                if endpoint.is_monthly_request_limit(&body) {
+                    // 月度额度用尽 → 永久禁用凭据
+                    let has_available = self.token_manager.report_quota_exhausted(ctx.id);
+                    if !has_available {
+                        anyhow::bail!("MCP 请求失败（所有凭据已用尽）: {} {}", status, body);
+                    }
                 }
+                // 其他 402（如 OVERAGE）→ 仅跳过此凭据，不禁用
                 last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
                 failed_ids.push(ctx.id);
                 continue;
@@ -928,34 +932,35 @@ impl KiroProvider {
             // 失败响应：读取 body 用于日志/错误信息
             let body = response.text().await.unwrap_or_default();
 
-            // 402 Payment Required 且额度用尽：禁用凭据并故障转移
-            if status.as_u16() == 402 && endpoint.is_monthly_request_limit(&body) {
-                tracing::warn!(
-                    "API 请求失败（额度已用尽，禁用凭据并切换，尝试 {}/{}）: {} {}",
-                    attempt + 1,
-                    max_retries,
-                    status,
-                    body
-                );
-
-                let has_available = self.token_manager.report_quota_exhausted(ctx.id);
-                self.token_manager.update_balance_cache(ctx.id, 0.0);
-                if !has_available {
-                    anyhow::bail!(
-                        "{} API 请求失败（所有凭据已用尽）: {} {}",
-                        api_type,
+            // 402 Payment Required
+            if status.as_u16() == 402 {
+                if endpoint.is_monthly_request_limit(&body) {
+                    // 月度额度用尽 → 永久禁用凭据
+                    tracing::warn!(
+                        "API 请求失败（额度已用尽，禁用凭据并切换，尝试 {}/{}）: {} {}",
+                        attempt + 1,
+                        max_retries,
                         status,
                         body
                     );
+                    let has_available = self.token_manager.report_quota_exhausted(ctx.id);
+                    self.token_manager.update_balance_cache(ctx.id, 0.0);
+                    if !has_available {
+                        anyhow::bail!(
+                            "{} API 请求失败（所有凭据已用尽）: {} {}",
+                            api_type,
+                            status,
+                            body
+                        );
+                    }
                 }
-
+                // 其他 402（如 OVERAGE）→ 仅跳过此凭据，不禁用
                 last_error = Some(anyhow::anyhow!(
                     "{} API 请求失败: {} {}",
                     api_type,
                     status,
                     body
                 ));
-                // P0#1：402 凭据已禁用，但仍 push 防止竞争窗口里被再次选回
                 failed_ids.push(ctx.id);
                 continue;
             }
