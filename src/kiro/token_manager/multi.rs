@@ -574,11 +574,13 @@ impl MultiTokenManager {
             let (usage, balance, success_rate) = cache
                 .get(&id)
                 .map(|c| {
+                    // 窗口过期 → 当作无数据（0.5），让长期未用的凭据重新获得机会
+                    let window_expired = c.usage_reset_at.elapsed().as_secs() >= USAGE_COUNT_RESET_SECS;
                     let total = c.recent_success + c.recent_fail;
-                    let rate = if total > 0 {
-                        c.recent_success as f64 / total as f64
+                    let rate = if window_expired || total == 0 {
+                        0.5
                     } else {
-                        0.5 // 无数据，中性
+                        c.recent_success as f64 / total as f64
                     };
                     (c.recent_usage, c.remaining, rate)
                 })
