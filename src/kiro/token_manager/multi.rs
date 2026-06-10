@@ -112,8 +112,8 @@ pub struct MultiTokenManager {
     proxy: RwLock<Option<ProxyConfig>>,
     /// 凭据条目列表
     entries: Mutex<Vec<CredentialEntry>>,
-    /// Token 刷新锁，确保同一时间只有一个刷新操作
-    refresh_lock: TokioMutex<()>,
+    /// Per-credential Token 刷新锁，每个凭据独立串行刷新，互不阻塞
+    refresh_locks: Mutex<HashMap<u64, Arc<TokioMutex<()>>>>,
     /// 凭据文件路径（用于回写）
     credentials_path: Option<PathBuf>,
     /// 是否为多凭据格式（数组格式才回写）
@@ -359,7 +359,7 @@ impl MultiTokenManager {
             config: RwLock::new(config),
             proxy: RwLock::new(proxy),
             entries: Mutex::new(entries),
-            refresh_lock: TokioMutex::new(()),
+            refresh_locks: Mutex::new(HashMap::new()),
             credentials_path,
             is_multiple_format,
             model_unavailable_count: AtomicU32::new(0),
@@ -423,6 +423,15 @@ impl MultiTokenManager {
             cfg.jitter_percent = 0.0;
         }
         self.rate_limiter.update_config(cfg);
+    }
+
+    /// 获取指定凭据的刷新锁（per-credential，互不阻塞）
+    fn get_refresh_lock(&self, id: u64) -> Arc<TokioMutex<()>> {
+        let mut locks = self.refresh_locks.lock();
+        locks
+            .entry(id)
+            .or_insert_with(|| Arc::new(TokioMutex::new(())))
+            .clone()
     }
 
     /// 计算当前的冷却 bail 阈值
@@ -1230,8 +1239,23 @@ impl MultiTokenManager {
             || is_token_expiring_soon(credentials);
 
         let creds = if needs_refresh {
-            // 获取刷新锁，确保同一时间只有一个刷新操作
-            let _guard = self.refresh_lock.lock().await;
+            // Per-credential 刷新锁：同一凭据串行，不同凭据并行。
+            // 加超时作为安全网，防止 HTTP 请求挂住时无限等待。
+            let lock = self.get_refresh_lock(id);
+            let _guard = match tokio::time::timeout(
+                StdDuration::from_secs(70),
+                lock.lock(),
+            )
+            .await
+            {
+                Ok(guard) => guard,
+                Err(_) => {
+                    anyhow::bail!(
+                        "凭据 #{} Token 刷新锁等待超时（70s），可能 HTTP 刷新请求挂住",
+                        id
+                    );
+                }
+            };
 
             // 第二次检查：获取锁后重新读取凭据，因为其他请求可能已经完成刷新
             let current_creds = {
@@ -2026,16 +2050,13 @@ impl MultiTokenManager {
 
                     self.update_balance_cache(id, remaining);
 
-                    // 余额小于 1 时自动禁用凭据
+                    // 上游允许超额使用，余额不足不禁用——等上游 402 再由 report_quota_exhausted 处理
                     if remaining < 1.0 {
-                        let mut entries = self.entries.lock();
-                        if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
-                            entry.disabled = true;
-                            entry.disabled_at = Some(Utc::now());
-                            entry.recovery_attempts = 0;
-                            entry.disable_reason = Some(DisableReason::InsufficientBalance);
-                            tracing::warn!("凭据 #{} 余额不足 ({:.2})，已自动禁用", id, remaining);
-                        }
+                        tracing::info!(
+                            "凭据 #{} 余额偏低 ({:.2})，保持可用（等待上游 402 判定）",
+                            id,
+                            remaining
+                        );
                     } else {
                         tracing::info!("凭据 #{} 余额初始化成功: {:.2}", id, remaining);
                     }
@@ -2197,6 +2218,9 @@ impl MultiTokenManager {
     }
 
     /// 重置凭据失败计数并重新启用（Admin API）
+    ///
+    /// 同时清除 CooldownManager 和 RateLimiter 的运行时状态，
+    /// 确保凭据在重置后能立即参与调度。
     pub fn reset_and_enable(&self, id: u64) -> anyhow::Result<()> {
         {
             let mut entries = self.entries.lock();
@@ -2212,6 +2236,8 @@ impl MultiTokenManager {
             entry.auto_heal_reason = None;
             entry.disable_reason = None;
         }
+        self.cooldown_manager.clear_cooldown(id);
+        self.rate_limiter.reset(id);
         // 持久化更改
         self.persist_credentials()?;
         Ok(())
@@ -2229,8 +2255,19 @@ impl MultiTokenManager {
                 .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
         };
 
-        // 持有刷新锁，避免与业务请求自动刷新并发
-        let _guard = self.refresh_lock.lock().await;
+        // Per-credential 刷新锁
+        let lock = self.get_refresh_lock(id);
+        let _guard = match tokio::time::timeout(
+            StdDuration::from_secs(70),
+            lock.lock(),
+        )
+        .await
+        {
+            Ok(guard) => guard,
+            Err(_) => {
+                anyhow::bail!("凭据 #{} 强制刷新等待锁超时（70s）", id);
+            }
+        };
 
         if credentials.is_api_key_credential() {
             anyhow::bail!("API Key 凭据无需刷新 Token");
@@ -2289,7 +2326,18 @@ impl MultiTokenManager {
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("凭据无 kiroApiKey"))?
             } else if needs_refresh {
-                let _guard = self.refresh_lock.lock().await;
+                let lock = self.get_refresh_lock(id);
+                let _guard = match tokio::time::timeout(
+                    StdDuration::from_secs(70),
+                    lock.lock(),
+                )
+                .await
+                {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        anyhow::bail!("凭据 #{} 查询额度等待锁超时（70s）", id);
+                    }
+                };
                 let current_creds = {
                     let entries = self.entries.lock();
                     entries
