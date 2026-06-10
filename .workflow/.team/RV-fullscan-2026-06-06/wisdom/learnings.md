@@ -1,0 +1,7 @@
+# Reviewer Learnings — RV-fullscan-2026-06-06
+
+- **Empty-string auth hunt (per scanner note):** searched all of `src/` for is_empty/== ""/ct_eq/constant_time_eq/unwrap_or_else. Result: only ONE gap. admin_api_key (main.rs:254,260) and kiro_api_key (main.rs:65) both guard `!trim().is_empty()`; the proxy api_key (main.rs:128) does not. The empty-string risk is isolated, not systemic — but the asymmetry is the bug-smell that found SEC-001.
+- **subtle 2.6.1 semantics:** ct_eq on &[u8] is constant-time over CONTENT but the length-equality precheck is non-constant — so byte-slice ct_eq leaks length, not content. Hash to fixed width before ct_eq if length must be hidden.
+- **decoder.rs state machine:** `Recovering` is set after every recoverable error (line 226) AND treated as terminal by DecodeIter (line 395). The recover-and-continue design is unreachable through the iterator. Two halt paths in DecodeIter::next: Recovering->None (the bug) and Ok(None)->None (fine for buffered).
+- **compressor.rs hot path:** two co-located issues (COR-002 missing hard-cap, PRF-001 O(n^2)). The 'good taste' fix for COR-002 is a single shared post-format clamp used by both branches, eliminating the edge case rather than special-casing it.
+- **codex delegate broken in env** (invalid reasoning effort `xhigh`) — reviewer did manual source verification instead of CLI fan-out. Manual trace beat second-hand LLM analysis: caught 3 scan-description inaccuracies.
