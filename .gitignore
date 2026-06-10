@@ -35,3 +35,13 @@ tmp/
 .planning/
 
 .ace-tool/
+
+# Workflow 运行时产物（本地，不进 git；知识沉淀类 specs/knowhow/blueprint/milestones 保留）
+.workflow/spec-analytics.jsonl
+.workflow/.team/
+.workflow/scratch/
+.workflow/.maestro/
+.workflow/state.json
+.workflow/wiki-index.json
+.workflow/codebase/
+.workflow/research/
