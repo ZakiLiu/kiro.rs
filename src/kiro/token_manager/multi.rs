@@ -583,7 +583,9 @@ impl MultiTokenManager {
             let (usage, balance, success_rate) = cache
                 .get(&id)
                 .map(|c| {
-                    // 窗口过期 → 当作无数据（0.5），让长期未用的凭据重新获得机会
+                    // 窗口过期 → 重置 usage 和 success_rate，让长期未用的凭据重新获得机会。
+                    // 注意：不能只重置 rate 不重置 usage，否则初始化 usage > 0 的新凭据
+                    // 永远不会被选中（因为它们无法通过 min(recent_usage) 关卡）。
                     let window_expired = c.usage_reset_at.elapsed().as_secs() >= USAGE_COUNT_RESET_SECS;
                     let total = c.recent_success + c.recent_fail;
                     let rate = if window_expired || total == 0 {
@@ -591,7 +593,8 @@ impl MultiTokenManager {
                     } else {
                         c.recent_success as f64 / total as f64
                     };
-                    (c.recent_usage, c.remaining, rate)
+                    let usage = if window_expired { 0 } else { c.recent_usage };
+                    (usage, c.remaining, rate)
                 })
                 .unwrap_or((0, 0.0, 0.5));
             let effective_balance = if balance.is_finite() { balance } else { 0.0 };
@@ -2534,51 +2537,29 @@ impl MultiTokenManager {
             });
         }
 
-        // P0#2 修复：立刻把新凭据写进 balance_cache。
-        //
-        // 雷暴避免设计：select_best_candidate_id 第一优先级是 `min(recent_usage)`。
-        // 中位数 baseline 会让新凭据永远大于一半凭据的 recent_usage → 永远到不了候选 →
-        // 永远不会被首次调用 → balance 永远不刷新 → 死锁（G/I 双 agent 共识）。
-        //
-        // 正确策略：用现有凭据中的 **max**(recent_usage) 作为 baseline + 取
-        // 现有凭据 balance 中位数作为 remaining，让新凭据：
-        //   1) recent_usage = max → 排在所有现有凭据之后，**不雷暴**
-        //   2) 等老凭据的 usage 涨到等于这个 max 时，新凭据跟它们 tie
-        //   3) tie-break 看 balance（已设为中位数 > 0），新凭据**能竞争**
-        //   4) 自然轮入 LB，避免 0→47 次 429 突袭
+        // 新凭据写入 balance_cache，使用保守初始值：
+        //   - recent_usage = 0：配合 select_best_candidate_id 的窗口过期归零逻辑，
+        //     新凭据可立即参与竞争（USAGE_COUNT_RESET_SECS 窗口已是天然防雷暴屏障）
+        //   - remaining = 0.0 + initialized = false：触发下一轮后台余额刷新获取真实值，
+        //     在真实余额到位前与其他 0 余额凭据平等 round-robin
         {
             let mut cache = self.balance_cache.lock();
             let now = std::time::Instant::now();
-            let existing: Vec<(u32, f64)> = cache
-                .iter()
-                .filter(|(id, _)| **id != new_id)
-                .map(|(_, e)| (e.recent_usage, e.remaining))
-                .collect();
-            let baseline_usage = existing.iter().map(|(u, _)| *u).max().unwrap_or(0);
-            let mut balances: Vec<f64> = existing.iter().map(|(_, b)| *b).collect();
-            balances.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let baseline_balance = if balances.is_empty() {
-                0.0
-            } else {
-                balances[balances.len() / 2]
-            };
             cache.insert(
                 new_id,
                 CachedBalance {
-                    remaining: baseline_balance,
+                    remaining: 0.0,
                     cached_at: now,
-                    initialized: true,
-                    recent_usage: baseline_usage,
+                    initialized: false,
+                    recent_usage: 0,
                     usage_reset_at: now,
                     recent_success: 0,
                     recent_fail: 0,
                 },
             );
             tracing::info!(
-                "凭据 #{} 已加入 balance_cache: recent_usage={}（max baseline）, remaining={:.2}（中位数）",
+                "凭据 #{} 已加入 balance_cache: recent_usage=0, initialized=false（等待后台余额刷新）",
                 new_id,
-                baseline_usage,
-                baseline_balance
             );
         }
 
