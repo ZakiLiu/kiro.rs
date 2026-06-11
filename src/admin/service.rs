@@ -995,6 +995,7 @@ impl AdminService {
         super::types::GlobalConfigResponse {
             region: config.region.clone(),
             credential_rpm: config.credential_rpm,
+            credential_daily_max_requests: config.credential_daily_max_requests,
             prompt_cache_ttl_seconds: config.prompt_cache_ttl_seconds,
             prompt_cache_accounting_enabled: config.prompt_cache_accounting_enabled,
             default_endpoint: config.default_endpoint.clone(),
@@ -1035,6 +1036,10 @@ impl AdminService {
 
             if let Some(rpm) = req.credential_rpm {
                 config.credential_rpm = rpm;
+            }
+
+            if let Some(daily_max_requests) = req.credential_daily_max_requests {
+                config.credential_daily_max_requests = daily_max_requests;
             }
 
             if let Some(ttl_seconds) = req.prompt_cache_ttl_seconds {
@@ -1088,10 +1093,12 @@ impl AdminService {
             self.token_manager.update_region(config.region.clone());
         }
 
-        // 热更新 credential_rpm
-        if req.credential_rpm.is_some() {
+        // 热更新凭据级本地限流配置
+        if req.credential_rpm.is_some() || req.credential_daily_max_requests.is_some() {
             self.token_manager
                 .update_credential_rpm(config.credential_rpm);
+            self.token_manager
+                .update_credential_daily_max_requests(config.credential_daily_max_requests);
         }
 
         // 热更新 default_endpoint
@@ -1231,6 +1238,7 @@ mod tests {
         let req = super::super::types::UpdateGlobalConfigRequest {
             region: None,
             credential_rpm: None,
+            credential_daily_max_requests: None,
             prompt_cache_ttl_seconds: None,
             prompt_cache_accounting_enabled: None,
             default_endpoint: Some("cli".to_string()),
@@ -1255,6 +1263,7 @@ mod tests {
         let req = super::super::types::UpdateGlobalConfigRequest {
             region: None,
             credential_rpm: None,
+            credential_daily_max_requests: None,
             prompt_cache_ttl_seconds: None,
             prompt_cache_accounting_enabled: None,
             default_endpoint: Some("".to_string()),
@@ -1278,6 +1287,7 @@ mod tests {
         let req = super::super::types::UpdateGlobalConfigRequest {
             region: None,
             credential_rpm: None,
+            credential_daily_max_requests: None,
             prompt_cache_ttl_seconds: None,
             prompt_cache_accounting_enabled: None,
             default_endpoint: Some("   ".to_string()),
@@ -1301,6 +1311,7 @@ mod tests {
         let req = super::super::types::UpdateGlobalConfigRequest {
             region: None,
             credential_rpm: None,
+            credential_daily_max_requests: None,
             prompt_cache_ttl_seconds: None,
             prompt_cache_accounting_enabled: None,
             default_endpoint: Some("unknown".to_string()),
@@ -1321,6 +1332,7 @@ mod tests {
         let req = super::super::types::UpdateGlobalConfigRequest {
             region: None,
             credential_rpm: None,
+            credential_daily_max_requests: None,
             prompt_cache_ttl_seconds: None,
             prompt_cache_accounting_enabled: None,
             default_endpoint: Some("  cli  ".to_string()),

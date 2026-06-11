@@ -252,18 +252,7 @@ impl MultiTokenManager {
         credentials_path: Option<PathBuf>,
         is_multiple_format: bool,
     ) -> anyhow::Result<Self> {
-        let rate_limit_config = {
-            let mut cfg = RateLimitConfig::default();
-            if let Some(rpm) = config.credential_rpm.filter(|&v| v > 0) {
-                // RPM -> 固定间隔（ms），例如 20 RPM => 3000ms
-                let interval_ms = (60_000u64 / rpm as u64).max(1);
-                cfg.min_interval_ms = interval_ms;
-                cfg.max_interval_ms = interval_ms;
-                // 固定间隔下抖动无意义，避免反复计算造成误差
-                cfg.jitter_percent = 0.0;
-            }
-            cfg
-        };
+        let rate_limit_config = Self::build_rate_limit_config(&config);
 
         // 计算当前最大 ID，为没有 ID 的凭据分配新 ID
         let max_existing_id = credentials.iter().filter_map(|c| c.id).max().unwrap_or(0);
@@ -406,6 +395,36 @@ impl MultiTokenManager {
         self.config.read().clone()
     }
 
+    fn build_rate_limit_config(config: &Config) -> RateLimitConfig {
+        let mut cfg = RateLimitConfig::default();
+
+        if matches!(config.credential_rpm, Some(0)) {
+            // credentialRpm=0 的运维语义是“不做本地限速”：
+            // 不占用发送窗口，也不启用默认每日 500 请求上限。
+            cfg.daily_max_requests = None;
+            cfg.min_interval_ms = 0;
+            cfg.max_interval_ms = 0;
+            cfg.jitter_percent = 0.0;
+        } else if let Some(rpm) = config.credential_rpm.filter(|&v| v > 0) {
+            // RPM -> 固定间隔（ms），例如 20 RPM => 3000ms
+            let interval_ms = (60_000u64 / rpm as u64).max(1);
+            cfg.min_interval_ms = interval_ms;
+            cfg.max_interval_ms = interval_ms;
+            // 固定间隔下抖动无意义，避免反复计算造成误差
+            cfg.jitter_percent = 0.0;
+        }
+
+        if let Some(daily_max_requests) = config.credential_daily_max_requests {
+            cfg.daily_max_requests = if daily_max_requests == 0 {
+                None
+            } else {
+                Some(daily_max_requests)
+            };
+        }
+
+        cfg
+    }
+
     /// 热更新代理配置
     pub fn update_proxy(&self, proxy: Option<ProxyConfig>) {
         *self.proxy.write() = proxy;
@@ -423,17 +442,21 @@ impl MultiTokenManager {
 
     /// 热更新单凭据目标请求速率（RPM）
     pub fn update_credential_rpm(&self, rpm: Option<u32>) {
-        // 更新 config 中的 credential_rpm
-        self.config.write().credential_rpm = rpm;
+        let cfg = {
+            let mut config = self.config.write();
+            config.credential_rpm = rpm;
+            Self::build_rate_limit_config(&config)
+        };
+        self.rate_limiter.update_config(cfg);
+    }
 
-        // 重新计算 RateLimitConfig 并应用到 rate_limiter
-        let mut cfg = RateLimitConfig::default();
-        if let Some(rpm) = rpm.filter(|&v| v > 0) {
-            let interval_ms = (60_000u64 / rpm as u64).max(1);
-            cfg.min_interval_ms = interval_ms;
-            cfg.max_interval_ms = interval_ms;
-            cfg.jitter_percent = 0.0;
-        }
+    /// 热更新单凭据每日最大请求数
+    pub fn update_credential_daily_max_requests(&self, daily_max_requests: Option<u32>) {
+        let cfg = {
+            let mut config = self.config.write();
+            config.credential_daily_max_requests = daily_max_requests;
+            Self::build_rate_limit_config(&config)
+        };
         self.rate_limiter.update_config(cfg);
     }
 
@@ -581,6 +604,7 @@ impl MultiTokenManager {
             tried = tried_ids.len(),
             tried_ids = ?tried_ids,
             config_credential_rpm = ?self.config.read().credential_rpm,
+            config_credential_daily_max_requests = ?self.config.read().credential_daily_max_requests,
             min_wait_ms = ?min_wait_ms,
             min_wait_from_id = ?min_wait_from_id,
             min_wait_source = ?min_wait_source,

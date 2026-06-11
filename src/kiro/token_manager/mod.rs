@@ -388,6 +388,52 @@ mod tests {
         assert_eq!(ctx.id, 1);
     }
 
+    #[tokio::test]
+    async fn test_credential_rpm_zero_disables_local_rate_limiter_and_default_daily_cap() {
+        let mut config = Config::default();
+        config.credential_rpm = Some(0);
+        // 不显式配置 daily cap；credentialRpm=0 应同时关闭默认 daily cap。
+        config.credential_daily_max_requests = None;
+
+        let cred = KiroCredentials {
+            access_token: Some("token-1".to_string()),
+            expires_at: Some("2999-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+
+        let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
+
+        for _ in 0..=crate::kiro::rate_limiter::DEFAULT_DAILY_MAX_REQUESTS {
+            let ctx = manager.acquire_context().await.unwrap();
+            assert_eq!(ctx.id, 1);
+            manager.record_api_success(ctx.id);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_credential_daily_max_requests_can_override_rpm_zero() {
+        let mut config = Config::default();
+        config.credential_rpm = Some(0);
+        config.credential_daily_max_requests = Some(2);
+
+        let cred = KiroCredentials {
+            access_token: Some("token-1".to_string()),
+            expires_at: Some("2999-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+
+        let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
+
+        for _ in 0..2 {
+            let ctx = manager.acquire_context().await.unwrap();
+            manager.record_api_success(ctx.id);
+        }
+
+        let err = manager.acquire_context().await.err().unwrap();
+        assert!(err.to_string().contains("所有凭据均处于冷却/速率限制"));
+        assert!(err.to_string().contains("原因：rate_limit"));
+    }
+
     #[test]
     fn test_set_credential_cooldown_with_duration_does_not_increment_failure_count() {
         let config = Config::default();

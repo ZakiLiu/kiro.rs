@@ -31,6 +31,7 @@ export function GlobalConfigDialog({ open, onOpenChange }: GlobalConfigDialogPro
   // 基本设置
   const [region, setRegion] = useState('')
   const [credentialRpm, setCredentialRpm] = useState('')
+  const [credentialDailyMaxRequests, setCredentialDailyMaxRequests] = useState('')
   const [promptCacheTtlSeconds, setPromptCacheTtlSeconds] = useState('300')
   const [promptCacheAccountingEnabled, setPromptCacheAccountingEnabled] = useState(true)
   const [defaultEndpoint, setDefaultEndpoint] = useState('ide')
@@ -60,6 +61,7 @@ export function GlobalConfigDialog({ open, onOpenChange }: GlobalConfigDialogPro
     if (open && globalConfig) {
       setRegion(globalConfig.region || '')
       setCredentialRpm(globalConfig.credentialRpm?.toString() || '')
+      setCredentialDailyMaxRequests(globalConfig.credentialDailyMaxRequests?.toString() || '')
       setPromptCacheTtlSeconds(globalConfig.promptCacheTtlSeconds.toString())
       setPromptCacheAccountingEnabled(globalConfig.promptCacheAccountingEnabled)
       setDefaultEndpoint(globalConfig.defaultEndpoint || 'ide')
@@ -97,6 +99,14 @@ export function GlobalConfigDialog({ open, onOpenChange }: GlobalConfigDialogPro
     const newRpm = credentialRpm.trim() ? parseInt(credentialRpm.trim(), 10) : null
     if (newRpm !== (globalConfig?.credentialRpm ?? null)) {
       globalPayload.credentialRpm = newRpm
+      hasGlobalChanges = true
+    }
+
+    const newDailyMaxRequests = credentialDailyMaxRequests.trim()
+      ? parseInt(credentialDailyMaxRequests.trim(), 10)
+      : null
+    if (newDailyMaxRequests !== (globalConfig?.credentialDailyMaxRequests ?? null)) {
+      globalPayload.credentialDailyMaxRequests = newDailyMaxRequests
       hasGlobalChanges = true
     }
 
@@ -206,7 +216,8 @@ export function GlobalConfigDialog({ open, onOpenChange }: GlobalConfigDialogPro
                 <label htmlFor="gcRegion" className="text-sm font-medium">Region</label>
                 <Input id="gcRegion" placeholder="us-east-1" value={region} onChange={(e) => setRegion(e.target.value)} disabled={isPending} />
               </div>
-              {numInput('gcRpm', 'Credential RPM', credentialRpm, setCredentialRpm, '单凭据每分钟请求数上限，0 或留空使用默认策略')}
+              {numInput('gcRpm', 'Credential RPM', credentialRpm, setCredentialRpm, '留空使用默认策略；0 = 关闭本地 RPM 节流并默认关闭 daily cap')}
+              {numInput('gcDailyMax', 'Credential Daily Max', credentialDailyMaxRequests, setCredentialDailyMaxRequests, '单凭据每日最大请求数；留空 = 默认 500，0 = 关闭每日上限')}
               <div className="space-y-1">
                 <label htmlFor="gcPromptCacheTtl" className="text-sm font-medium">Prompt Cache TTL</label>
                 <select

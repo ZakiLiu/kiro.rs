@@ -38,7 +38,7 @@ pub enum ErrorCategory {
         retry_after_secs: Option<u64>,
     },
 
-    /// 上游速率限制或瞬态 429/5xx（不含网络错误）
+    /// 上游速率限制或容量类瞬态错误（不含网络错误与 5xx）
     RateLimitTransient,
 
     /// 网络层瞬态错误（连接重置/关闭/发送失败）
@@ -51,8 +51,7 @@ pub enum ErrorCategory {
     #[allow(dead_code)]
     AuthFailure,
 
-    /// 服务器瞬态错误（兜底 5xx）
-    #[allow(dead_code)]
+    /// 服务器瞬态错误（408 / 5xx）
     ServerTransient,
 
     /// 无法识别的错误
@@ -151,21 +150,24 @@ pub fn classify(err: &anyhow::Error, ctx: &ErrorRequestContext) -> ErrorCategory
         return ErrorCategory::ModelUnavailable;
     }
 
-    // 7. 瞬态上游错误（429 / 5xx / 网络）
+    // 7. 瞬态上游错误（网络 / 408 / 5xx / 429）
     let lower = s.to_lowercase();
-    if lower.contains("429 too many requests")
-        || lower.contains("insufficient_model_capacity")
-        || lower.contains("high traffic")
-        || lower.contains("408 request timeout")
+    if is_network_error(&lower) {
+        return ErrorCategory::NetworkTransient;
+    }
+
+    if lower.contains("408 request timeout")
         || lower.contains("502 bad gateway")
         || lower.contains("503 service unavailable")
         || lower.contains("504 gateway timeout")
-        || is_network_error(&lower)
     {
-        // 网络错误细分为 NetworkTransient
-        if is_network_error(&lower) {
-            return ErrorCategory::NetworkTransient;
-        }
+        return ErrorCategory::ServerTransient;
+    }
+
+    if lower.contains("429 too many requests")
+        || lower.contains("insufficient_model_capacity")
+        || lower.contains("high traffic")
+    {
         return ErrorCategory::RateLimitTransient;
     }
 
@@ -294,7 +296,7 @@ pub fn to_anthropic_response(
         }
 
         ErrorCategory::RateLimitTransient => {
-            tracing::warn!(error = %err, "上游瞬态错误（429/5xx），不输出请求体");
+            tracing::warn!(error = %err, "上游速率限制/容量类瞬态错误，不输出请求体");
             (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(ErrorResponse::new(
@@ -494,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_rate_limit_transient_5xx() {
+    fn test_classify_server_transient_408_and_5xx() {
         for code in &[
             "502 Bad Gateway",
             "503 Service Unavailable",
@@ -504,11 +506,20 @@ mod tests {
             let err = make_err(code);
             assert_eq!(
                 classify(&err, &default_ctx()),
-                ErrorCategory::RateLimitTransient,
-                "expected RateLimitTransient for '{}'",
+                ErrorCategory::ServerTransient,
+                "expected ServerTransient for '{}'",
                 code
             );
         }
+    }
+
+    #[test]
+    fn test_classify_5xx_with_high_traffic_still_server_transient() {
+        let err = make_err("503 Service Unavailable: high traffic detected, please retry");
+        assert_eq!(
+            classify(&err, &default_ctx()),
+            ErrorCategory::ServerTransient
+        );
     }
 
     #[test]

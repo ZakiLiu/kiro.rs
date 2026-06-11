@@ -14,7 +14,7 @@
 - **P0#2 新凭据「雷暴防护」**：新凭据加入时 `recent_usage=0`，LB 立刻判它为「最少使用」→ 1 秒内被打 47 次 429。Fork 用现有凭据 `recent_usage` 中位数作 baseline。
 - **P0#3 周期 balance 刷新**：原版实测 24h 0 条 balance refresh log，cache 完全是启动时快照。Fork 加 10 分钟周期刷新 + 余额不足主动禁用。
 - **P0#4 cache_tracker TTL 对齐上游**：原版命中时刷新 `expires_at`，但 Anthropic 真实 TTL 从首次写入算。Fork 修复后 `cache_read` 数字与上游真实命中率一致。
-- **credentialRpm: 0 真禁用本地限流**：原版 `0` 会落回默认 1-2 秒间隔 + 每日 500 上限（与字面意思相反）。Fork 让 `0` 真的跳过所有本地限流检查。
+- **credentialRpm: 0 真禁用本地限流**：原版 `0` 会落回默认 1-2 秒间隔 + 每日 500 上限（与字面意思相反）。Fork 让 `0` 跳过本地 RPM 节流，并在未显式配置 `credentialDailyMaxRequests` 时关闭默认每日上限。
 - **CI 简化**：删除 Linux/macOS/Windows 二进制 release workflow，仅保留 Docker Hub 自动构建（push tag `v*` 触发）。
 
 镜像：`myuan6/kiro-rs:latest`（不含本次修复的请用上游镜像 `ghcr.io/hank9999/kiro-rs:latest`）。
@@ -225,7 +225,8 @@ docker compose up -d --build
 | `proxyUsername` | string | - | 代理用户名 |
 | `proxyPassword` | string | - | 代理密码 |
 | `adminApiKey` | string | - | Admin API 密钥，配置后启用凭据管理 API 和 Web 管理界面 |
-| `credentialRpm` | number | - | 单凭据目标 RPM（每分钟请求数），用于凭据级节流/分流；`0` 或未配置表示使用内置默认策略 |
+| `credentialRpm` | number | - | 单凭据目标 RPM（每分钟请求数），用于凭据级节流/分流；未配置表示使用内置默认策略，`0` 表示关闭本地 RPM 节流并默认关闭每日上限 |
+| `credentialDailyMaxRequests` | number | - | 单凭据每日最大请求数；未配置表示使用内置默认值 `500`，`0` 表示关闭每日上限 |
 | `promptCacheTtlSeconds` | number | `300` | 本地 Prompt Cache TTL（秒） |
 | `promptCacheAccountingEnabled` | boolean | `true` | 是否启用本地 Prompt Cache usage 记账；关闭后不再输出或扣减 cache token |
 
@@ -252,6 +253,7 @@ docker compose up -d --build
    "proxyPassword": "pass",
    "adminApiKey": "sk-admin-your-secret-key",
    "credentialRpm": 5,
+   "credentialDailyMaxRequests": 0,
    "promptCacheTtlSeconds": 300,
    "promptCacheAccountingEnabled": true
 }

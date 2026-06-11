@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// 默认每日最大请求数
-const DEFAULT_DAILY_MAX_REQUESTS: u32 = 500;
+pub const DEFAULT_DAILY_MAX_REQUESTS: u32 = 500;
 
 /// 默认最小请求间隔（毫秒）
 const DEFAULT_MIN_INTERVAL_MS: u64 = 1000;
@@ -44,7 +44,9 @@ const SUSPEND_KEYWORDS: &[&str] = &[
 #[derive(Debug, Clone)]
 pub struct RateLimitConfig {
     /// 每日最大请求数
-    pub daily_max_requests: u32,
+    ///
+    /// `None` 表示禁用每日请求上限。
+    pub daily_max_requests: Option<u32>,
 
     /// 最小请求间隔（毫秒）
     pub min_interval_ms: u64,
@@ -68,7 +70,7 @@ pub struct RateLimitConfig {
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
-            daily_max_requests: DEFAULT_DAILY_MAX_REQUESTS,
+            daily_max_requests: Some(DEFAULT_DAILY_MAX_REQUESTS),
             min_interval_ms: DEFAULT_MIN_INTERVAL_MS,
             max_interval_ms: DEFAULT_MAX_INTERVAL_MS,
             jitter_percent: DEFAULT_JITTER_PERCENT,
@@ -153,7 +155,9 @@ impl RateLimiter {
         }
 
         // 检查每日限制
-        if state.daily_count >= config.daily_max_requests {
+        if let Some(daily_max_requests) = config.daily_max_requests
+            && state.daily_count >= daily_max_requests
+        {
             let wait_time = state.count_reset_at.saturating_duration_since(now);
             return Err(wait_time);
         }
@@ -202,7 +206,9 @@ impl RateLimiter {
         }
 
         // 检查每日限制
-        if state.daily_count >= config.daily_max_requests {
+        if let Some(daily_max_requests) = config.daily_max_requests
+            && state.daily_count >= daily_max_requests
+        {
             let wait_time = state.count_reset_at.saturating_duration_since(now);
             return Err(wait_time);
         }
@@ -234,7 +240,7 @@ impl RateLimiter {
         let mut states = self.states.lock();
         let state = states.entry(credential_id).or_default();
 
-        state.daily_count += 1;
+        state.daily_count = state.daily_count.saturating_add(1);
         state.last_request_at = Some(Instant::now());
         state.consecutive_failures = 0;
         state.backoff_until = None;
@@ -282,7 +288,9 @@ impl RateLimiter {
             let now = Instant::now();
             RateLimitState {
                 daily_count: s.daily_count,
-                daily_remaining: config.daily_max_requests.saturating_sub(s.daily_count),
+                daily_remaining: config
+                    .daily_max_requests
+                    .map(|max| max.saturating_sub(s.daily_count)),
                 consecutive_failures: s.consecutive_failures,
                 is_in_backoff: s.backoff_until.map(|t| now < t).unwrap_or(false),
                 backoff_remaining_ms: s
@@ -364,7 +372,7 @@ pub struct RateLimitState {
     pub daily_count: u32,
 
     /// 今日剩余请求数
-    pub daily_remaining: u32,
+    pub daily_remaining: Option<u32>,
 
     /// 连续失败次数
     pub consecutive_failures: u32,
@@ -389,7 +397,7 @@ mod tests {
     #[test]
     fn test_rate_limiter_daily_limit() {
         let config = RateLimitConfig {
-            daily_max_requests: 2,
+            daily_max_requests: Some(2),
             min_interval_ms: 0,
             max_interval_ms: 0,
             ..Default::default()
@@ -404,6 +412,25 @@ mod tests {
 
         // 第三次应该被限制
         assert!(limiter.check_rate_limit(1).is_err());
+    }
+
+    #[test]
+    fn test_rate_limiter_daily_limit_can_be_disabled() {
+        let config = RateLimitConfig {
+            daily_max_requests: None,
+            min_interval_ms: 0,
+            max_interval_ms: 0,
+            ..Default::default()
+        };
+        let limiter = RateLimiter::new(config);
+
+        for _ in 0..DEFAULT_DAILY_MAX_REQUESTS + 10 {
+            assert!(limiter.check_rate_limit(1).is_ok());
+            limiter.record_success(1);
+        }
+
+        let state = limiter.get_state(1).unwrap();
+        assert_eq!(state.daily_remaining, None);
     }
 
     #[test]

@@ -62,6 +62,12 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const { mutate: forceRefreshToken } = useForceRefreshToken()
   const { data: proxyConfig } = useProxyConfig()
   const { data: globalConfig } = useGlobalConfig()
+  const rpmLabel = globalConfig?.credentialRpm === 0
+    ? '不限'
+    : (globalConfig?.credentialRpm ?? '默认')
+  const dailyMaxLabel = globalConfig?.credentialDailyMaxRequests === 0
+    ? '不限'
+    : (globalConfig?.credentialDailyMaxRequests ?? '默认')
 
   // 构建 id -> cachedBalance 的映射
   const cachedBalanceMap = new Map(
@@ -617,7 +623,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
             </CardHeader>
             <CardContent>
               <div className="text-xs space-y-0.5">
-                <div className="truncate">{globalConfig?.region || '-'} | RPM: {globalConfig?.credentialRpm ?? '默认'}</div>
+                <div className="truncate">{globalConfig?.region || '-'} | RPM: {rpmLabel} | Daily: {dailyMaxLabel}</div>
                 <div className="truncate">Endpoint: {globalConfig?.defaultEndpoint || 'ide'} | 压缩: {globalConfig?.compression.enabled ? '开' : '关'}</div>
                 <div className="truncate">代理: {proxyConfig?.proxyUrl || '无'}</div>
               </div>
