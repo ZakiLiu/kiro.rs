@@ -1192,6 +1192,9 @@ impl MultiTokenManager {
                     match credentials {
                         Some(creds) => match self.try_ensure_token(bound_id, &creds).await {
                             Ok(ctx) => {
+                                // 与 LB 主路径一致：派发时记录 usage，避免亲和流量不计入
+                                // recent_usage 导致 LB 低估绑定凭据负载、持续向其分派新用户
+                                self.record_usage(bound_id);
                                 self.affinity.touch(user_id);
                                 return Ok(ctx);
                             }
@@ -1339,6 +1342,13 @@ impl MultiTokenManager {
         } else {
             true // 无缓存，需要刷新
         }
+    }
+
+    /// 测试观测口：读取凭据当前窗口内的 recent_usage 计数
+    #[cfg(test)]
+    pub(crate) fn recent_usage_of(&self, id: u64) -> u32 {
+        let cache = self.balance_cache.lock();
+        cache.get(&id).map(|e| e.recent_usage).unwrap_or(0)
     }
 
     /// 记录凭据使用（用于动态 TTL 计算和负载均衡）

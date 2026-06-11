@@ -918,6 +918,52 @@ mod tests {
         assert_eq!(rebound.id, 1);
     }
 
+    /// 亲和性命中派发也必须记录 usage：否则被绑定凭据的流量不计入 recent_usage，
+    /// LB 的 min-usage 偏好会低估其真实负载，持续向其分派新用户。
+    #[tokio::test]
+    async fn test_affinity_hit_dispatch_records_usage() {
+        // 高 rpm 把请求间隔压到 ~1ms，配合 acquire 之间的短睡，
+        // 保证后续请求走 affinity 短路而非被间隔检查分流。
+        let mut config = Config::default();
+        config.credential_rpm = Some(60_000);
+
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("t1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        cred1.priority = 0;
+
+        let mut cred2 = KiroCredentials::default();
+        cred2.access_token = Some("t2".to_string());
+        cred2.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        cred2.priority = 0;
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
+
+        // 首次：走 LB 主路径选号并建立绑定，派发记账 1 次
+        let first = manager
+            .acquire_context_for_user(Some("user-a"))
+            .await
+            .unwrap();
+        let bound_id = first.id;
+        assert_eq!(manager.recent_usage_of(bound_id), 1);
+
+        // 后两次：affinity 命中短路派发，同样必须各记账 1 次
+        for expected in 2..=3u32 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            let ctx = manager
+                .acquire_context_for_user(Some("user-a"))
+                .await
+                .unwrap();
+            assert_eq!(ctx.id, bound_id, "亲和性绑定应持续命中同一凭据");
+            assert_eq!(
+                manager.recent_usage_of(bound_id),
+                expected,
+                "亲和性命中派发未记录 usage"
+            );
+        }
+    }
+
     // ============ 凭据级 Region 优先级测试 ============
 
     /// 辅助函数：获取 OIDC 刷新使用的 region（用于测试）
