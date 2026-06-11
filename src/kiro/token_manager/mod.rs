@@ -684,6 +684,138 @@ mod tests {
         assert!(err.to_string().contains("retry_after_secs="));
     }
 
+    /// MNT-001 重构 divergence guard：enabled-exhausted 与 total-exhausted 两个穷尽分支
+    /// 在“全部因长冷却退出”这一相同输入下，必须产出逐字一致的 bail 错误（同一个 429 文案）。
+    ///
+    /// - total-exhausted：单个长冷却凭据（id=1），tried_ids 覆盖 total。
+    /// - enabled-exhausted：长冷却凭据（id=1）+ 一个 quota 禁用凭据（id=2），
+    ///   仅启用集合被尝试完、total 未覆盖。
+    ///
+    /// 两者的最短等待都来自同一个凭据 #1，冷却时长一致（且远大于秒级，规避
+    /// Retry-After 向上取整在两次 acquire 之间产生 off-by-one），故错误字符串应完全相等。
+    #[tokio::test]
+    async fn test_acquire_context_bail_output_identical_across_exhaustion_branches() {
+        let cooldown = std::time::Duration::from_secs(3600);
+
+        // total-exhausted 分支：单凭据。
+        let mut total_cred = KiroCredentials::default();
+        total_cred.access_token = Some("t1".to_string());
+        total_cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        let total_mgr =
+            MultiTokenManager::new(Config::default(), vec![total_cred], None, None, false).unwrap();
+        total_mgr.set_credential_cooldown_with_duration(
+            1,
+            CooldownReason::RateLimitExceeded,
+            Some(cooldown),
+        );
+        let total_err = total_mgr.acquire_context().await.err().unwrap().to_string();
+
+        // enabled-exhausted 分支：长冷却凭据（id=1）+ 一个被 quota 禁用的凭据（id=2）。
+        let mut cooling_cred = KiroCredentials::default();
+        cooling_cred.access_token = Some("t1".to_string());
+        cooling_cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        let mut disabled_cred = KiroCredentials::default();
+        disabled_cred.access_token = Some("t2".to_string());
+        disabled_cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        let enabled_mgr = MultiTokenManager::new(
+            Config::default(),
+            vec![cooling_cred, disabled_cred],
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(enabled_mgr.report_quota_exhausted(2));
+        enabled_mgr.set_credential_cooldown_with_duration(
+            1,
+            CooldownReason::RateLimitExceeded,
+            Some(cooldown),
+        );
+        let enabled_err = enabled_mgr.acquire_context().await.err().unwrap().to_string();
+
+        assert_eq!(
+            total_err, enabled_err,
+            "两个穷尽分支在相同输入下应产出完全一致的 bail 错误"
+        );
+        assert!(total_err.contains("所有凭据均处于冷却/速率限制"));
+        assert!(total_err.contains("来自凭据 #1"));
+    }
+
+    /// COR-001 hardening：累计短睡预算检查改为无条件后，“混合故障轮次”（一个短冷却凭据 +
+    /// 一个 token 刷新失败凭据）的累计等待也会被 wait_budget 截断，不再无限短睡到禁用收敛。
+    ///
+    /// 关键约束：因本轮并非全部因冷却（混杂刷新失败），all_due_to_cooling=false，
+    /// 故截断时 bail 的 **分类** 必须保持为常规 fallthrough 错误，而不是 429 冷却文案
+    /// （否则会吞掉真实的 token 刷新失败语义）。
+    ///
+    /// 设计：短冷却凭据冷却 1.5s（< 2s long-wait 阈值，但 > 测试预算 300ms），刷新失败凭据
+    /// 缺失 access_token/refresh_token（validate_refresh_token 同步快速失败，仅失败 1 次远
+    /// 低于 MAX_FAILURES=3，不会被禁用）。第一轮决策时 1500ms > 300ms 预算即截断退出。
+    #[tokio::test]
+    async fn test_acquire_context_mixed_round_capped_by_budget_without_429_classification() {
+        let config = Config::default();
+
+        let mut cooling_cred = KiroCredentials::default();
+        cooling_cred.access_token = Some("t1".to_string());
+        cooling_cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        cooling_cred.priority = 0;
+
+        // 缺失 access_token / refresh_token / kiro_api_key —— try_ensure_token 会同步失败。
+        let mut refresh_fail_cred = KiroCredentials::default();
+        refresh_fail_cred.access_token = None;
+        refresh_fail_cred.refresh_token = None;
+        refresh_fail_cred.expires_at = None;
+        refresh_fail_cred.priority = 0;
+
+        let manager = MultiTokenManager::new(
+            config,
+            vec![cooling_cred, refresh_fail_cred],
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+
+        // 1.5s 冷却：低于 2s long-wait 阈值（不触发 429 快返回），但高于 300ms 测试预算。
+        manager.set_credential_cooldown_with_duration(
+            1,
+            CooldownReason::RateLimitExceeded,
+            Some(std::time::Duration::from_millis(1500)),
+        );
+
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            manager.acquire_context(),
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        // 必须 bail（被预算截断），而不是无限短睡到超时。
+        let err = result
+            .expect("混合故障累计等待应被预算截断 bail，而非挂起到超时")
+            .err()
+            .expect("混合故障场景不应成功获取 context");
+
+        // 应在远早于 1.5s 冷却结束前返回（预算截断生效，未真正睡满）。
+        assert!(
+            elapsed < std::time::Duration::from_millis(800),
+            "应在预算耗尽后快速 bail，实际耗时: {:?}",
+            elapsed
+        );
+        // 分类保持：混合故障必须走常规 fallthrough 文案，绝不是 429 冷却文案。
+        assert!(
+            !err.to_string().contains("所有凭据均处于冷却/速率限制"),
+            "混合故障被预算截断时不应分类为 429 冷却：{}",
+            err
+        );
+        assert!(
+            err.to_string().contains("无法获取有效 Token"),
+            "应为常规 fallthrough 错误：{}",
+            err
+        );
+    }
+
     /// 混合故障场景：一个凭据长冷却，一个凭据 token 刷新失败（access_token/refresh_token 均缺失）。
     /// 期望：不应快速返回 429（会错误吞掉真实的 token 刷新失败语义），应走常规 sleep 路径。
     /// 用 tokio::time::timeout 做短超时，避免测试卡在长 sleep 循环里。

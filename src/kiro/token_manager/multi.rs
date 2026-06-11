@@ -196,6 +196,91 @@ const DEFAULT_ACQUIRE_TEMPORARY_WAIT_BUDGET: StdDuration = StdDuration::from_sec
 #[cfg(test)]
 const DEFAULT_ACQUIRE_TEMPORARY_WAIT_BUDGET: StdDuration = StdDuration::from_millis(300);
 
+/// 两个穷尽分支的身份标识，用于还原各自的诊断 tag 与 fallthrough 错误消息。
+///
+/// 当某一轮所有可用凭据都已尝试完时，`acquire_context_excluding` 会用对应分支调用
+/// `evaluate_wait_decision`，以保留与重构前逐字一致的诊断字符串与上层语义。
+#[derive(Clone, Copy)]
+enum ExhaustionBranch {
+    /// 已用尽所有“启用”凭据（可能仍有部分凭据被自动禁用）。
+    EnabledExhausted,
+    /// 已用尽“全部”凭据（tried_ids 覆盖 total）。
+    TotalExhausted,
+}
+
+impl ExhaustionBranch {
+    fn event_bail_long_wait(self) -> &'static str {
+        match self {
+            ExhaustionBranch::EnabledExhausted => "enabled_exhausted_bail_long_wait",
+            ExhaustionBranch::TotalExhausted => "total_exhausted_bail_long_wait",
+        }
+    }
+
+    fn event_bail_wait_budget(self) -> &'static str {
+        match self {
+            ExhaustionBranch::EnabledExhausted => "enabled_exhausted_bail_wait_budget",
+            ExhaustionBranch::TotalExhausted => "total_exhausted_bail_wait_budget",
+        }
+    }
+
+    fn event_sleep(self) -> &'static str {
+        match self {
+            ExhaustionBranch::EnabledExhausted => "enabled_exhausted_sleep",
+            ExhaustionBranch::TotalExhausted => "total_exhausted_sleep",
+        }
+    }
+
+    fn event_bail(self) -> &'static str {
+        match self {
+            ExhaustionBranch::EnabledExhausted => "enabled_exhausted_bail",
+            ExhaustionBranch::TotalExhausted => "total_exhausted_bail",
+        }
+    }
+
+    /// 本轮无任何 `min_wait`（即并非全部因冷却等待）时的常规退出错误，
+    /// 两个分支文案不同：enabled 分支强调“可用凭据”，total 分支为“所有凭据”。
+    fn fallthrough_error(self, available: usize, total: usize) -> anyhow::Error {
+        match self {
+            ExhaustionBranch::EnabledExhausted => anyhow::anyhow!(
+                "所有可用凭据均无法获取有效 Token（可用: {}/{}）",
+                available,
+                total
+            ),
+            ExhaustionBranch::TotalExhausted => anyhow::anyhow!(
+                "所有凭据均无法获取有效 Token（可用: {}/{}）",
+                available,
+                total
+            ),
+        }
+    }
+}
+
+/// `evaluate_wait_decision` 的结果：要么继续短睡重试，要么携带错误立即 bail。
+enum WaitDecision {
+    Sleep,
+    Bail(anyhow::Error),
+}
+
+/// 构造“所有凭据均处于冷却/速率限制”的 429 + Retry-After 错误。
+///
+/// 两个穷尽分支的 long-wait bail 与 all-due-to-cooling 的 wait-budget bail 复用同一文案，
+/// Retry-After 语义要求向上取整，避免客户端在实际等待结束前提前重试。
+fn cooling_retry_after_error(
+    wait: StdDuration,
+    min_wait_detail: Option<(u64, &'static str, StdDuration)>,
+) -> anyhow::Error {
+    let secs = (wait.as_millis().div_ceil(1000) as u64).max(1);
+    let (cid, source) = min_wait_detail
+        .map(|(id, src, _)| (id, src))
+        .unwrap_or((0, "unknown"));
+    anyhow::anyhow!(
+        "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：{}，来自凭据 #{}）",
+        secs,
+        source,
+        cid
+    )
+}
+
 /// API 调用上下文
 ///
 /// 绑定特定凭据的调用上下文，确保 token、credentials 和 id 的一致性
@@ -504,6 +589,71 @@ impl MultiTokenManager {
         }
     }
 
+    /// 当某一轮所有可用凭据都已尝试完、仅剩“临时不可用”等待时，决定是继续短睡还是 bail。
+    ///
+    /// 两个穷尽分支（enabled-exhausted / total-exhausted）此前各自维护一份逐字相同的
+    /// long-wait bail + wait-budget bail + 诊断埋点逻辑，仅诊断 tag 与最终 fallthrough
+    /// 消息不同。这里收敛为单一决策点，分支身份通过 `branch` 传入以还原各自的诊断字符串。
+    ///
+    /// 返回 `WaitDecision::Sleep` 表示调用方应短睡 `wait` 后重置本轮状态继续重试；
+    /// 返回 `WaitDecision::Bail` 表示应立即以携带的错误退出。
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_wait_decision(
+        &self,
+        branch: ExhaustionBranch,
+        wait: StdDuration,
+        all_due_to_cooling: bool,
+        temporary_wait_spent: StdDuration,
+        fallthrough_available: usize,
+        total: usize,
+        tried_ids: &[u64],
+        min_wait: Option<StdDuration>,
+        min_wait_detail: Option<(u64, &'static str, StdDuration)>,
+    ) -> WaitDecision {
+        // 仅当本轮所有被跳过的凭据都因冷却/限流时，才以 429 + Retry-After 快速返回；
+        // 若混杂 token 刷新失败等非临时性错误，保留原有 sleep-retry 语义以避免吞掉真实错误。
+        if all_due_to_cooling && wait > self.cooldown_bail_threshold() {
+            self.debug_log_availability_diagnostics(
+                branch.event_bail_long_wait(),
+                tried_ids,
+                min_wait,
+                min_wait_detail,
+            );
+            return WaitDecision::Bail(cooling_retry_after_error(wait, min_wait_detail));
+        }
+
+        // 累计“临时不可用”短睡预算无条件检查：即便本轮混杂非临时性错误，也不允许
+        // 累计等待无限增长（COR-001 hardening）。但 bail 的“分类”仍遵循 all_due_to_cooling：
+        // 全冷却 → 429 冷却消息；混合故障 → 常规 fallthrough 消息，避免吞掉真实错误语义。
+        let wait_budget = self.acquire_temporary_wait_budget();
+        if temporary_wait_spent.saturating_add(wait) > wait_budget {
+            tracing::debug!(
+                wait_spent_ms = %temporary_wait_spent.as_millis(),
+                next_wait_ms = %wait.as_millis(),
+                wait_budget_ms = %wait_budget.as_millis(),
+                "凭据临时不可用等待预算耗尽"
+            );
+            self.debug_log_availability_diagnostics(
+                branch.event_bail_wait_budget(),
+                tried_ids,
+                min_wait,
+                min_wait_detail,
+            );
+            if all_due_to_cooling {
+                return WaitDecision::Bail(cooling_retry_after_error(wait, min_wait_detail));
+            }
+            return WaitDecision::Bail(branch.fallthrough_error(fallthrough_available, total));
+        }
+
+        self.debug_log_availability_diagnostics(
+            branch.event_sleep(),
+            tried_ids,
+            min_wait,
+            min_wait_detail,
+        );
+        WaitDecision::Sleep
+    }
+
     /// 获取凭据总数
     pub fn total_count(&self) -> usize {
         self.entries.lock().len()
@@ -746,73 +896,35 @@ impl MultiTokenManager {
             };
             if enabled_total > 0 && enabled_tried >= enabled_total {
                 if let Some(wait) = min_wait {
-                    // 仅当本轮所有被跳过的凭据都因冷却/限流时，才以 429 + Retry-After 快速返回；
-                    // 若混杂 token 刷新失败等非临时性错误，保留原有 sleep-retry 语义以避免吞掉真实错误。
                     let round_tried = tried_ids.len().saturating_sub(initial_excluded_ids.len());
                     let all_due_to_cooling = round_tried > 0 && cooling_skipped == round_tried;
-                    if all_due_to_cooling && wait > self.cooldown_bail_threshold() {
-                        self.debug_log_availability_diagnostics(
-                            "enabled_exhausted_bail_long_wait",
-                            &tried_ids,
-                            min_wait,
-                            min_wait_detail,
-                        );
-                        // Retry-After 语义要求向上取整，避免客户端在实际等待结束前提前重试。
-                        let secs = (wait.as_millis().div_ceil(1000) as u64).max(1);
-                        let (cid, source) = min_wait_detail
-                            .map(|(id, src, _)| (id, src))
-                            .unwrap_or((0, "unknown"));
-                        anyhow::bail!(
-                            "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：{}，来自凭据 #{}）",
-                            secs,
-                            source,
-                            cid
-                        );
-                    }
-                    let wait_budget = self.acquire_temporary_wait_budget();
-                    if all_due_to_cooling && temporary_wait_spent.saturating_add(wait) > wait_budget
-                    {
-                        tracing::debug!(
-                            wait_spent_ms = %temporary_wait_spent.as_millis(),
-                            next_wait_ms = %wait.as_millis(),
-                            wait_budget_ms = %wait_budget.as_millis(),
-                            "凭据临时不可用等待预算耗尽"
-                        );
-                        self.debug_log_availability_diagnostics(
-                            "enabled_exhausted_bail_wait_budget",
-                            &tried_ids,
-                            min_wait,
-                            min_wait_detail,
-                        );
-                        let secs = (wait.as_millis().div_ceil(1000) as u64).max(1);
-                        let (cid, source) = min_wait_detail
-                            .map(|(id, src, _)| (id, src))
-                            .unwrap_or((0, "unknown"));
-                        anyhow::bail!(
-                            "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：{}，来自凭据 #{}）",
-                            secs,
-                            source,
-                            cid
-                        );
-                    }
-                    self.debug_log_availability_diagnostics(
-                        "enabled_exhausted_sleep",
+                    match self.evaluate_wait_decision(
+                        ExhaustionBranch::EnabledExhausted,
+                        wait,
+                        all_due_to_cooling,
+                        temporary_wait_spent,
+                        enabled_total,
+                        total,
                         &tried_ids,
                         min_wait,
                         min_wait_detail,
-                    );
-                    tokio::time::sleep(wait).await;
-                    if all_due_to_cooling {
-                        temporary_wait_spent = temporary_wait_spent.saturating_add(wait);
+                    ) {
+                        WaitDecision::Bail(err) => return Err(err),
+                        WaitDecision::Sleep => {
+                            tokio::time::sleep(wait).await;
+                            // COR-001：无条件累计短睡预算，混合故障轮次同样计入，
+                            // 避免累计等待无限增长（分类仍由 evaluate_wait_decision 保持）。
+                            temporary_wait_spent = temporary_wait_spent.saturating_add(wait);
+                            tried_ids = initial_excluded_ids.clone();
+                            cooling_skipped = 0;
+                            min_wait = None;
+                            min_wait_detail = None;
+                            continue;
+                        }
                     }
-                    tried_ids = initial_excluded_ids.clone();
-                    cooling_skipped = 0;
-                    min_wait = None;
-                    min_wait_detail = None;
-                    continue;
                 }
                 self.debug_log_availability_diagnostics(
-                    "enabled_exhausted_bail",
+                    ExhaustionBranch::EnabledExhausted.event_bail(),
                     &tried_ids,
                     min_wait,
                     min_wait_detail,
@@ -828,68 +940,32 @@ impl MultiTokenManager {
                 if let Some(wait) = min_wait {
                     let round_tried = tried_ids.len().saturating_sub(initial_excluded_ids.len());
                     let all_due_to_cooling = round_tried > 0 && cooling_skipped == round_tried;
-                    if all_due_to_cooling && wait > self.cooldown_bail_threshold() {
-                        self.debug_log_availability_diagnostics(
-                            "total_exhausted_bail_long_wait",
-                            &tried_ids,
-                            min_wait,
-                            min_wait_detail,
-                        );
-                        let secs = (wait.as_millis().div_ceil(1000) as u64).max(1);
-                        let (cid, source) = min_wait_detail
-                            .map(|(id, src, _)| (id, src))
-                            .unwrap_or((0, "unknown"));
-                        anyhow::bail!(
-                            "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：{}，来自凭据 #{}）",
-                            secs,
-                            source,
-                            cid
-                        );
-                    }
-                    let wait_budget = self.acquire_temporary_wait_budget();
-                    if all_due_to_cooling && temporary_wait_spent.saturating_add(wait) > wait_budget
-                    {
-                        tracing::debug!(
-                            wait_spent_ms = %temporary_wait_spent.as_millis(),
-                            next_wait_ms = %wait.as_millis(),
-                            wait_budget_ms = %wait_budget.as_millis(),
-                            "凭据临时不可用等待预算耗尽"
-                        );
-                        self.debug_log_availability_diagnostics(
-                            "total_exhausted_bail_wait_budget",
-                            &tried_ids,
-                            min_wait,
-                            min_wait_detail,
-                        );
-                        let secs = (wait.as_millis().div_ceil(1000) as u64).max(1);
-                        let (cid, source) = min_wait_detail
-                            .map(|(id, src, _)| (id, src))
-                            .unwrap_or((0, "unknown"));
-                        anyhow::bail!(
-                            "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：{}，来自凭据 #{}）",
-                            secs,
-                            source,
-                            cid
-                        );
-                    }
-                    self.debug_log_availability_diagnostics(
-                        "total_exhausted_sleep",
+                    match self.evaluate_wait_decision(
+                        ExhaustionBranch::TotalExhausted,
+                        wait,
+                        all_due_to_cooling,
+                        temporary_wait_spent,
+                        self.available_count(),
+                        total,
                         &tried_ids,
                         min_wait,
                         min_wait_detail,
-                    );
-                    tokio::time::sleep(wait).await;
-                    if all_due_to_cooling {
-                        temporary_wait_spent = temporary_wait_spent.saturating_add(wait);
+                    ) {
+                        WaitDecision::Bail(err) => return Err(err),
+                        WaitDecision::Sleep => {
+                            tokio::time::sleep(wait).await;
+                            // COR-001：无条件累计短睡预算（见 enabled-exhausted 分支说明）。
+                            temporary_wait_spent = temporary_wait_spent.saturating_add(wait);
+                            tried_ids = initial_excluded_ids.clone();
+                            cooling_skipped = 0;
+                            min_wait = None;
+                            min_wait_detail = None;
+                            continue;
+                        }
                     }
-                    tried_ids = initial_excluded_ids.clone();
-                    cooling_skipped = 0;
-                    min_wait = None;
-                    min_wait_detail = None;
-                    continue;
                 }
                 self.debug_log_availability_diagnostics(
-                    "total_exhausted_bail",
+                    ExhaustionBranch::TotalExhausted.event_bail(),
                     &tried_ids,
                     min_wait,
                     min_wait_detail,
