@@ -40,6 +40,7 @@ tmp/
 .workflow/spec-analytics.jsonl
 .workflow/.team/
 .workflow/scratch/
+.workflow/.csv-wave/
 .workflow/.maestro/
 .workflow/state.json
 .workflow/wiki-index.json
