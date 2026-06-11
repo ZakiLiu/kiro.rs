@@ -180,7 +180,8 @@ impl StreamContext {
             }
             Event::ContextUsage(context_usage) => {
                 // 从上下文使用百分比计算实际的 input_tokens
-                let context_window = crate::anthropic::types::get_context_window_size(&self.model) as f64;
+                let context_window =
+                    crate::anthropic::types::get_context_window_size(&self.model) as f64;
                 let actual_input_tokens =
                     (context_usage.context_usage_percentage * context_window / 100.0) as i32;
                 self.context_input_tokens = Some(actual_input_tokens);
@@ -313,17 +314,14 @@ impl StreamContext {
 
         if !reasoning.text.is_empty() {
             self.thinking_tokens += estimate_tokens(&reasoning.text);
-            if let Some(delta_event) = self
-                .state_manager
-                .handle_content_block_delta(
-                    index,
-                    json!({
-                        "type": "content_block_delta",
-                        "index": index,
-                        "delta": { "type": "thinking_delta", "thinking": reasoning.text }
-                    }),
-                )
-            {
+            if let Some(delta_event) = self.state_manager.handle_content_block_delta(
+                index,
+                json!({
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": { "type": "thinking_delta", "thinking": reasoning.text }
+                }),
+            ) {
                 events.push(delta_event);
             }
         }
@@ -903,10 +901,13 @@ impl StreamContext {
             let split = tu.billing_split();
             tracing::info!(
                 "tokenUsageEvent 覆盖本地估算 (仅 input/output): input {} → {}, output {} → {} | cache 保留本地模拟: read={}, write={}",
-                billed_input_tokens, split.input_tokens,
-                self.output_tokens, split.output_tokens,
+                billed_input_tokens,
+                split.input_tokens,
+                self.output_tokens,
+                split.output_tokens,
                 self.cache_usage.map_or(0, |c| c.cache_read_input_tokens),
-                self.cache_usage.map_or(0, |c| c.cache_creation_input_tokens),
+                self.cache_usage
+                    .map_or(0, |c| c.cache_creation_input_tokens),
             );
             FinalUsage {
                 input_tokens: split.input_tokens,
@@ -928,4 +929,3 @@ impl StreamContext {
         events
     }
 }
-

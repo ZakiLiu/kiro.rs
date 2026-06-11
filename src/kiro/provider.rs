@@ -16,10 +16,10 @@ use tokio::time::sleep;
 #[cfg(not(feature = "sensitive-logs"))]
 use crate::common::utf8::floor_char_boundary;
 use crate::http_client::{ProxyConfig, build_client};
+use crate::kiro::cooldown::CooldownReason;
 use crate::kiro::endpoint::{
     CliEndpoint, IDE_ENDPOINT_NAME, IdeEndpoint, KiroEndpoint, RequestContext,
 };
-use crate::kiro::cooldown::CooldownReason;
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::token_manager::{CallContext, MultiTokenManager};
@@ -280,10 +280,7 @@ impl KiroProvider {
         let interval_secs = interval_secs.max(60);
         let provider = Arc::clone(self);
         tokio::spawn(async move {
-            tracing::info!(
-                interval_secs = interval_secs,
-                "周期性凭据恢复任务已启动"
-            );
+            tracing::info!(interval_secs = interval_secs, "周期性凭据恢复任务已启动");
             let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             ticker.tick().await; // 第一个 tick 立即返回
@@ -294,10 +291,7 @@ impl KiroProvider {
                 if candidates.is_empty() {
                     continue;
                 }
-                tracing::info!(
-                    count = candidates.len(),
-                    "开始周期性凭据恢复检查"
-                );
+                tracing::info!(count = candidates.len(), "开始周期性凭据恢复检查");
                 for (id, reason) in candidates {
                     match reason {
                         crate::kiro::token_manager::DisableReason::InsufficientBalance
@@ -325,11 +319,7 @@ impl KiroProvider {
                                 }
                                 Err(e) => {
                                     tm.increment_recovery_attempts_inner(id);
-                                    tracing::debug!(
-                                        "凭据 #{} 恢复检查失败（余额查询）: {}",
-                                        id,
-                                        e
-                                    );
+                                    tracing::debug!("凭据 #{} 恢复检查失败（余额查询）: {}", id, e);
                                 }
                             }
                         }
@@ -339,10 +329,7 @@ impl KiroProvider {
                             // 尝试刷新 Token
                             match tm.force_refresh_token_for(id).await {
                                 Ok(_) => {
-                                    tracing::info!(
-                                        "凭据 #{} Token 刷新成功，已自动恢复",
-                                        id
-                                    );
+                                    tracing::info!("凭据 #{} Token 刷新成功，已自动恢复", id);
                                     // force_refresh_token_for 内部已经恢复了凭据并持久化
                                 }
                                 Err(e) => {
@@ -451,7 +438,10 @@ impl KiroProvider {
         if available == 0 {
             anyhow::bail!("没有可用的凭据");
         }
-        let max_retries = available.min(SMALL_POOL_THRESHOLD).max(total_credentials / RETRY_FRACTION_DIVISOR).max(MIN_TOTAL_RETRIES);
+        let max_retries = available
+            .min(SMALL_POOL_THRESHOLD)
+            .max(total_credentials / RETRY_FRACTION_DIVISOR)
+            .max(MIN_TOTAL_RETRIES);
         let mut last_error: Option<anyhow::Error> = None;
         let mut forced_token_refresh: HashSet<u64> = HashSet::new();
         let mut failed_ids: Vec<u64> = Vec::new();
@@ -464,7 +454,11 @@ impl KiroProvider {
 
         for attempt in 0..max_retries {
             // 获取调用上下文（支持排除已失败凭据）
-            let ctx = match self.token_manager.acquire_context_excluding(&failed_ids).await {
+            let ctx = match self
+                .token_manager
+                .acquire_context_excluding(&failed_ids)
+                .await
+            {
                 Ok(c) => c,
                 Err(e) => {
                     // 所有凭据均处于冷却 → 不再重试，直接返回（handlers.rs 会转为 429）
@@ -518,10 +512,7 @@ impl KiroProvider {
             // Content-Type is endpoint-specific (CLI: application/x-amz-json-1.0,
             // IDE: application/json). Let decorate_mcp set it; reqwest's .header()
             // APPENDS on duplicate keys (we don't want two Content-Type values).
-            let base_request = client
-                .post(&url)
-                .body(body)
-                .header("Connection", "close");
+            let base_request = client.post(&url).body(body).header("Connection", "close");
             let request = endpoint.decorate_mcp(base_request, &request_ctx);
             #[cfg(feature = "sensitive-logs")]
             let _request_for_log = request.try_clone();
@@ -642,12 +633,14 @@ impl KiroProvider {
             if matches!(status.as_u16(), 401 | 403) {
                 // 账户暂停：立即永久禁用
                 if body.contains("suspended") {
-                    tracing::error!(
-                        "凭据 #{} 账户已暂停，永久禁用: {} {}", ctx.id, status, body
-                    );
+                    tracing::error!("凭据 #{} 账户已暂停，永久禁用: {} {}", ctx.id, status, body);
                     self.token_manager.mark_account_suspended(ctx.id);
                     failed_ids.push(ctx.id);
-                    last_error = Some(anyhow::anyhow!("MCP 请求失败（账户暂停）: {} {}", status, body));
+                    last_error = Some(anyhow::anyhow!(
+                        "MCP 请求失败（账户暂停）: {} {}",
+                        status,
+                        body
+                    ));
                     continue;
                 }
 
@@ -683,8 +676,8 @@ impl KiroProvider {
                 }
 
                 // 429 策略：切下个凭据 retry + 平坦冷却分散后续请求
-                let cooldown_duration = retry_after
-                    .unwrap_or(Duration::from_secs(DEFAULT_RATE_LIMIT_COOLDOWN_SECS));
+                let cooldown_duration =
+                    retry_after.unwrap_or(Duration::from_secs(DEFAULT_RATE_LIMIT_COOLDOWN_SECS));
                 self.token_manager.set_credential_cooldown_with_duration(
                     ctx.id,
                     CooldownReason::RateLimitExceeded,
@@ -798,7 +791,10 @@ impl KiroProvider {
         if available == 0 {
             anyhow::bail!("没有可用的凭据");
         }
-        let max_retries = available.min(SMALL_POOL_THRESHOLD).max(total_credentials / RETRY_FRACTION_DIVISOR).max(MIN_TOTAL_RETRIES);
+        let max_retries = available
+            .min(SMALL_POOL_THRESHOLD)
+            .max(total_credentials / RETRY_FRACTION_DIVISOR)
+            .max(MIN_TOTAL_RETRIES);
         let mut last_error: Option<anyhow::Error> = None;
         let mut forced_token_refresh: HashSet<u64> = HashSet::new();
         // P0#1 修复：retry 链路必须排除上次失败的凭据，否则 acquire_context_for_user
@@ -1036,13 +1032,17 @@ impl KiroProvider {
                 if body.contains("suspended") {
                     tracing::error!(
                         "凭据 #{} 账户已暂停，永久禁用（不自动恢复）: {} {}",
-                        ctx.id, status, body
+                        ctx.id,
+                        status,
+                        body
                     );
                     self.token_manager.mark_account_suspended(ctx.id);
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "{} API 请求失败（账户暂停）: {} {}",
-                        api_type, status, body
+                        api_type,
+                        status,
+                        body
                     ));
                     continue;
                 }
@@ -1110,8 +1110,8 @@ impl KiroProvider {
                 // - 本轮 retry 强制 exclude 此凭据
                 // - 设置平坦冷却（不累计 trigger_count，无指数雪球）分散后续独立请求
                 // - 所有凭据都被限流时 acquire_context 会 bail，handlers.rs 返回 429
-                let cooldown_duration = retry_after
-                    .unwrap_or(Duration::from_secs(DEFAULT_RATE_LIMIT_COOLDOWN_SECS));
+                let cooldown_duration =
+                    retry_after.unwrap_or(Duration::from_secs(DEFAULT_RATE_LIMIT_COOLDOWN_SECS));
                 self.token_manager.set_credential_cooldown_with_duration(
                     ctx.id,
                     CooldownReason::RateLimitExceeded,
@@ -1696,8 +1696,17 @@ mod tests {
 
         // envState injected on currentMessage and on every history user turn.
         let cur_ctx = &cur_uim["userInputMessageContext"];
-        assert_eq!(cur_ctx["envState"]["operatingSystem"].as_str().unwrap().len() > 0, true);
-        assert!(cur_ctx["envState"]["currentWorkingDirectory"].as_str().is_some());
+        assert!(
+            !cur_ctx["envState"]["operatingSystem"]
+                .as_str()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            cur_ctx["envState"]["currentWorkingDirectory"]
+                .as_str()
+                .is_some()
+        );
 
         let h0_ctx = &cs["history"][0]["userInputMessage"]["userInputMessageContext"];
         assert!(h0_ctx["envState"].is_object());
@@ -1705,7 +1714,10 @@ mod tests {
         // Idempotency: running transform_api_body twice doesn't double-wrap.
         let second = endpoint.transform_api_body(&result, &ctx).unwrap();
         let second_parsed: serde_json::Value = serde_json::from_str(&second).unwrap();
-        let second_content = second_parsed["conversationState"]["currentMessage"]["userInputMessage"]["content"].as_str().unwrap();
+        let second_content =
+            second_parsed["conversationState"]["currentMessage"]["userInputMessage"]["content"]
+                .as_str()
+                .unwrap();
         assert_eq!(
             second_content.matches("--- USER MESSAGE BEGIN ---").count(),
             1,
@@ -1733,15 +1745,22 @@ mod tests {
         use crate::kiro::model::requests::conversation::{
             ConversationState, CurrentMessage, Message, UserInputMessage,
         };
-        let cur = CurrentMessage::new(UserInputMessage::new("hi", "claude-sonnet-4").with_origin("AI_EDITOR"));
+        let cur = CurrentMessage::new(
+            UserInputMessage::new("hi", "claude-sonnet-4").with_origin("AI_EDITOR"),
+        );
         let state = ConversationState::new("c1")
-            .with_history(vec![Message::user("h", "claude-sonnet-4"), Message::assistant("ack")])
+            .with_history(vec![
+                Message::user("h", "claude-sonnet-4"),
+                Message::assistant("ack"),
+            ])
             .with_current_message(cur)
             .with_chat_trigger_type("MANUAL")
             .with_agent_continuation_id("ac1")
             .with_agent_task_type("vibe");
         let body = serde_json::json!({"conversationState": state, "profileArn": "arn:x"});
-        let result = endpoint.transform_api_body(&serde_json::to_string(&body).unwrap(), &ctx).unwrap();
+        let result = endpoint
+            .transform_api_body(&serde_json::to_string(&body).unwrap(), &ctx)
+            .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         let cs = &parsed["conversationState"];
         let keys: Vec<&str> = cs.as_object().unwrap().keys().map(|s| s.as_str()).collect();
@@ -1760,7 +1779,11 @@ mod tests {
             "conversationState field order must match kiro-cli golden capture"
         );
         let cur_keys: Vec<&str> = cs["currentMessage"]["userInputMessage"]
-            .as_object().unwrap().keys().map(|s| s.as_str()).collect();
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
         assert_eq!(
             cur_keys,
             vec!["content", "userInputMessageContext", "origin", "modelId"],
@@ -1817,9 +1840,8 @@ mod tests {
             .transform_api_body(&serde_json::to_string(&body).unwrap(), &ctx)
             .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        let props = &parsed["conversationState"]["currentMessage"]["userInputMessage"]
-            ["userInputMessageContext"]["tools"][0]["toolSpecification"]["inputSchema"]["json"]
-            ["properties"];
+        let props = &parsed["conversationState"]["currentMessage"]["userInputMessage"]["userInputMessageContext"]
+            ["tools"][0]["toolSpecification"]["inputSchema"]["json"]["properties"];
         // User-defined schema properties must be preserved verbatim.
         assert_eq!(
             props["origin"],

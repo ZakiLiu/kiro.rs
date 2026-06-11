@@ -14,15 +14,13 @@ pub use event::SseEvent;
 pub(crate) use usage::CacheUsageBreakdown;
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::thinking::{
-        find_real_thinking_end_tag, find_real_thinking_start_tag,
-    };
-    use super::usage::estimate_tokens;
     use super::state::SseStateManager;
+    use super::thinking::{find_real_thinking_end_tag, find_real_thinking_start_tag};
+    use super::usage::estimate_tokens;
+    use super::*;
+    use crate::kiro::model::events::{Event, MeteringEvent};
     use serde_json::json;
     use std::collections::HashMap;
-    use crate::kiro::model::events::{Event, MeteringEvent};
 
     fn zero_cache_usage() -> Option<CacheUsageBreakdown> {
         Some(CacheUsageBreakdown {
@@ -81,18 +79,17 @@ mod tests {
     /// event AND set stop_reason="error" — Round 5 patch #13.
     #[test]
     fn test_event_error_emits_sse_error_event() {
-        let mut ctx = StreamContext::new_with_thinking(
-            "claude-sonnet-4",
-            0,
-            None,
-            false,
-            HashMap::new(),
-        );
+        let mut ctx =
+            StreamContext::new_with_thinking("claude-sonnet-4", 0, None, false, HashMap::new());
         let events = ctx.process_kiro_event(&Event::Error {
             error_code: "ThrottlingException".to_string(),
             error_message: "Rate limited".to_string(),
         });
-        assert_eq!(events.len(), 1, "Event::Error should emit one SSE error event");
+        assert_eq!(
+            events.len(),
+            1,
+            "Event::Error should emit one SSE error event"
+        );
         assert_eq!(events[0].event, "error");
         let data = &events[0].data;
         assert_eq!(data["type"], "error");
@@ -105,13 +102,8 @@ mod tests {
     /// also flows through the new "error" SSE path.
     #[test]
     fn test_event_exception_emits_sse_error_event() {
-        let mut ctx = StreamContext::new_with_thinking(
-            "claude-sonnet-4",
-            0,
-            None,
-            false,
-            HashMap::new(),
-        );
+        let mut ctx =
+            StreamContext::new_with_thinking("claude-sonnet-4", 0, None, false, HashMap::new());
         let events = ctx.process_kiro_event(&Event::Exception {
             exception_type: "InternalServerException".to_string(),
             message: "boom".to_string(),
@@ -127,18 +119,16 @@ mod tests {
     /// special-case for the more semantically-precise stop_reason.
     #[test]
     fn test_event_content_length_exceeded_keeps_max_tokens() {
-        let mut ctx = StreamContext::new_with_thinking(
-            "claude-sonnet-4",
-            0,
-            None,
-            false,
-            HashMap::new(),
-        );
+        let mut ctx =
+            StreamContext::new_with_thinking("claude-sonnet-4", 0, None, false, HashMap::new());
         let events = ctx.process_kiro_event(&Event::Exception {
             exception_type: "ContentLengthExceededException".to_string(),
             message: "too long".to_string(),
         });
-        assert!(events.is_empty(), "ContentLengthExceededException emits no SSE event");
+        assert!(
+            events.is_empty(),
+            "ContentLengthExceededException emits no SSE event"
+        );
         assert_eq!(ctx.state_manager.stop_reason.as_deref(), Some("max_tokens"));
     }
 

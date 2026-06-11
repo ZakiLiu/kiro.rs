@@ -1,11 +1,11 @@
 //! 单凭据 Token 管理器
 
-use anyhow::bail;
-use chrono::{DateTime, Duration, Utc};
 use crate::http_client::ProxyConfig;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model::usage_limits::UsageLimitsResponse;
 use crate::model::config::Config;
+use anyhow::bail;
+use chrono::{DateTime, Duration, Utc};
 
 use super::refresh::refresh_token;
 use super::types::get_usage_limits;
@@ -143,4 +143,3 @@ pub(crate) fn validate_refresh_token(credentials: &KiroCredentials) -> anyhow::R
 
     Ok(())
 }
-

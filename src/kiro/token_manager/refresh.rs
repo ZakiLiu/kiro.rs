@@ -252,4 +252,3 @@ async fn refresh_idc_token(
 
     Ok(new_credentials)
 }
-

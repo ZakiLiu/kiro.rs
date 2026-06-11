@@ -486,7 +486,6 @@ fn minimum_cacheable_tokens_for_model(model: &str) -> i32 {
     }
 }
 
-
 fn canonicalize_json(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Array(arr) => {

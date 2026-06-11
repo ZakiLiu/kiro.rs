@@ -826,11 +826,7 @@ impl AdminService {
             if event.event_type != MetricEventType::RequestCompleted {
                 continue;
             }
-            let model = event
-                .model
-                .as_deref()
-                .unwrap_or("unknown")
-                .to_string();
+            let model = event.model.as_deref().unwrap_or("unknown").to_string();
             let entry = model_map.entry(model).or_insert((0, 0, 0, 0, 0));
             entry.0 += 1; // request_count
             if let Some(ms) = event.latency_ms {
@@ -844,7 +840,10 @@ impl AdminService {
         let mut result: Vec<ModelMetrics> = model_map
             .into_iter()
             .map(
-                |(model, (request_count, latency_sum, latency_count, input_tokens, output_tokens))| {
+                |(
+                    model,
+                    (request_count, latency_sum, latency_count, input_tokens, output_tokens),
+                )| {
                     ModelMetrics {
                         model,
                         request_count,
@@ -899,7 +898,10 @@ impl AdminService {
         let mut result: Vec<CredentialMetrics> = cred_map
             .into_iter()
             .map(
-                |(credential_id, (request_count, success_count, failure_count, latency_sum, latency_count))| {
+                |(
+                    credential_id,
+                    (request_count, success_count, failure_count, latency_sum, latency_count),
+                )| {
                     CredentialMetrics {
                         credential_id,
                         request_count,

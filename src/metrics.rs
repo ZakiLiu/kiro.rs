@@ -137,8 +137,11 @@ mod tests {
         let collector = MetricsCollector::new(100);
         assert!(collector.is_empty());
 
-        collector.record(MetricEvent::new(MetricEventType::RequestReceived).with_model("claude-sonnet-4-6"));
-        collector.record(MetricEvent::new(MetricEventType::RequestCompleted).with_status("success"));
+        collector.record(
+            MetricEvent::new(MetricEventType::RequestReceived).with_model("claude-sonnet-4-6"),
+        );
+        collector
+            .record(MetricEvent::new(MetricEventType::RequestCompleted).with_status("success"));
 
         let snap = collector.snapshot();
         assert_eq!(snap.len(), 2);

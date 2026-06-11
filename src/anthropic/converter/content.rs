@@ -228,9 +228,7 @@ pub(super) fn process_message_content(
                             #[cfg(not(feature = "pdf-support"))]
                             {
                                 // pdf-support 未启用时，document block 被静默跳过
-                                tracing::debug!(
-                                    "跳过 document block：pdf-support feature 未启用"
-                                );
+                                tracing::debug!("跳过 document block：pdf-support feature 未启用");
                             }
                         }
                         _ => {}

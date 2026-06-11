@@ -1,6 +1,5 @@
 //! 共享类型与工具函数
 
-use anyhow::bail;
 use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::endpoint::{
     CLI_ENDPOINT_NAME, CliEndpoint, IDE_ENDPOINT_NAME, IdeEndpoint, KiroEndpoint, RequestContext,
@@ -9,6 +8,7 @@ use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model::usage_limits::UsageLimitsResponse;
 use crate::model::config::Config;
+use anyhow::bail;
 use serde::Serialize;
 
 /// 对 user_id 进行掩码处理，保护隐私

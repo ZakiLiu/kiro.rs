@@ -452,9 +452,8 @@ mod tests {
 
     #[test]
     fn test_preset_enabled_defaults_true() {
-        let preset: Preset =
-            serde_json::from_str(r#"{"id":"p1","name":"P1","systemPrompt":"hi"}"#)
-                .expect("preset should deserialize without enabled field");
+        let preset: Preset = serde_json::from_str(r#"{"id":"p1","name":"P1","systemPrompt":"hi"}"#)
+            .expect("preset should deserialize without enabled field");
         assert!(preset.enabled);
     }
 }

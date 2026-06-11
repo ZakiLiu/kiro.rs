@@ -77,7 +77,6 @@ pub fn default_is_monthly_request_limit(body: &str) -> bool {
         .is_some_and(|v| v == "MONTHLY_REQUEST_COUNT")
 }
 
-
 pub fn default_is_bearer_token_invalid(body: &str) -> bool {
     body.contains("The bearer token included in the request is invalid")
 }

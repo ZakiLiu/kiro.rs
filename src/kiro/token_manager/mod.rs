@@ -24,23 +24,17 @@ pub use types::{CachedBalanceInfo, DisableReason};
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
-    use super::*;
-    use super::multi::{resolve_symlink_target, MAX_FAILURES_PER_CREDENTIAL};
+    use super::multi::MAX_FAILURES_PER_CREDENTIAL;
     use super::refresh::{build_idc_refresh_user_agents, sha256_hex};
     use super::single::{
-        TokenManager, is_token_expired, is_token_expiring_soon, is_token_expiring_within,
-        validate_refresh_token,
+        TokenManager, is_token_expired, is_token_expiring_soon, validate_refresh_token,
     };
-    use super::types::{endpoint_for_credentials, get_usage_limits};
-    use chrono::{DateTime, Duration, SecondsFormat, Utc};
-    use crate::http_client::ProxyConfig;
+    use super::*;
     use crate::kiro::cooldown::CooldownReason;
-    use crate::kiro::endpoint::{CliEndpoint, IdeEndpoint, KiroEndpoint, RequestContext};
-    use crate::kiro::machine_id;
+    use crate::kiro::endpoint::{IdeEndpoint, KiroEndpoint, RequestContext};
     use crate::kiro::model::credentials::KiroCredentials;
-    use crate::kiro::model::usage_limits::UsageLimitsResponse;
     use crate::model::config::Config;
-    use sha2::{Digest, Sha256};
+    use chrono::{Duration, Utc};
 
     #[test]
     fn test_token_manager_new() {
@@ -467,6 +461,118 @@ mod tests {
 
         assert_eq!(ctx.id, 1);
         assert!(elapsed >= std::time::Duration::from_millis(120));
+    }
+
+    #[tokio::test]
+    async fn test_acquire_context_bails_when_short_cooling_waits_exceed_budget() {
+        let config = Config::default();
+        let mut cred = KiroCredentials::default();
+        cred.access_token = Some("t1".to_string());
+        cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager = std::sync::Arc::new(
+            MultiTokenManager::new(config, vec![cred], None, None, false).unwrap(),
+        );
+
+        // 单次等待低于 2s bail 阈值：第一轮应允许短睡。
+        manager.set_credential_cooldown_with_duration(
+            1,
+            CooldownReason::RateLimitExceeded,
+            Some(std::time::Duration::from_millis(220)),
+        );
+
+        // 在 acquire 短睡期间持续续上冷却，模拟线上高并发下“每轮 wait 都不长，
+        // 但总等待不断滚动延长”的状态。
+        let extender = std::sync::Arc::clone(&manager);
+        let extend_task = tokio::spawn(async move {
+            for _ in 0..6 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                extender.set_credential_cooldown_with_duration(
+                    1,
+                    CooldownReason::RateLimitExceeded,
+                    Some(std::time::Duration::from_millis(220)),
+                );
+            }
+        });
+
+        let started = std::time::Instant::now();
+        let err = manager.acquire_context().await.err().unwrap();
+        let elapsed = started.elapsed();
+        extend_task.await.unwrap();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(700),
+            "应在累计等待预算耗尽后快速返回，实际耗时: {:?}",
+            elapsed
+        );
+        assert!(err.to_string().contains("所有凭据均处于冷却/速率限制"));
+        assert!(err.to_string().contains("retry_after_secs="));
+    }
+
+    #[tokio::test]
+    async fn test_acquire_context_preserves_exclusions_while_waiting_for_cooling_budget() {
+        let config = Config::default();
+        let mut excluded_cred = KiroCredentials::default();
+        excluded_cred.access_token = Some("excluded-token".to_string());
+        excluded_cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        excluded_cred.priority = 0;
+
+        let mut cooling_cred = KiroCredentials::default();
+        cooling_cred.access_token = Some("cooling-token".to_string());
+        cooling_cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        cooling_cred.priority = 0;
+
+        let manager = std::sync::Arc::new(
+            MultiTokenManager::new(config, vec![excluded_cred, cooling_cred], None, None, false)
+                .unwrap(),
+        );
+
+        manager.set_credential_cooldown_with_duration(
+            2,
+            CooldownReason::RateLimitExceeded,
+            Some(std::time::Duration::from_millis(220)),
+        );
+
+        // 持续续上 #2 的短冷却；如果 sleep 后丢失 exclude_ids，旧逻辑会错误返回 #1。
+        let extender = std::sync::Arc::clone(&manager);
+        let extend_task = tokio::spawn(async move {
+            for _ in 0..6 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                extender.set_credential_cooldown_with_duration(
+                    2,
+                    CooldownReason::RateLimitExceeded,
+                    Some(std::time::Duration::from_millis(220)),
+                );
+            }
+        });
+
+        let err = manager.acquire_context_excluding(&[1]).await.err().unwrap();
+        extend_task.await.unwrap();
+
+        assert!(err.to_string().contains("所有凭据均处于冷却/速率限制"));
+        assert!(err.to_string().contains("retry_after_secs="));
+    }
+
+    #[tokio::test]
+    async fn test_acquire_context_excluding_ignores_disabled_exclusions_for_exhaustion_count() {
+        let config = Config::default();
+        let mut disabled_cred = KiroCredentials::default();
+        disabled_cred.access_token = Some("disabled-token".to_string());
+        disabled_cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let mut enabled_cred = KiroCredentials::default();
+        enabled_cred.access_token = Some("enabled-token".to_string());
+        enabled_cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager =
+            MultiTokenManager::new(config, vec![disabled_cred, enabled_cred], None, None, false)
+                .unwrap();
+
+        assert!(manager.report_quota_exhausted(1));
+        assert_eq!(manager.available_count(), 1);
+
+        let ctx = manager.acquire_context_excluding(&[1]).await.unwrap();
+        assert_eq!(ctx.id, 2);
     }
 
     #[tokio::test]

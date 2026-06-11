@@ -23,8 +23,8 @@ use crate::kiro::rate_limiter::{RateLimitConfig, RateLimiter};
 use crate::model::config::Config;
 
 use super::balance::{
-    CachedBalance, BALANCE_TTL_HIGH_FREQ_SECS, BALANCE_TTL_LOW_BALANCE_SECS,
-    BALANCE_TTL_LOW_FREQ_SECS, HIGH_FREQ_THRESHOLD, LOW_BALANCE_THRESHOLD, USAGE_COUNT_RESET_SECS,
+    BALANCE_TTL_HIGH_FREQ_SECS, BALANCE_TTL_LOW_BALANCE_SECS, BALANCE_TTL_LOW_FREQ_SECS,
+    CachedBalance, HIGH_FREQ_THRESHOLD, LOW_BALANCE_THRESHOLD, USAGE_COUNT_RESET_SECS,
 };
 use crate::common::utf8::floor_char_boundary;
 use crate::kiro::model::usage_limits::UsageLimitsResponse;
@@ -34,8 +34,7 @@ use super::refresh::{
     refresh_token_with_id, sha256_hex,
 };
 use super::single::{
-    is_token_expired, is_token_expiring_soon, is_token_expiring_within,
-    validate_credential_secret,
+    is_token_expired, is_token_expiring_soon, is_token_expiring_within, validate_credential_secret,
 };
 use super::types::{
     CachedBalanceInfo, CredentialEntrySnapshot, DisableReason, ManagerSnapshot, get_usage_limits,
@@ -188,6 +187,15 @@ const STATS_SAVE_DEBOUNCE: StdDuration = StdDuration::from_secs(30);
 /// 避免在正常限速窗口内过早放弃。参见 `cooldown_bail_threshold()`。
 const DEFAULT_COOLDOWN_BAIL_THRESHOLD: StdDuration = StdDuration::from_secs(2);
 
+/// `acquire_context_excluding()` 允许短暂等待凭据从冷却/速率限制中恢复的默认预算，
+/// 但不能让 HTTP handler 因为多轮短睡一直挂起到客户端超时。
+///
+/// 测试环境使用更小预算，避免回归测试真实等待数秒。
+#[cfg(not(test))]
+const DEFAULT_ACQUIRE_TEMPORARY_WAIT_BUDGET: StdDuration = StdDuration::from_secs(5);
+#[cfg(test)]
+const DEFAULT_ACQUIRE_TEMPORARY_WAIT_BUDGET: StdDuration = StdDuration::from_millis(300);
+
 /// API 调用上下文
 ///
 /// 绑定特定凭据的调用上下文，确保 token、credentials 和 id 的一致性
@@ -313,7 +321,11 @@ impl MultiTokenManager {
                     } else {
                         None
                     },
-                    disabled_at: if cred.disabled { Some(Utc::now()) } else { None },
+                    disabled_at: if cred.disabled {
+                        Some(Utc::now())
+                    } else {
+                        None
+                    },
                     recovery_attempts: 0,
                     fingerprint,
                     success_count: 0,
@@ -455,6 +467,20 @@ impl MultiTokenManager {
         DEFAULT_COOLDOWN_BAIL_THRESHOLD.max(effective_interval)
     }
 
+    /// 计算 acquire 阶段“临时不可用”累计等待预算。
+    ///
+    /// 默认最多等 5s，防止多轮短 cooldown/rate-limit 把请求挂到客户端超时；
+    /// 但如果显式配置了很低的 `credential_rpm`，且正常轮转窗口超过默认 2s 阈值，
+    /// 则至少允许一个轮转窗口，避免破坏低 RPM 限速语义。
+    fn acquire_temporary_wait_budget(&self) -> StdDuration {
+        let cooldown_threshold = self.cooldown_bail_threshold();
+        if cooldown_threshold > DEFAULT_COOLDOWN_BAIL_THRESHOLD {
+            DEFAULT_ACQUIRE_TEMPORARY_WAIT_BUDGET.max(cooldown_threshold)
+        } else {
+            DEFAULT_ACQUIRE_TEMPORARY_WAIT_BUDGET
+        }
+    }
+
     /// 获取凭据总数
     pub fn total_count(&self) -> usize {
         self.entries.lock().len()
@@ -586,7 +612,8 @@ impl MultiTokenManager {
                     // 窗口过期 → 重置 usage 和 success_rate，让长期未用的凭据重新获得机会。
                     // 注意：不能只重置 rate 不重置 usage，否则初始化 usage > 0 的新凭据
                     // 永远不会被选中（因为它们无法通过 min(recent_usage) 关卡）。
-                    let window_expired = c.usage_reset_at.elapsed().as_secs() >= USAGE_COUNT_RESET_SECS;
+                    let window_expired =
+                        c.usage_reset_at.elapsed().as_secs() >= USAGE_COUNT_RESET_SECS;
                     let total = c.recent_success + c.recent_fail;
                     let rate = if window_expired || total == 0 {
                         0.5
@@ -602,12 +629,20 @@ impl MultiTokenManager {
         }
 
         // 第一优先级：按成功率分组（good > 0.3 或无数据，poor <= 0.3）
-        let good: Vec<_> = scored.iter().filter(|(_, _, _, rate)| *rate > 0.3).copied().collect();
+        let good: Vec<_> = scored
+            .iter()
+            .filter(|(_, _, _, rate)| *rate > 0.3)
+            .copied()
+            .collect();
         let candidates = if good.is_empty() { &scored } else { &good };
 
         // 第二优先级：使用次数最少
         let min_usage = candidates.iter().map(|(_, usage, _, _)| *usage).min()?;
-        let mut finalists: Vec<_> = candidates.iter().filter(|(_, usage, _, _)| *usage == min_usage).copied().collect();
+        let mut finalists: Vec<_> = candidates
+            .iter()
+            .filter(|(_, usage, _, _)| *usage == min_usage)
+            .copied()
+            .collect();
 
         // 第三优先级：余额最多
         let mut max_balance = finalists.first().map(|(_, _, b, _)| *b).unwrap_or(0.0);
@@ -651,7 +686,10 @@ impl MultiTokenManager {
         self.check_and_recover_individual();
 
         let total = self.total_count();
-        let mut tried_ids: Vec<u64> = exclude_ids.to_vec();
+        let mut initial_excluded_ids: Vec<u64> = exclude_ids.to_vec();
+        initial_excluded_ids.sort_unstable();
+        initial_excluded_ids.dedup();
+        let mut tried_ids: Vec<u64> = initial_excluded_ids.clone();
         // 当所有凭据都因“临时不可用”（冷却/速率限制）被跳过时，等待最短可用时间再重试。
         let mut min_wait: Option<std::time::Duration> = None;
         // 记录最短等待时间来自哪个凭据/原因，便于排障定位（冷却 vs 速率限制）。
@@ -660,6 +698,8 @@ impl MultiTokenManager {
         // 只有当“所有被跳过的凭据都是冷却/限流”时才触发 429 + Retry-After；
         // 若混杂了 token 刷新失败等非临时性错误，应走常规 sleep-retry 路径保留原有语义。
         let mut cooling_skipped: usize = 0;
+        // 累计所有“凭据临时不可用”导致的短睡，避免每次 wait 都低于阈值却无限重试。
+        let mut temporary_wait_spent = StdDuration::ZERO;
 
         loop {
             // tried_ids 只会记录“本轮已经尝试过的可用凭据”（disabled 的不会被选中）。
@@ -668,12 +708,24 @@ impl MultiTokenManager {
             //
             // 这里用 available_count() 判断“可用集合是否已被尝试完”，避免误报
             // "所有凭据均已禁用（x/y）" 这类与事实不符的错误。
-            let enabled_total = self.available_count();
-            if enabled_total > 0 && tried_ids.len() >= enabled_total {
+            let (enabled_total, enabled_tried) = {
+                let entries = self.entries.lock();
+                let mut enabled_total = 0usize;
+                let mut enabled_tried = 0usize;
+                for entry in entries.iter().filter(|entry| !entry.disabled) {
+                    enabled_total += 1;
+                    if tried_ids.contains(&entry.id) {
+                        enabled_tried += 1;
+                    }
+                }
+                (enabled_total, enabled_tried)
+            };
+            if enabled_total > 0 && enabled_tried >= enabled_total {
                 if let Some(wait) = min_wait {
                     // 仅当本轮所有被跳过的凭据都因冷却/限流时，才以 429 + Retry-After 快速返回；
                     // 若混杂 token 刷新失败等非临时性错误，保留原有 sleep-retry 语义以避免吞掉真实错误。
-                    let all_due_to_cooling = cooling_skipped == tried_ids.len();
+                    let round_tried = tried_ids.len().saturating_sub(initial_excluded_ids.len());
+                    let all_due_to_cooling = round_tried > 0 && cooling_skipped == round_tried;
                     if all_due_to_cooling && wait > self.cooldown_bail_threshold() {
                         self.debug_log_availability_diagnostics(
                             "enabled_exhausted_bail_long_wait",
@@ -693,6 +745,32 @@ impl MultiTokenManager {
                             cid
                         );
                     }
+                    let wait_budget = self.acquire_temporary_wait_budget();
+                    if all_due_to_cooling && temporary_wait_spent.saturating_add(wait) > wait_budget
+                    {
+                        tracing::debug!(
+                            wait_spent_ms = %temporary_wait_spent.as_millis(),
+                            next_wait_ms = %wait.as_millis(),
+                            wait_budget_ms = %wait_budget.as_millis(),
+                            "凭据临时不可用等待预算耗尽"
+                        );
+                        self.debug_log_availability_diagnostics(
+                            "enabled_exhausted_bail_wait_budget",
+                            &tried_ids,
+                            min_wait,
+                            min_wait_detail,
+                        );
+                        let secs = (wait.as_millis().div_ceil(1000) as u64).max(1);
+                        let (cid, source) = min_wait_detail
+                            .map(|(id, src, _)| (id, src))
+                            .unwrap_or((0, "unknown"));
+                        anyhow::bail!(
+                            "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：{}，来自凭据 #{}）",
+                            secs,
+                            source,
+                            cid
+                        );
+                    }
                     self.debug_log_availability_diagnostics(
                         "enabled_exhausted_sleep",
                         &tried_ids,
@@ -700,7 +778,10 @@ impl MultiTokenManager {
                         min_wait_detail,
                     );
                     tokio::time::sleep(wait).await;
-                    tried_ids.clear();
+                    if all_due_to_cooling {
+                        temporary_wait_spent = temporary_wait_spent.saturating_add(wait);
+                    }
+                    tried_ids = initial_excluded_ids.clone();
                     cooling_skipped = 0;
                     min_wait = None;
                     min_wait_detail = None;
@@ -721,10 +802,37 @@ impl MultiTokenManager {
 
             if tried_ids.len() >= total {
                 if let Some(wait) = min_wait {
-                    let all_due_to_cooling = cooling_skipped == tried_ids.len();
+                    let round_tried = tried_ids.len().saturating_sub(initial_excluded_ids.len());
+                    let all_due_to_cooling = round_tried > 0 && cooling_skipped == round_tried;
                     if all_due_to_cooling && wait > self.cooldown_bail_threshold() {
                         self.debug_log_availability_diagnostics(
                             "total_exhausted_bail_long_wait",
+                            &tried_ids,
+                            min_wait,
+                            min_wait_detail,
+                        );
+                        let secs = (wait.as_millis().div_ceil(1000) as u64).max(1);
+                        let (cid, source) = min_wait_detail
+                            .map(|(id, src, _)| (id, src))
+                            .unwrap_or((0, "unknown"));
+                        anyhow::bail!(
+                            "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：{}，来自凭据 #{}）",
+                            secs,
+                            source,
+                            cid
+                        );
+                    }
+                    let wait_budget = self.acquire_temporary_wait_budget();
+                    if all_due_to_cooling && temporary_wait_spent.saturating_add(wait) > wait_budget
+                    {
+                        tracing::debug!(
+                            wait_spent_ms = %temporary_wait_spent.as_millis(),
+                            next_wait_ms = %wait.as_millis(),
+                            wait_budget_ms = %wait_budget.as_millis(),
+                            "凭据临时不可用等待预算耗尽"
+                        );
+                        self.debug_log_availability_diagnostics(
+                            "total_exhausted_bail_wait_budget",
                             &tried_ids,
                             min_wait,
                             min_wait_detail,
@@ -747,7 +855,10 @@ impl MultiTokenManager {
                         min_wait_detail,
                     );
                     tokio::time::sleep(wait).await;
-                    tried_ids.clear();
+                    if all_due_to_cooling {
+                        temporary_wait_spent = temporary_wait_spent.saturating_add(wait);
+                    }
+                    tried_ids = initial_excluded_ids.clone();
                     cooling_skipped = 0;
                     min_wait = None;
                     min_wait_detail = None;
@@ -1040,7 +1151,14 @@ impl MultiTokenManager {
         // 保留现有使用计数和成功率计数
         let (recent_usage, usage_reset_at, recent_success, recent_fail) = cache
             .get(&id)
-            .map(|e| (e.recent_usage, e.usage_reset_at, e.recent_success, e.recent_fail))
+            .map(|e| {
+                (
+                    e.recent_usage,
+                    e.usage_reset_at,
+                    e.recent_success,
+                    e.recent_fail,
+                )
+            })
             .unwrap_or((0, now, 0, 0));
         cache.insert(
             id,
@@ -1077,7 +1195,14 @@ impl MultiTokenManager {
 
         let (recent_usage, usage_reset_at, recent_success, recent_fail) = cache
             .get(&id)
-            .map(|e| (e.recent_usage, e.usage_reset_at, e.recent_success, e.recent_fail))
+            .map(|e| {
+                (
+                    e.recent_usage,
+                    e.usage_reset_at,
+                    e.recent_success,
+                    e.recent_fail,
+                )
+            })
             .unwrap_or((0, now_instant, 0, 0));
 
         cache.insert(
@@ -1245,12 +1370,7 @@ impl MultiTokenManager {
             // Per-credential 刷新锁：同一凭据串行，不同凭据并行。
             // 加超时作为安全网，防止 HTTP 请求挂住时无限等待。
             let lock = self.get_refresh_lock(id);
-            let _guard = match tokio::time::timeout(
-                StdDuration::from_secs(70),
-                lock.lock(),
-            )
-            .await
-            {
+            let _guard = match tokio::time::timeout(StdDuration::from_secs(70), lock.lock()).await {
                 Ok(guard) => guard,
                 Err(_) => {
                     anyhow::bail!(
@@ -1860,7 +1980,10 @@ impl MultiTokenManager {
             entry.recovery_attempts = 0;
             entry.auto_heal_reason = Some(AutoHealReason::TooManyFailures);
             entry.disable_reason = Some(DisableReason::AuthenticationFailed);
-            tracing::warn!("凭据 #{} 已标记为认证失败（将在恢复周期中尝试重新验证）", id);
+            tracing::warn!(
+                "凭据 #{} 已标记为认证失败（将在恢复周期中尝试重新验证）",
+                id
+            );
         }
         drop(entries);
         self.affinity.remove_by_credential(id);
@@ -1922,8 +2045,7 @@ impl MultiTokenManager {
                 }
                 // 指数退避：5min * 2^attempts，最大 30min
                 let base_minutes: i64 = 5;
-                let backoff_minutes =
-                    (base_minutes * (1i64 << e.recovery_attempts.min(3))).min(30);
+                let backoff_minutes = (base_minutes * (1i64 << e.recovery_attempts.min(3))).min(30);
                 if let Some(disabled_at) = e.disabled_at {
                     let elapsed = now.signed_duration_since(disabled_at);
                     elapsed.num_minutes() >= backoff_minutes
@@ -2109,7 +2231,9 @@ impl MultiTokenManager {
                         priority: e.credentials.priority,
                         disabled: e.disabled,
                         disable_reason: e.disable_reason,
-                        disabled_at: e.disabled_at.map(|dt| dt.to_rfc3339_opts(SecondsFormat::Secs, true)),
+                        disabled_at: e
+                            .disabled_at
+                            .map(|dt| dt.to_rfc3339_opts(SecondsFormat::Secs, true)),
                         recovery_attempts: e.recovery_attempts,
                         failure_count: e.failure_count,
                         refresh_failure_count: e.refresh_failure_count,
@@ -2124,7 +2248,10 @@ impl MultiTokenManager {
                         has_profile_arn: e.credentials.profile_arn.is_some(),
                         expires_at: e.credentials.expires_at.as_deref().map(|s| {
                             DateTime::parse_from_rfc3339(s)
-                                .map(|dt| dt.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Secs, true))
+                                .map(|dt| {
+                                    dt.with_timezone(&Utc)
+                                        .to_rfc3339_opts(SecondsFormat::Secs, true)
+                                })
                                 .unwrap_or_else(|_| s.to_string())
                         }),
                         refresh_token_hash: hash,
@@ -2260,12 +2387,7 @@ impl MultiTokenManager {
 
         // Per-credential 刷新锁
         let lock = self.get_refresh_lock(id);
-        let _guard = match tokio::time::timeout(
-            StdDuration::from_secs(70),
-            lock.lock(),
-        )
-        .await
-        {
+        let _guard = match tokio::time::timeout(StdDuration::from_secs(70), lock.lock()).await {
             Ok(guard) => guard,
             Err(_) => {
                 anyhow::bail!("凭据 #{} 强制刷新等待锁超时（70s）", id);
@@ -2330,17 +2452,13 @@ impl MultiTokenManager {
                     .ok_or_else(|| anyhow::anyhow!("凭据无 kiroApiKey"))?
             } else if needs_refresh {
                 let lock = self.get_refresh_lock(id);
-                let _guard = match tokio::time::timeout(
-                    StdDuration::from_secs(70),
-                    lock.lock(),
-                )
-                .await
-                {
-                    Ok(guard) => guard,
-                    Err(_) => {
-                        anyhow::bail!("凭据 #{} 查询额度等待锁超时（70s）", id);
-                    }
-                };
+                let _guard =
+                    match tokio::time::timeout(StdDuration::from_secs(70), lock.lock()).await {
+                        Ok(guard) => guard,
+                        Err(_) => {
+                            anyhow::bail!("凭据 #{} 查询额度等待锁超时（70s）", id);
+                        }
+                    };
                 let current_creds = {
                     let entries = self.entries.lock();
                     entries

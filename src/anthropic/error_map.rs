@@ -4,9 +4,9 @@
 //! 并通过 [`to_anthropic_response`] 生成符合 Anthropic API 格式的 HTTP 响应。
 //!
 //! 本模块取代 `handlers.rs` 中散落的 8 个谓词函数和单体 `map_kiro_provider_error_to_response`。
-use axum::http::{header, StatusCode};
-use axum::response::{IntoResponse, Response};
 use axum::Json;
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
 
 use crate::anthropic::types::ErrorResponse;
 
@@ -297,7 +297,10 @@ pub fn to_anthropic_response(
             tracing::warn!(error = %err, "上游瞬态错误（429/5xx），不输出请求体");
             (
                 StatusCode::TOO_MANY_REQUESTS,
-                Json(ErrorResponse::new("rate_limit_error", "Rate limited by upstream. Please retry after backoff.")),
+                Json(ErrorResponse::new(
+                    "rate_limit_error",
+                    "Rate limited by upstream. Please retry after backoff.",
+                )),
             )
                 .into_response()
         }
@@ -423,10 +426,7 @@ mod tests {
     fn test_classify_compression_induced_400() {
         let err = make_err("Improperly formed request after compression");
         let ctx = compressed_ctx();
-        assert_eq!(
-            classify(&err, &ctx),
-            ErrorCategory::CompressionInduced400
-        );
+        assert_eq!(classify(&err, &ctx), ErrorCategory::CompressionInduced400);
     }
 
     #[test]
@@ -441,10 +441,7 @@ mod tests {
     #[test]
     fn test_classify_no_credentials() {
         let err = make_err("没有可用的凭据，请添加凭据");
-        assert_eq!(
-            classify(&err, &default_ctx()),
-            ErrorCategory::NoCredentials
-        );
+        assert_eq!(classify(&err, &default_ctx()), ErrorCategory::NoCredentials);
     }
 
     #[test]
@@ -498,7 +495,12 @@ mod tests {
 
     #[test]
     fn test_classify_rate_limit_transient_5xx() {
-        for code in &["502 Bad Gateway", "503 Service Unavailable", "504 Gateway Timeout", "408 Request Timeout"] {
+        for code in &[
+            "502 Bad Gateway",
+            "503 Service Unavailable",
+            "504 Gateway Timeout",
+            "408 Request Timeout",
+        ] {
             let err = make_err(code);
             assert_eq!(
                 classify(&err, &default_ctx()),
@@ -511,7 +513,11 @@ mod tests {
 
     #[test]
     fn test_classify_network_error() {
-        for pattern in &["error sending request to upstream", "connection closed by peer", "connection reset by remote"] {
+        for pattern in &[
+            "error sending request to upstream",
+            "connection closed by peer",
+            "connection reset by remote",
+        ] {
             let err = make_err(pattern);
             assert_eq!(
                 classify(&err, &default_ctx()),
@@ -543,19 +549,34 @@ mod tests {
     async fn test_response_status_codes() {
         let cases: Vec<(ErrorCategory, StatusCode)> = vec![
             (ErrorCategory::InputTooLong, StatusCode::BAD_REQUEST),
-            (ErrorCategory::ImproperlyFormedRequest, StatusCode::BAD_REQUEST),
-            (ErrorCategory::CompressionInduced400, StatusCode::BAD_REQUEST),
+            (
+                ErrorCategory::ImproperlyFormedRequest,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ErrorCategory::CompressionInduced400,
+                StatusCode::BAD_REQUEST,
+            ),
             (ErrorCategory::QuotaExhausted, StatusCode::TOO_MANY_REQUESTS),
-            (ErrorCategory::NoCredentials, StatusCode::SERVICE_UNAVAILABLE),
+            (
+                ErrorCategory::NoCredentials,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
             (
                 ErrorCategory::AllCredentialsCooling {
                     retry_after_secs: Some(120),
                 },
                 StatusCode::TOO_MANY_REQUESTS,
             ),
-            (ErrorCategory::RateLimitTransient, StatusCode::TOO_MANY_REQUESTS),
+            (
+                ErrorCategory::RateLimitTransient,
+                StatusCode::TOO_MANY_REQUESTS,
+            ),
             (ErrorCategory::NetworkTransient, StatusCode::BAD_GATEWAY),
-            (ErrorCategory::ModelUnavailable, StatusCode::SERVICE_UNAVAILABLE),
+            (
+                ErrorCategory::ModelUnavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
             (ErrorCategory::AuthFailure, StatusCode::UNAUTHORIZED),
             (ErrorCategory::ServerTransient, StatusCode::BAD_GATEWAY),
             (ErrorCategory::Unknown, StatusCode::INTERNAL_SERVER_ERROR),
@@ -645,7 +666,12 @@ mod tests {
 
         assert!(json.get("error").is_some());
         assert_eq!(json["error"]["type"], "invalid_request_error");
-        assert!(json["error"]["message"].as_str().unwrap().contains("Input is too long"));
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Input is too long")
+        );
     }
 
     #[tokio::test]

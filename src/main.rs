@@ -5,10 +5,10 @@ mod common;
 mod http_client;
 pub mod image;
 mod kiro;
-#[cfg(feature = "pdf-support")]
-pub mod pdf;
 pub mod metrics;
 mod model;
+#[cfg(feature = "pdf-support")]
+pub mod pdf;
 pub mod token;
 
 use std::collections::HashMap;

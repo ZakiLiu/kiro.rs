@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::kiro::model::requests::conversation::{
-    AssistantMessage, HistoryAssistantMessage, HistoryUserMessage, Message, UserInputMessageContext,
-    UserMessage,
+    AssistantMessage, HistoryAssistantMessage, HistoryUserMessage, Message,
+    UserInputMessageContext, UserMessage,
 };
 use crate::kiro::model::requests::tool::{ToolResult, ToolUseEntry};
 use crate::model::config::CompressionConfig;

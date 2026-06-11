@@ -1,6 +1,5 @@
 //! 余额缓存管理
 
-
 pub(super) struct CachedBalance {
     pub(super) remaining: f64,
     pub(super) cached_at: std::time::Instant,

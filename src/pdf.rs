@@ -33,7 +33,11 @@ impl std::fmt::Display for PdfError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PdfError::TooLarge { size } => {
-                write!(f, "PDF file too large: {} bytes (max {})", size, MAX_PDF_SIZE)
+                write!(
+                    f,
+                    "PDF file too large: {} bytes (max {})",
+                    size, MAX_PDF_SIZE
+                )
             }
             PdfError::ExtractionFailed(msg) => write!(f, "PDF text extraction failed: {}", msg),
             PdfError::InvalidBase64(msg) => write!(f, "Invalid base64 data: {}", msg),
@@ -87,7 +91,9 @@ pub fn extract_text_from_pdf(base64_data: &str) -> Result<String, PdfError> {
     page_numbers.sort();
 
     if page_numbers.is_empty() {
-        return Err(PdfError::ExtractionFailed("PDF contains no pages".to_string()));
+        return Err(PdfError::ExtractionFailed(
+            "PDF contains no pages".to_string(),
+        ));
     }
 
     let text = doc
@@ -114,7 +120,9 @@ pub fn fallback_text(error: &PdfError) -> String {
             )
         }
         PdfError::ExtractionFailed(msg) => format!("[PDF extraction failed: {}]", msg),
-        PdfError::InvalidBase64(msg) => format!("[PDF extraction failed: invalid base64 - {}]", msg),
+        PdfError::InvalidBase64(msg) => {
+            format!("[PDF extraction failed: invalid base64 - {}]", msg)
+        }
         PdfError::UnsupportedFormat(msg) => format!("[PDF extraction failed: {}]", msg),
     }
 }
@@ -231,8 +239,7 @@ mod tests {
 
         // 创建页面内容流
         let content = format!("BT /F1 12 Tf 100 700 Td ({}) Tj ET", text);
-        let content_stream =
-            Stream::new(dictionary! {}, content.as_bytes().to_vec());
+        let content_stream = Stream::new(dictionary! {}, content.as_bytes().to_vec());
         let content_id = doc.add_object(content_stream);
 
         // 创建字体字典
@@ -268,10 +275,8 @@ mod tests {
         let pages_id = doc.add_object(pages);
 
         // 设置页面的 Parent 引用
-        if let Ok(page_obj) = doc.get_object_mut(page_id) {
-            if let Object::Dictionary(dict) = page_obj {
-                dict.set("Parent", pages_id);
-            }
+        if let Ok(Object::Dictionary(dict)) = doc.get_object_mut(page_id) {
+            dict.set("Parent", pages_id);
         }
 
         // 创建 Catalog

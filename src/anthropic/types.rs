@@ -349,16 +349,25 @@ mod tests {
         assert_eq!(get_context_window_size("claude-opus-4-6"), 1_000_000);
         assert_eq!(get_context_window_size("claude-sonnet-4-6"), 1_000_000);
         assert_eq!(get_context_window_size("claude-opus-4-7"), 1_000_000);
-        assert_eq!(get_context_window_size("claude-opus-4-7-thinking"), 1_000_000);
+        assert_eq!(
+            get_context_window_size("claude-opus-4-7-thinking"),
+            1_000_000
+        );
         assert_eq!(get_context_window_size("claude-opus-4-8"), 1_000_000);
-        assert_eq!(get_context_window_size("claude-opus-4-8-thinking"), 1_000_000);
+        assert_eq!(
+            get_context_window_size("claude-opus-4-8-thinking"),
+            1_000_000
+        );
         assert_eq!(get_context_window_size("claude-opus-4.8"), 1_000_000);
     }
 
     #[test]
     fn test_context_window_200k_models() {
         assert_eq!(get_context_window_size("claude-opus-4-5-20251101"), 200_000);
-        assert_eq!(get_context_window_size("claude-haiku-4-5-20251001"), 200_000);
+        assert_eq!(
+            get_context_window_size("claude-haiku-4-5-20251001"),
+            200_000
+        );
         assert_eq!(get_context_window_size("gpt-4"), 200_000);
     }
 }

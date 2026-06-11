@@ -57,24 +57,60 @@ fn anthropic_response_headers() -> HeaderMap {
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
     // requests rate limit
-    headers.insert("anthropic-ratelimit-requests-limit", "4000".parse().unwrap());
-    headers.insert("anthropic-ratelimit-requests-remaining", "3999".parse().unwrap());
-    headers.insert("anthropic-ratelimit-requests-reset", reset_time.parse().unwrap());
+    headers.insert(
+        "anthropic-ratelimit-requests-limit",
+        "4000".parse().unwrap(),
+    );
+    headers.insert(
+        "anthropic-ratelimit-requests-remaining",
+        "3999".parse().unwrap(),
+    );
+    headers.insert(
+        "anthropic-ratelimit-requests-reset",
+        reset_time.parse().unwrap(),
+    );
 
     // combined tokens rate limit
-    headers.insert("anthropic-ratelimit-tokens-limit", "400000".parse().unwrap());
-    headers.insert("anthropic-ratelimit-tokens-remaining", "399000".parse().unwrap());
-    headers.insert("anthropic-ratelimit-tokens-reset", reset_time.parse().unwrap());
+    headers.insert(
+        "anthropic-ratelimit-tokens-limit",
+        "400000".parse().unwrap(),
+    );
+    headers.insert(
+        "anthropic-ratelimit-tokens-remaining",
+        "399000".parse().unwrap(),
+    );
+    headers.insert(
+        "anthropic-ratelimit-tokens-reset",
+        reset_time.parse().unwrap(),
+    );
 
     // input tokens rate limit
-    headers.insert("anthropic-ratelimit-input-tokens-limit", "2000000".parse().unwrap());
-    headers.insert("anthropic-ratelimit-input-tokens-remaining", "1999000".parse().unwrap());
-    headers.insert("anthropic-ratelimit-input-tokens-reset", reset_time.parse().unwrap());
+    headers.insert(
+        "anthropic-ratelimit-input-tokens-limit",
+        "2000000".parse().unwrap(),
+    );
+    headers.insert(
+        "anthropic-ratelimit-input-tokens-remaining",
+        "1999000".parse().unwrap(),
+    );
+    headers.insert(
+        "anthropic-ratelimit-input-tokens-reset",
+        reset_time.parse().unwrap(),
+    );
 
     // output tokens rate limit
-    headers.insert("anthropic-ratelimit-output-tokens-limit", "400000".parse().unwrap());
-    headers.insert("anthropic-ratelimit-output-tokens-remaining", "399000".parse().unwrap());
-    headers.insert("anthropic-ratelimit-output-tokens-reset", reset_time.parse().unwrap());
+    headers.insert(
+        "anthropic-ratelimit-output-tokens-limit",
+        "400000".parse().unwrap(),
+    );
+    headers.insert(
+        "anthropic-ratelimit-output-tokens-remaining",
+        "399000".parse().unwrap(),
+    );
+    headers.insert(
+        "anthropic-ratelimit-output-tokens-reset",
+        reset_time.parse().unwrap(),
+    );
 
     headers
 }
@@ -176,7 +212,6 @@ fn inject_credit_usage_fields(usage: &mut serde_json::Value, metering: &Metering
     usage["credit_unit"] = json!(metering.unit);
     usage["credit_unit_plural"] = json!(metering.unit_plural);
 }
-
 
 #[derive(Debug, Default, Clone, Copy)]
 struct AdaptiveCompressionOutcome {
@@ -497,7 +532,11 @@ fn extract_thinking_xml(text: &str) -> (String, String) {
         // 标签前的内容保留到 cleaned
         cleaned.push_str(&text[cursor..open_abs]);
         // 标签内容（trim 两端换行）追加到 thinking_parts
-        thinking_parts.push(text[content_start..close_abs].trim_matches('\n').to_string());
+        thinking_parts.push(
+            text[content_start..close_abs]
+                .trim_matches('\n')
+                .to_string(),
+        );
 
         cursor = close_abs + CLOSE.len();
         // 吞掉标签后紧跟的两个换行（模型常用 `</thinking>\n\n` 作分隔符）
@@ -868,10 +907,7 @@ pub async fn post_messages(
     let prompt_cache = state.prompt_cache_snapshot();
 
     // Preset 注入：从 x-preset-id header 查找预设，前置注入 system prompt
-    if let Some(preset_id) = headers
-        .get("x-preset-id")
-        .and_then(|v| v.to_str().ok())
-    {
+    if let Some(preset_id) = headers.get("x-preset-id").and_then(|v| v.to_str().ok()) {
         let presets = state.presets.read();
         if let Some(preset) = presets.iter().find(|p| p.id == preset_id && p.enabled) {
             tracing::info!(preset_id = %preset.id, preset_name = %preset.name, "应用 Prompt Preset");
@@ -920,10 +956,8 @@ pub async fn post_messages(
 
     // 记录 RequestReceived 指标
     if let Some(metrics) = &state.metrics {
-        metrics.record(
-            MetricEvent::new(MetricEventType::RequestReceived)
-                .with_model(&payload.model),
-        );
+        metrics
+            .record(MetricEvent::new(MetricEventType::RequestReceived).with_model(&payload.model));
     }
 
     // 记录请求开始时间（用于计算延迟）
@@ -1003,10 +1037,9 @@ pub async fn post_messages(
     );
 
     // 跨请求缓存查找
-    let content_fingerprint = state
-        .cross_request_cache
-        .as_ref()
-        .map(|_| super::cross_request_cache::CrossRequestCache::content_fingerprint(&payload.messages));
+    let content_fingerprint = state.cross_request_cache.as_ref().map(|_| {
+        super::cross_request_cache::CrossRequestCache::content_fingerprint(&payload.messages)
+    });
     let forced_conversation_id = content_fingerprint.as_ref().and_then(|fp| {
         state
             .cross_request_cache
@@ -1233,7 +1266,7 @@ async fn handle_stream_request(
                 context.request_body,
                 e,
                 context.adaptive_outcome,
-            )
+            );
         }
     };
 
@@ -1430,7 +1463,7 @@ async fn handle_non_stream_request(
                 context.request_body,
                 e,
                 context.adaptive_outcome,
-            )
+            );
         }
     };
 
@@ -1731,7 +1764,12 @@ async fn handle_non_stream_request(
         );
     }
 
-    (StatusCode::OK, anthropic_response_headers(), Json(response_body)).into_response()
+    (
+        StatusCode::OK,
+        anthropic_response_headers(),
+        Json(response_body),
+    )
+        .into_response()
 }
 
 /// 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
