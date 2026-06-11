@@ -476,15 +476,28 @@ pub struct CompressionConfigResponse {
     pub max_request_body_bytes: usize,
 }
 
+/// 区分「字段缺失」与「显式 null」的双层 Option 反序列化：
+/// 缺失 → `None`（不更新），null → `Some(None)`（恢复默认），值 → `Some(Some(v))`。
+/// 裸 `Option<Option<T>>` 会把 null 吃成外层 `None`，导致“清空恢复默认”静默失败。
+fn deserialize_double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
+}
+
 /// 更新全局配置请求
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateGlobalConfigRequest {
     /// AWS Region（可选）
     pub region: Option<String>,
-    /// 单凭据目标请求速率（RPM，可选）
+    /// 单凭据目标请求速率（RPM；缺失不更新，null 恢复默认，0 关闭本地节流）
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub credential_rpm: Option<Option<u32>>,
-    /// 单凭据每日最大请求数（可选；null 恢复默认，0 关闭每日上限）
+    /// 单凭据每日最大请求数（缺失不更新，null 恢复默认，0 关闭每日上限）
+    #[serde(default, deserialize_with = "deserialize_double_option")]
     pub credential_daily_max_requests: Option<Option<u32>>,
     /// Prompt Cache TTL（秒，可选，仅支持 300 或 3600）
     pub prompt_cache_ttl_seconds: Option<u64>,
@@ -544,4 +557,33 @@ pub struct UpdateCompressionConfigRequest {
     pub max_history_turns: Option<usize>,
     pub max_history_chars: Option<usize>,
     pub max_request_body_bytes: Option<usize>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 限流字段必须三态可分：缺失=不更新，null=恢复默认，值=设定。
+    /// 回归保护：裸 Option<Option<T>> 会把 null 吃成外层 None，
+    /// 导致前端“清空恢复默认”静默失败。
+    #[test]
+    fn test_update_global_config_rate_limit_fields_distinguish_null_from_missing() {
+        let missing: UpdateGlobalConfigRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(missing.credential_rpm, None);
+        assert_eq!(missing.credential_daily_max_requests, None);
+
+        let null_case: UpdateGlobalConfigRequest = serde_json::from_str(
+            r#"{"credentialRpm": null, "credentialDailyMaxRequests": null}"#,
+        )
+        .unwrap();
+        assert_eq!(null_case.credential_rpm, Some(None));
+        assert_eq!(null_case.credential_daily_max_requests, Some(None));
+
+        let value_case: UpdateGlobalConfigRequest = serde_json::from_str(
+            r#"{"credentialRpm": 60, "credentialDailyMaxRequests": 0}"#,
+        )
+        .unwrap();
+        assert_eq!(value_case.credential_rpm, Some(Some(60)));
+        assert_eq!(value_case.credential_daily_max_requests, Some(Some(0)));
+    }
 }
