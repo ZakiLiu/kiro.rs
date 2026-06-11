@@ -529,11 +529,7 @@ impl MultiTokenManager {
     ///
     /// 改 config、rebuild、发布到 rate_limiter 全程持有 config 写锁：
     /// 并发更新被串行化，不会出现旧 cfg 后发布覆盖新 cfg 的竞争。
-    pub fn update_rate_limit_settings(
-        &self,
-        rpm: Option<u32>,
-        daily_max_requests: Option<u32>,
-    ) {
+    pub fn update_rate_limit_settings(&self, rpm: Option<u32>, daily_max_requests: Option<u32>) {
         let mut config = self.config.write();
         config.credential_rpm = rpm;
         config.credential_daily_max_requests = daily_max_requests;

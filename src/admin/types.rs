@@ -572,17 +572,15 @@ mod tests {
         assert_eq!(missing.credential_rpm, None);
         assert_eq!(missing.credential_daily_max_requests, None);
 
-        let null_case: UpdateGlobalConfigRequest = serde_json::from_str(
-            r#"{"credentialRpm": null, "credentialDailyMaxRequests": null}"#,
-        )
-        .unwrap();
+        let null_case: UpdateGlobalConfigRequest =
+            serde_json::from_str(r#"{"credentialRpm": null, "credentialDailyMaxRequests": null}"#)
+                .unwrap();
         assert_eq!(null_case.credential_rpm, Some(None));
         assert_eq!(null_case.credential_daily_max_requests, Some(None));
 
-        let value_case: UpdateGlobalConfigRequest = serde_json::from_str(
-            r#"{"credentialRpm": 60, "credentialDailyMaxRequests": 0}"#,
-        )
-        .unwrap();
+        let value_case: UpdateGlobalConfigRequest =
+            serde_json::from_str(r#"{"credentialRpm": 60, "credentialDailyMaxRequests": 0}"#)
+                .unwrap();
         assert_eq!(value_case.credential_rpm, Some(Some(60)));
         assert_eq!(value_case.credential_daily_max_requests, Some(Some(0)));
     }

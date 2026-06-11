@@ -757,7 +757,12 @@ mod tests {
             CooldownReason::RateLimitExceeded,
             Some(cooldown),
         );
-        let enabled_err = enabled_mgr.acquire_context().await.err().unwrap().to_string();
+        let enabled_err = enabled_mgr
+            .acquire_context()
+            .await
+            .err()
+            .unwrap()
+            .to_string();
 
         assert_eq!(
             total_err, enabled_err,
@@ -810,11 +815,9 @@ mod tests {
         );
 
         let started = std::time::Instant::now();
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            manager.acquire_context(),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(2), manager.acquire_context())
+                .await;
         let elapsed = started.elapsed();
 
         // 必须 bail（被预算截断），而不是无限短睡到超时。
