@@ -434,6 +434,32 @@ mod tests {
         assert!(err.to_string().contains("原因：rate_limit"));
     }
 
+    /// 组合 setter 热更新：单次调用同时生效 RPM 与每日上限（锁内原子发布）。
+    #[tokio::test]
+    async fn test_update_rate_limit_settings_hot_applies_combined_config() {
+        let config = Config::default();
+
+        let cred = KiroCredentials {
+            access_token: Some("token-1".to_string()),
+            expires_at: Some("2999-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+
+        let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
+
+        // 热更新：关闭本地 RPM 节流 + daily cap = 2
+        manager.update_rate_limit_settings(Some(0), Some(2));
+
+        for _ in 0..2 {
+            let ctx = manager.acquire_context().await.unwrap();
+            manager.record_api_success(ctx.id);
+        }
+
+        let err = manager.acquire_context().await.err().unwrap();
+        assert!(err.to_string().contains("所有凭据均处于冷却/速率限制"));
+        assert!(err.to_string().contains("原因：rate_limit"));
+    }
+
     #[test]
     fn test_set_credential_cooldown_with_duration_does_not_increment_failure_count() {
         let config = Config::default();

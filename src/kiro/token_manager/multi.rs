@@ -525,24 +525,20 @@ impl MultiTokenManager {
         self.config.write().default_endpoint = default_endpoint;
     }
 
-    /// 热更新单凭据目标请求速率（RPM）
-    pub fn update_credential_rpm(&self, rpm: Option<u32>) {
-        let cfg = {
-            let mut config = self.config.write();
-            config.credential_rpm = rpm;
-            Self::build_rate_limit_config(&config)
-        };
-        self.rate_limiter.update_config(cfg);
-    }
-
-    /// 热更新单凭据每日最大请求数
-    pub fn update_credential_daily_max_requests(&self, daily_max_requests: Option<u32>) {
-        let cfg = {
-            let mut config = self.config.write();
-            config.credential_daily_max_requests = daily_max_requests;
-            Self::build_rate_limit_config(&config)
-        };
-        self.rate_limiter.update_config(cfg);
+    /// 热更新凭据级本地限流配置（RPM + 每日上限）
+    ///
+    /// 改 config、rebuild、发布到 rate_limiter 全程持有 config 写锁：
+    /// 并发更新被串行化，不会出现旧 cfg 后发布覆盖新 cfg 的竞争。
+    pub fn update_rate_limit_settings(
+        &self,
+        rpm: Option<u32>,
+        daily_max_requests: Option<u32>,
+    ) {
+        let mut config = self.config.write();
+        config.credential_rpm = rpm;
+        config.credential_daily_max_requests = daily_max_requests;
+        self.rate_limiter
+            .update_config(Self::build_rate_limit_config(&config));
     }
 
     /// 获取指定凭据的刷新锁（per-credential，互不阻塞）

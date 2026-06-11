@@ -1093,12 +1093,12 @@ impl AdminService {
             self.token_manager.update_region(config.region.clone());
         }
 
-        // 热更新凭据级本地限流配置
+        // 热更新凭据级本地限流配置（组合 setter：单次 rebuild + 锁内原子发布）
         if req.credential_rpm.is_some() || req.credential_daily_max_requests.is_some() {
-            self.token_manager
-                .update_credential_rpm(config.credential_rpm);
-            self.token_manager
-                .update_credential_daily_max_requests(config.credential_daily_max_requests);
+            self.token_manager.update_rate_limit_settings(
+                config.credential_rpm,
+                config.credential_daily_max_requests,
+            );
         }
 
         // 热更新 default_endpoint
