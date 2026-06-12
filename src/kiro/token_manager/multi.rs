@@ -137,6 +137,10 @@ pub struct MultiTokenManager {
     last_stats_save_at: Mutex<Option<Instant>>,
     /// 统计数据是否有未落盘更新
     stats_dirty: AtomicBool,
+    /// keepalive：manager 构造时间（≈进程启动时间），last_used_at 缺失/解析失败时的空闲起点兜底
+    keepalive_started_at: Mutex<DateTime<Utc>>,
+    /// keepalive：每凭据最近一次探测时间（内存态节流表，防过阈值后每 tick 重复探测）
+    keepalive_last_probed: Mutex<HashMap<u64, Instant>>,
 }
 
 /// 凭据可用性诊断：被禁用的凭据
@@ -458,6 +462,8 @@ impl MultiTokenManager {
             background_refresher: None,
             last_stats_save_at: Mutex::new(None),
             stats_dirty: AtomicBool::new(false),
+            keepalive_started_at: Mutex::new(Utc::now()),
+            keepalive_last_probed: Mutex::new(HashMap::new()),
         };
 
         // 如果有新分配的 ID 或新生成的 machineId，立即持久化到配置文件
@@ -1341,6 +1347,75 @@ impl MultiTokenManager {
     pub(crate) fn recent_usage_of(&self, id: u64) -> u32 {
         let cache = self.balance_cache.lock();
         cache.get(&id).map(|e| e.recent_usage).unwrap_or(0)
+    }
+
+    /// 判断凭据是否需要 keepalive 探测（纯谓词，无副作用）
+    ///
+    /// 三道闸顺序：
+    /// 1. 配置禁用（阈值 0）→ false
+    /// 2. 冷却中 → false（防止 suspended 凭据被探测续 24h 冷却成永动刑期）
+    /// 3. 节流期内（距上次探测不足一个阈值）→ false
+    ///
+    /// 全部放行后判定空闲时长是否超阈值。
+    pub fn keepalive_due(&self, id: u64) -> bool {
+        let Some(threshold) = self.config.read().effective_keepalive_idle_threshold() else {
+            return false;
+        };
+        if self.cooldown_manager.check_cooldown(id).is_some() {
+            return false;
+        }
+        if let Some(probed) = self.keepalive_last_probed.lock().get(&id)
+            && probed.elapsed().as_secs() < threshold
+        {
+            return false;
+        }
+        self.is_idle_for_keepalive(id, threshold)
+    }
+
+    /// 判断凭据空闲时长是否达到 keepalive 阈值
+    ///
+    /// 空闲起点取 last_used_at（RFC3339）；缺失或解析失败时用 manager 构造时间兜底
+    /// （新凭据缺空闲起点，以 ≈进程启动时间计）。id 不存在返回 false。
+    fn is_idle_for_keepalive(&self, id: u64, threshold_secs: u64) -> bool {
+        let last_used_at = {
+            let entries = self.entries.lock();
+            match entries.iter().find(|e| e.id == id) {
+                Some(entry) => entry.last_used_at.clone(),
+                None => return false,
+            }
+        };
+        let anchor = last_used_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|| *self.keepalive_started_at.lock());
+        (Utc::now() - anchor).num_seconds() >= threshold_secs as i64
+    }
+
+    /// 记录凭据已被 keepalive 探测（仅写内存态节流表，绝不触碰业务统计）
+    pub fn mark_keepalive_probed(&self, id: u64) {
+        self.keepalive_last_probed.lock().insert(id, Instant::now());
+    }
+
+    /// 测试注入：回拨 keepalive 空闲起点（模拟进程已启动很久）
+    #[cfg(test)]
+    pub(crate) fn set_keepalive_started_at_for_test(&self, ts: DateTime<Utc>) {
+        *self.keepalive_started_at.lock() = ts;
+    }
+
+    /// 测试注入：直写 keepalive 节流表
+    #[cfg(test)]
+    pub(crate) fn set_keepalive_probed_for_test(&self, id: u64, instant: Instant) {
+        self.keepalive_last_probed.lock().insert(id, instant);
+    }
+
+    /// 测试注入：直写凭据的最后使用时间（绕过业务打点）
+    #[cfg(test)]
+    pub(crate) fn set_last_used_at_for_test(&self, id: u64, ts: Option<String>) {
+        let mut entries = self.entries.lock();
+        if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+            entry.last_used_at = ts;
+        }
     }
 
     /// 记录凭据使用（用于动态 TTL 计算和负载均衡）

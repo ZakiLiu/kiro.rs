@@ -1263,6 +1263,100 @@ mod tests {
         assert_eq!(region, "us-west-2");
     }
 
+    // ============ Keepalive 保活探测测试 ============
+
+    /// 构造单凭据 manager（keepalive 测试公共脚手架）
+    fn new_keepalive_manager(config: Config) -> MultiTokenManager {
+        MultiTokenManager::new(config, vec![KiroCredentials::default()], None, None, false).unwrap()
+    }
+
+    #[test]
+    fn test_keepalive_due_idle_over_threshold() {
+        let manager = new_keepalive_manager(Config::default());
+        // 空闲 3h > 默认阈值 2h
+        manager.set_last_used_at_for_test(1, Some((Utc::now() - Duration::hours(3)).to_rfc3339()));
+        assert!(manager.keepalive_due(1));
+    }
+
+    #[test]
+    fn test_keepalive_due_not_idle_under_threshold() {
+        let manager = new_keepalive_manager(Config::default());
+        // 刚使用过，未达阈值
+        manager.set_last_used_at_for_test(1, Some(Utc::now().to_rfc3339()));
+        assert!(!manager.keepalive_due(1));
+    }
+
+    #[test]
+    fn test_keepalive_due_none_last_used_falls_back_to_start_time() {
+        let manager = new_keepalive_manager(Config::default());
+        // last_used_at 保持 None：空闲起点为 manager 构造时间，刚构造未超阈值
+        assert!(!manager.keepalive_due(1));
+        // 回拨构造时间 3h，应判定空闲超阈值
+        manager.set_keepalive_started_at_for_test(Utc::now() - Duration::hours(3));
+        assert!(manager.keepalive_due(1));
+    }
+
+    #[test]
+    fn test_keepalive_due_skips_cooling_credential() {
+        let manager = new_keepalive_manager(Config::default());
+        // 注意顺序：set_credential_cooldown_with_duration 会覆写 last_used_at=now，
+        // 必须先设冷却、再回拨 last_used_at，才能证明 false 来自冷却闸而非 idle 闸
+        manager.set_credential_cooldown_with_duration(
+            1,
+            CooldownReason::RateLimitExceeded,
+            Some(std::time::Duration::from_secs(3600)),
+        );
+        manager.set_last_used_at_for_test(1, Some((Utc::now() - Duration::hours(3)).to_rfc3339()));
+        assert!(!manager.keepalive_due(1));
+    }
+
+    #[test]
+    fn test_keepalive_probe_throttle() {
+        let manager = new_keepalive_manager(Config::default());
+        manager.set_last_used_at_for_test(1, Some((Utc::now() - Duration::hours(3)).to_rfc3339()));
+        assert!(manager.keepalive_due(1));
+
+        // 探测后进入节流期，不再重复探测
+        manager.mark_keepalive_probed(1);
+        assert!(!manager.keepalive_due(1));
+
+        // 回拨节流表超过一个阈值（7300s > 7200s），应重新到期
+        let past = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(7300))
+            .expect("单调钟回拨 7300s 应在测试环境可构造");
+        manager.set_keepalive_probed_for_test(1, past);
+        assert!(manager.keepalive_due(1));
+    }
+
+    #[test]
+    fn test_keepalive_disabled_when_threshold_zero() {
+        let mut config = Config::default();
+        config.keepalive_idle_threshold_seconds = Some(0);
+        let manager = new_keepalive_manager(config);
+        // 阈值 0 = 禁用：即便空闲超阈值也不探测（行为与改动前完全一致）
+        manager.set_last_used_at_for_test(1, Some((Utc::now() - Duration::hours(3)).to_rfc3339()));
+        assert!(!manager.keepalive_due(1));
+    }
+
+    #[test]
+    fn test_keepalive_probe_does_not_touch_last_used_at() {
+        let manager = new_keepalive_manager(Config::default());
+        let ts0 = (Utc::now() - Duration::hours(3)).to_rfc3339();
+        manager.set_last_used_at_for_test(1, Some(ts0.clone()));
+
+        let before = manager.snapshot();
+        let entry_before = before.entries.iter().find(|e| e.id == 1).unwrap();
+        let success_before = entry_before.success_count;
+
+        manager.mark_keepalive_probed(1);
+
+        // 探测打点绝不污染业务统计：last_used_at 与 success_count 均不变
+        let after = manager.snapshot();
+        let entry_after = after.entries.iter().find(|e| e.id == 1).unwrap();
+        assert_eq!(entry_after.last_used_at.as_deref(), Some(ts0.as_str()));
+        assert_eq!(entry_after.success_count, success_before);
+    }
+
     #[test]
     fn test_update_default_endpoint() {
         let mut config = Config::default();

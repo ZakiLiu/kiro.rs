@@ -245,9 +245,17 @@ impl KiroProvider {
                 tracing::debug!(count = ids.len(), "开始周期性 balance 刷新");
                 // 串行 + 间隔，避免对上游突发压力
                 for id in ids {
-                    if !tm.should_refresh_balance(id) {
+                    let balance_due = tm.should_refresh_balance(id);
+                    // keepalive：凭据空闲超阈值时强制探测一次（补低余额 24h TTL 盲区）
+                    let keepalive = !balance_due && tm.keepalive_due(id);
+                    if !balance_due && !keepalive {
                         continue;
                     }
+                    if keepalive {
+                        tracing::info!("凭据 #{} 空闲超阈值，触发 keepalive 探测", id);
+                    }
+                    // 探测前记节流（成败一律），防网络抖动时每 tick 重试风暴
+                    tm.mark_keepalive_probed(id);
                     match tm.get_usage_limits_for(id).await {
                         Ok(resp) => {
                             let remaining = resp.usage_limit() - resp.current_usage();

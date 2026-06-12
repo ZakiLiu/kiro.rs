@@ -113,6 +113,17 @@ pub struct Config {
     #[serde(default)]
     pub credential_daily_max_requests: Option<u32>,
 
+    /// 凭据保活探测的空闲阈值（秒）
+    ///
+    /// 凭据空闲超过该阈值后，周期性 balance 刷新循环会强制探测一次（keepalive），
+    /// 避免低余额凭据因 24h 余额缓存 TTL 长期无上游调用、token 失效却无人发现。
+    ///
+    /// - `None`: 使用内置默认阈值（7200 秒 = 2 小时）
+    /// - `0`: 禁用保活探测
+    /// - `>0`: 显式空闲阈值（秒）
+    #[serde(default)]
+    pub keepalive_idle_threshold_seconds: Option<u64>,
+
     /// 输入压缩配置
     #[serde(default)]
     pub compression: CompressionConfig,
@@ -202,6 +213,9 @@ fn default_cross_request_cache_max_entries() -> usize {
 fn default_tls_backend() -> TlsBackend {
     TlsBackend::Rustls
 }
+
+/// keepalive 空闲阈值默认值（秒）：2 小时
+pub const DEFAULT_KEEPALIVE_IDLE_THRESHOLD_SECS: u64 = 7200;
 
 fn default_true() -> bool {
     true
@@ -359,6 +373,7 @@ impl Default for Config {
             admin_api_key: None,
             credential_rpm: None,
             credential_daily_max_requests: None,
+            keepalive_idle_threshold_seconds: None,
             compression: CompressionConfig::default(),
             prompt_cache_ttl_seconds: default_prompt_cache_ttl_seconds(),
             prompt_cache_accounting_enabled: default_true(),
@@ -384,6 +399,19 @@ impl Config {
     #[allow(dead_code)]
     pub fn effective_api_region(&self) -> &str {
         self.api_region.as_deref().unwrap_or(&self.region)
+    }
+
+    /// 计算有效的 keepalive 空闲阈值（秒）
+    ///
+    /// - `None` → 默认 `DEFAULT_KEEPALIVE_IDLE_THRESHOLD_SECS`（7200）
+    /// - `Some(0)` → `None`（禁用保活探测）
+    /// - `Some(n)` → `Some(n)`
+    pub fn effective_keepalive_idle_threshold(&self) -> Option<u64> {
+        match self.keepalive_idle_threshold_seconds {
+            None => Some(DEFAULT_KEEPALIVE_IDLE_THRESHOLD_SECS),
+            Some(0) => None,
+            Some(n) => Some(n),
+        }
     }
 
     /// 从文件加载配置
