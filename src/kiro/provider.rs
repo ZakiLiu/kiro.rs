@@ -283,10 +283,9 @@ impl KiroProvider {
     /// 周期性尝试恢复被自动禁用的凭据
     ///
     /// 对以下类型的禁用凭据进行恢复尝试：
-    /// - InsufficientBalance: 重新查询余额，余额恢复则重新启用
+    /// - InsufficientBalance / QuotaExceeded: 余额探测成功即重新启用（remaining 如实写入缓存，含 0）
     /// - AuthenticationFailed: 尝试刷新 Token，成功则重新启用
     /// - RefreshFailureLimit / FailureLimit: 尝试刷新 Token，成功则重新启用
-    /// - QuotaExceeded: 重新查询余额
     ///
     /// 不恢复：Manual, AccountSuspended
     ///
@@ -315,22 +314,13 @@ impl KiroProvider {
                             match tm.get_usage_limits_for(id).await {
                                 Ok(resp) => {
                                     let remaining = resp.usage_limit() - resp.current_usage();
-                                    if remaining >= 1.0 {
-                                        tm.recover_credential_inner(id);
-                                        tm.update_balance_cache(id, remaining);
-                                        tracing::info!(
-                                            "凭据 #{} 余额已恢复 ({:.2})，重新启用",
-                                            id,
-                                            remaining
-                                        );
-                                    } else {
-                                        tm.increment_recovery_attempts_inner(id);
-                                        tracing::debug!(
-                                            "凭据 #{} 余额仍不足 ({:.2})，保持禁用",
-                                            id,
-                                            remaining
-                                        );
-                                    }
+                                    tm.recover_credential_inner(id);
+                                    tm.update_balance_cache(id, remaining);
+                                    tracing::info!(
+                                        credential_id = id,
+                                        remaining = remaining,
+                                        "凭据探测成功，重新启用（上游允许超额，低余额/零余额也复活）"
+                                    );
                                 }
                                 Err(e) => {
                                     tm.increment_recovery_attempts_inner(id);

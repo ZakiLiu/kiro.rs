@@ -350,6 +350,30 @@ mod tests {
         assert_eq!(manager.available_count(), 0);
     }
 
+    /// recovery 循环 Ok 分支语义：探测成功即复活，余额 0 如实写入缓存，
+    /// 复活后凭据对 acquire_context 可见（余额仅参与 LB 评分排序，不做过滤）
+    #[tokio::test]
+    async fn test_multi_token_manager_quota_disabled_recovered_with_zero_balance() {
+        let config = Config::default();
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("t1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager = MultiTokenManager::new(config, vec![cred1], None, None, false).unwrap();
+
+        manager.report_quota_exhausted(1);
+        assert_eq!(manager.available_count(), 0);
+
+        // 模拟 recovery 循环 Ok 分支：探测成功即复活，余额 0 如实写入
+        assert!(manager.recover_credential_inner(1));
+        manager.update_balance_cache(1, 0.0);
+
+        assert_eq!(manager.available_count(), 1);
+        let ctx = manager.acquire_context().await.unwrap();
+        assert_eq!(ctx.id, 1);
+        assert_eq!(ctx.token, "t1");
+    }
+
     #[tokio::test]
     async fn test_multi_token_manager_rate_limited_with_some_disabled_does_not_report_all_disabled()
     {
