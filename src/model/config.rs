@@ -120,7 +120,7 @@ pub struct Config {
     ///
     /// - `None`: 使用内置默认阈值（7200 秒 = 2 小时）
     /// - `0`: 禁用保活探测
-    /// - `>0`: 显式空闲阈值（秒）
+    /// - `>0`: 显式空闲阈值（秒），下限钳制 600（防误配造成每 tick 全量探测）
     #[serde(default)]
     pub keepalive_idle_threshold_seconds: Option<u64>,
 
@@ -216,6 +216,10 @@ fn default_tls_backend() -> TlsBackend {
 
 /// keepalive 空闲阈值默认值（秒）：2 小时
 pub const DEFAULT_KEEPALIVE_IDLE_THRESHOLD_SECS: u64 = 7200;
+
+/// keepalive 空闲阈值下限（秒）：10 分钟（与 balance 刷新周期同量级），
+/// 显式正值低于此值时钳制，防误配造成每 tick 全量探测（参照 balance interval .max(60) 防御先例）
+pub const MIN_KEEPALIVE_IDLE_THRESHOLD_SECS: u64 = 600;
 
 fn default_true() -> bool {
     true
@@ -405,12 +409,13 @@ impl Config {
     ///
     /// - `None` → 默认 `DEFAULT_KEEPALIVE_IDLE_THRESHOLD_SECS`（7200）
     /// - `Some(0)` → `None`（禁用保活探测）
-    /// - `Some(n)` → `Some(n)`
+    /// - `Some(n)` → `Some(n.max(600))`——下限钳制 `MIN_KEEPALIVE_IDLE_THRESHOLD_SECS`，
+    ///   防止极小阈值令 idle 判定与节流同时失效，造成每个 balance tick 全量探测上游
     pub fn effective_keepalive_idle_threshold(&self) -> Option<u64> {
         match self.keepalive_idle_threshold_seconds {
             None => Some(DEFAULT_KEEPALIVE_IDLE_THRESHOLD_SECS),
             Some(0) => None,
-            Some(n) => Some(n),
+            Some(n) => Some(n.max(MIN_KEEPALIVE_IDLE_THRESHOLD_SECS)),
         }
     }
 

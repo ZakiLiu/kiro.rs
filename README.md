@@ -227,6 +227,7 @@ docker compose up -d --build
 | `adminApiKey` | string | - | Admin API 密钥，配置后启用凭据管理 API 和 Web 管理界面 |
 | `credentialRpm` | number | - | 单凭据目标 RPM（每分钟请求数），用于凭据级节流/分流；未配置表示使用内置默认策略，`0` 表示关闭本地 RPM 节流并默认关闭每日上限 |
 | `credentialDailyMaxRequests` | number | - | 单凭据每日最大请求数；未配置表示使用内置默认值 `500`，`0` 表示关闭每日上限 |
+| `keepaliveIdleThresholdSeconds` | number | `7200` | 凭据保活探测空闲阈值（秒）：凭据空闲超阈值后由 balance 刷新循环强制探测一次；`0` 禁用，显式正值下限钳制 `600` |
 | `promptCacheTtlSeconds` | number | `300` | 本地 Prompt Cache TTL（秒） |
 | `promptCacheAccountingEnabled` | boolean | `true` | 是否启用本地 Prompt Cache usage 记账；关闭后不再输出或扣减 cache token |
 

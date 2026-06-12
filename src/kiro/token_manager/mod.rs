@@ -1320,12 +1320,29 @@ mod tests {
         manager.mark_keepalive_probed(1);
         assert!(!manager.keepalive_due(1));
 
-        // 回拨节流表超过一个阈值（7300s > 7200s），应重新到期
-        let past = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_secs(7300))
-            .expect("单调钟回拨 7300s 应在测试环境可构造");
-        manager.set_keepalive_probed_for_test(1, past);
-        assert!(manager.keepalive_due(1));
+        // 回拨节流表超过一个阈值（7300s > 7200s），应重新到期。
+        // Instant 零点为系统启动时刻，开机不足 7300s 时 checked_sub 下溢返回 None
+        // 无法构造过去时刻——此环境限制下跳过该断言（前两个断言已覆盖节流生效路径）
+        if let Some(past) =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_secs(7300))
+        {
+            manager.set_keepalive_probed_for_test(1, past);
+            assert!(manager.keepalive_due(1));
+        }
+    }
+
+    #[test]
+    fn test_keepalive_threshold_clamped_to_min() {
+        // 显式正值低于下限时钳制到 MIN_KEEPALIVE_IDLE_THRESHOLD_SECS（600），防误配每 tick 全量探测
+        let mut config = Config::default();
+        config.keepalive_idle_threshold_seconds = Some(1);
+        assert_eq!(
+            config.effective_keepalive_idle_threshold(),
+            Some(crate::model::config::MIN_KEEPALIVE_IDLE_THRESHOLD_SECS)
+        );
+        // 高于下限的显式值原样放行
+        config.keepalive_idle_threshold_seconds = Some(3600);
+        assert_eq!(config.effective_keepalive_idle_threshold(), Some(3600));
     }
 
     #[test]
