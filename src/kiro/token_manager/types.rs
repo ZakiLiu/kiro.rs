@@ -110,7 +110,8 @@ pub enum DisableReason {
     RefreshFailureLimit,
     /// 认证失败（如 invalid_grant）
     AuthenticationFailed,
-    /// 账户被暂停
+    /// 账户被暂停（已改为 CooldownReason::AccountSuspended 24h 冷却，此变体保留兼容历史持久化数据）
+    #[allow(dead_code)]
     AccountSuspended,
     /// 余额不足
     #[allow(dead_code)]

@@ -24,6 +24,13 @@ use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::token_manager::{CallContext, MultiTokenManager};
 
+/// 检测错误体中是否包含账户暂停信号（ASCII 大小写不敏感）
+///
+/// 覆盖 suspended/Suspended/SUSPENDED/TEMPORARILY_SUSPENDED 等变体
+pub(crate) fn is_suspended_signal(s: &str) -> bool {
+    s.to_ascii_lowercase().contains("suspended")
+}
+
 /// API 调用结果
 pub struct ApiCallResult {
     pub response: reqwest::Response,
@@ -631,10 +638,15 @@ impl KiroProvider {
 
             // 401/403 凭据问题
             if matches!(status.as_u16(), 401 | 403) {
-                // 账户暂停：立即永久禁用
-                if body.contains("suspended") {
-                    tracing::error!("凭据 #{} 账户已暂停，永久禁用: {} {}", ctx.id, status, body);
-                    self.token_manager.mark_account_suspended(ctx.id);
+                // 账户暂停：进入 24h 冷却（到期自动回池）
+                if is_suspended_signal(&body) {
+                    tracing::error!(
+                        "凭据 #{} 账户暂停，进入 24h 冷却: {} {}",
+                        ctx.id,
+                        status,
+                        body
+                    );
+                    self.token_manager.report_account_suspended(ctx.id);
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "MCP 请求失败（账户暂停）: {} {}",
@@ -1028,15 +1040,15 @@ impl KiroProvider {
 
             // 401/403 - 更可能是凭据/权限问题：计入失败并允许故障转移
             if matches!(status.as_u16(), 401 | 403) {
-                // 账户暂停：立即永久禁用，不计入普通失败（避免自动恢复后反复重试）
-                if body.contains("suspended") {
+                // 账户暂停：进入 24h 冷却（到期自动回池），不计入普通失败
+                if is_suspended_signal(&body) {
                     tracing::error!(
-                        "凭据 #{} 账户已暂停，永久禁用（不自动恢复）: {} {}",
+                        "凭据 #{} 账户暂停，进入 24h 冷却: {} {}",
                         ctx.id,
                         status,
                         body
                     );
-                    self.token_manager.mark_account_suspended(ctx.id);
+                    self.token_manager.report_account_suspended(ctx.id);
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "{} API 请求失败（账户暂停）: {} {}",
@@ -1546,6 +1558,16 @@ mod tests {
     fn create_test_provider(config: Config, credentials: KiroCredentials) -> KiroProvider {
         let tm = MultiTokenManager::new(config, vec![credentials], None, None, false).unwrap();
         KiroProvider::new(Arc::new(tm))
+    }
+
+    #[test]
+    fn test_is_suspended_signal_case_insensitive() {
+        assert!(is_suspended_signal("suspended"));
+        assert!(is_suspended_signal("Account Suspended"));
+        assert!(is_suspended_signal("ACCOUNT_SUSPENDED"));
+        assert!(is_suspended_signal("error: TEMPORARILY_SUSPENDED"));
+        assert!(!is_suspended_signal("rate limit exceeded"));
+        assert!(!is_suspended_signal(""));
     }
 
     #[test]

@@ -114,8 +114,8 @@ pub fn classify(err: &anyhow::Error, ctx: &ErrorRequestContext) -> ErrorCategory
         };
     }
 
-    // 3a. 账户暂停（403 suspended → 归入 NoCredentials，返回 503 而非 500）
-    if s.contains("账户暂停") || s.contains("suspended") {
+    // 3a. 账户暂停（403 suspended，大小写不敏感 → 归入 NoCredentials，返回 503 而非 500）
+    if s.contains("账户暂停") || crate::kiro::provider::is_suspended_signal(&s) {
         return ErrorCategory::NoCredentials;
     }
 

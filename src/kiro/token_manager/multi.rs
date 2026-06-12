@@ -2091,21 +2091,6 @@ impl MultiTokenManager {
         self.affinity.remove_by_credential(id);
     }
 
-    /// 标记凭据为账户暂停（不会被自动恢复）
-    pub fn mark_account_suspended(&self, id: u64) {
-        let mut entries = self.entries.lock();
-        if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
-            entry.disabled = true;
-            entry.disabled_at = Some(Utc::now());
-            entry.recovery_attempts = 0;
-            entry.auto_heal_reason = None;
-            entry.disable_reason = Some(DisableReason::AccountSuspended);
-            tracing::warn!("凭据 #{} 已标记为账户暂停", id);
-        }
-        drop(entries);
-        self.affinity.remove_by_credential(id);
-    }
-
     /// 标记凭据为余额不足（允许周期性恢复尝试——余额可能月初重置）
     /// 当前仅由 402 路径（report_quota_exhausted）间接触发禁用，此方法保留备用
     #[allow(dead_code)]
@@ -2645,7 +2630,7 @@ impl MultiTokenManager {
                 if is_invalid_grant_error(&err) {
                     self.mark_authentication_failed(id);
                 } else if is_temporarily_suspended_error(&err) {
-                    self.mark_account_suspended(id);
+                    self.report_account_suspended(id);
                 }
                 Err(err)
             }
@@ -2927,6 +2912,14 @@ impl MultiTokenManager {
         self.save_stats_debounced();
         self.cooldown_manager
             .set_cooldown_with_duration(id, reason, duration)
+    }
+
+    /// 账户暂停：进入 AccountSuspended 冷却（默认 24h，到期自动回池），并解除亲和绑定
+    pub fn report_account_suspended(&self, id: u64) -> std::time::Duration {
+        let duration =
+            self.set_credential_cooldown_with_duration(id, CooldownReason::AccountSuspended, None);
+        self.affinity.remove_by_credential(id);
+        duration
     }
 
     /// 清除凭据冷却
