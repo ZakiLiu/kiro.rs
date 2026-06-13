@@ -52,6 +52,16 @@ function formatLastUsed(lastUsedAt: string | null): string {
   return `${days} 天前`
 }
 
+function formatRemaining(seconds?: number | null): string {
+  if (!seconds || seconds <= 0) return '即将恢复'
+  if (seconds < 60) return `${seconds} 秒`
+  const minutes = Math.ceil(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟`
+  const hours = Math.floor(minutes / 60)
+  const restMinutes = minutes % 60
+  return restMinutes > 0 ? `${hours} 小时 ${restMinutes} 分钟` : `${hours} 小时`
+}
+
 export function CredentialCard({
   credential,
   cachedBalance,
@@ -212,6 +222,9 @@ export function CredentialCard({
     onViewBalance(credential.id, isCacheStale())
   }
 
+  const isCooling = !credential.disabled && Boolean(credential.cooldownReason)
+  const isRateLimited = !credential.disabled && Boolean(credential.rateLimited)
+  const isReady = !credential.disabled && Boolean(credential.ready)
 
   return (
     <>
@@ -227,6 +240,15 @@ export function CredentialCard({
                 {credential.email || `凭据 #${credential.id}`}
                 {credential.disabled && (
                   <Badge variant="destructive">已禁用</Badge>
+                )}
+                {!credential.disabled && isReady && (
+                  <Badge variant="success">Ready</Badge>
+                )}
+                {isCooling && (
+                  <Badge variant="warning">冷却中</Badge>
+                )}
+                {isRateLimited && !isCooling && (
+                  <Badge variant="warning">限速中</Badge>
                 )}
               </CardTitle>
             </div>
@@ -316,6 +338,25 @@ export function CredentialCard({
               <div className="col-span-2">
                 <span className="text-muted-foreground">禁用原因：</span>
                 <span className="font-medium">{credential.disabledReason}</span>
+              </div>
+            )}
+            {credential.cooldownReason && (
+              <div className="col-span-2">
+                <span className="text-muted-foreground">冷却状态：</span>
+                <span className="font-medium">
+                  {credential.cooldownReason}
+                  {credential.cooldownRemainingSecs
+                    ? `，剩余 ${formatRemaining(credential.cooldownRemainingSecs)}`
+                    : ''}
+                </span>
+              </div>
+            )}
+            {credential.rateLimited && (
+              <div className="col-span-2">
+                <span className="text-muted-foreground">本地限速：</span>
+                <span className="font-medium">
+                  剩余 {formatRemaining(credential.rateLimitRemainingSecs)}
+                </span>
               </div>
             )}
             <div className="col-span-2">

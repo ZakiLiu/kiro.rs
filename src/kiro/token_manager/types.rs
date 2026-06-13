@@ -110,8 +110,7 @@ pub enum DisableReason {
     RefreshFailureLimit,
     /// 认证失败（如 invalid_grant）
     AuthenticationFailed,
-    /// 账户被暂停（已改为 CooldownReason::AccountSuspended 24h 冷却，此变体保留兼容历史持久化数据）
-    #[allow(dead_code)]
+    /// 账户被暂停（终态禁用，需人工处理或手动重新启用）
     AccountSuspended,
     /// 余额不足
     #[allow(dead_code)]
@@ -167,6 +166,16 @@ pub struct CredentialEntrySnapshot {
     pub api_region: Option<String>,
     /// 最终生效的 endpoint 名称
     pub endpoint: Option<String>,
+    /// 是否可立即承接请求（未禁用、未冷却、未触发本地速率限制）
+    pub ready: bool,
+    /// 冷却原因（人类可读描述）
+    pub cooldown_reason: Option<String>,
+    /// 冷却剩余秒数（向上取整）
+    pub cooldown_remaining_secs: Option<u64>,
+    /// 是否被本地速率限制挡住
+    pub rate_limited: bool,
+    /// 本地速率限制剩余秒数（向上取整）
+    pub rate_limit_remaining_secs: Option<u64>,
 }
 
 /// 凭据管理器状态快照
@@ -178,7 +187,13 @@ pub struct ManagerSnapshot {
     /// 总凭据数量
     pub total: usize,
     /// 可用凭据数量
+    ///
+    /// 兼容旧 Admin UI：这里仍表示“未禁用凭据数量”，不代表可立即承接请求。
     pub available: usize,
+    /// 可立即承接请求的凭据数量
+    pub ready: usize,
+    /// 当前处于 cooldown 的未禁用凭据数量
+    pub cooling: usize,
 }
 
 /// 缓存余额信息（用于 Admin API）

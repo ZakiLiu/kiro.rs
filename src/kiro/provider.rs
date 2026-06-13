@@ -284,10 +284,9 @@ impl KiroProvider {
     ///
     /// 对以下类型的禁用凭据进行恢复尝试：
     /// - InsufficientBalance / QuotaExceeded: 余额探测成功即重新启用（remaining 如实写入缓存，含 0）
-    /// - AuthenticationFailed: 尝试刷新 Token，成功则重新启用
     /// - RefreshFailureLimit / FailureLimit: 尝试刷新 Token，成功则重新启用
     ///
-    /// 不恢复：Manual, AccountSuspended
+    /// 不恢复：Manual, AuthenticationFailed, AccountSuspended
     ///
     /// 使用指数退避：基础间隔 5 分钟，每次失败翻倍，最大 30 分钟
     pub fn start_periodic_recovery(self: &Arc<Self>, interval_secs: u64) {
@@ -328,8 +327,7 @@ impl KiroProvider {
                                 }
                             }
                         }
-                        crate::kiro::token_manager::DisableReason::AuthenticationFailed
-                        | crate::kiro::token_manager::DisableReason::RefreshFailureLimit
+                        crate::kiro::token_manager::DisableReason::RefreshFailureLimit
                         | crate::kiro::token_manager::DisableReason::FailureLimit => {
                             // 尝试刷新 Token
                             match tm.force_refresh_token_for(id).await {
@@ -348,7 +346,7 @@ impl KiroProvider {
                             }
                         }
                         _ => {
-                            // Manual, AccountSuspended, ModelUnavailable 不在此处理
+                            // Manual, AuthenticationFailed, AccountSuspended, ModelUnavailable 不在此处理
                         }
                     }
                     // 间隔避免突发压力
@@ -636,14 +634,9 @@ impl KiroProvider {
 
             // 401/403 凭据问题
             if matches!(status.as_u16(), 401 | 403) {
-                // 账户暂停：进入 24h 冷却（到期自动回池）
+                // 账户暂停：终态禁用，避免坏账号反复回池
                 if is_suspended_signal(&body) {
-                    tracing::error!(
-                        "凭据 #{} 账户暂停，进入 24h 冷却: {} {}",
-                        ctx.id,
-                        status,
-                        body
-                    );
+                    tracing::error!("凭据 #{} 账户暂停，已禁用: {} {}", ctx.id, status, body);
                     self.token_manager.report_account_suspended(ctx.id);
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
@@ -1038,14 +1031,9 @@ impl KiroProvider {
 
             // 401/403 - 更可能是凭据/权限问题：计入失败并允许故障转移
             if matches!(status.as_u16(), 401 | 403) {
-                // 账户暂停：进入 24h 冷却（到期自动回池），不计入普通失败
+                // 账户暂停：终态禁用，避免坏账号反复回池
                 if is_suspended_signal(&body) {
-                    tracing::error!(
-                        "凭据 #{} 账户暂停，进入 24h 冷却: {} {}",
-                        ctx.id,
-                        status,
-                        body
-                    );
+                    tracing::error!("凭据 #{} 账户暂停，已禁用: {} {}", ctx.id, status, body);
                     self.token_manager.report_account_suspended(ctx.id);
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(

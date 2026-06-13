@@ -36,6 +36,10 @@ pub enum ErrorCategory {
     AllCredentialsCooling {
         /// 建议的重试等待秒数
         retry_after_secs: Option<u64>,
+        /// 最短等待来源（如 rate_limit / cooldown:server_error）
+        source: Option<String>,
+        /// 是否应向客户端表达为 429 + Retry-After
+        client_retryable: bool,
     },
 
     /// 上游速率限制或容量类瞬态错误（不含网络错误与 5xx）
@@ -91,6 +95,35 @@ fn is_network_error(s: &str) -> bool {
     NETWORK_ERROR_PATTERNS.iter().any(|p| s.contains(p))
 }
 
+fn extract_retry_after_secs(s: &str) -> Option<u64> {
+    s.split("retry_after_secs=").nth(1).and_then(|rest| {
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        rest[..end].parse::<u64>().ok()
+    })
+}
+
+fn extract_cooling_source(s: &str) -> Option<String> {
+    let rest = s.split("原因：").nth(1)?;
+    let end = rest.find(['，', ',', '）', ')', ' ']).unwrap_or(rest.len());
+    let source = rest[..end].trim();
+    if source.is_empty() {
+        None
+    } else {
+        Some(source.to_string())
+    }
+}
+
+fn is_client_retryable_cooling_source(source: Option<&str>) -> bool {
+    let Some(source) = source else {
+        // 兼容旧错误文案：缺少来源时按历史语义返回 429。
+        return true;
+    };
+    let source = source.to_ascii_lowercase();
+    source == "rate_limit" || source == "global_429_detected" || source.contains("rate_limit")
+}
+
 // ── classify ───────────────────────────────────────────────────────
 
 /// 将 `anyhow::Error` 分类为 [`ErrorCategory`]
@@ -126,14 +159,13 @@ pub fn classify(err: &anyhow::Error, ctx: &ErrorRequestContext) -> ErrorCategory
 
     // 4. 所有凭据冷却中（提取 retry_after_secs）
     if s.contains("所有凭据均处于冷却/速率限制") {
-        let retry = s.split("retry_after_secs=").nth(1).and_then(|rest| {
-            let end = rest
-                .find(|c: char| !c.is_ascii_digit())
-                .unwrap_or(rest.len());
-            rest[..end].parse::<u64>().ok()
-        });
+        let retry = extract_retry_after_secs(&s);
+        let source = extract_cooling_source(&s);
+        let client_retryable = is_client_retryable_cooling_source(source.as_deref());
         return ErrorCategory::AllCredentialsCooling {
             retry_after_secs: retry,
+            source,
+            client_retryable,
         };
     }
 
@@ -180,8 +212,8 @@ pub fn classify(err: &anyhow::Error, ctx: &ErrorRequestContext) -> ErrorCategory
 ///
 /// 状态码映射：
 /// - `InputTooLong` / `ImproperlyFormedRequest` / `CompressionInduced400` → 400
-/// - `QuotaExhausted` / `AllCredentialsCooling` / `RateLimitTransient` → 429
-/// - `NoCredentials` / `ModelUnavailable` → 503
+/// - `QuotaExhausted` / rate-limit `AllCredentialsCooling` / `RateLimitTransient` → 429
+/// - non-rate-limit `AllCredentialsCooling` / `NoCredentials` / `ModelUnavailable` → 503
 /// - `NetworkTransient` / `ServerTransient` → 502
 /// - `AuthFailure` → 401
 /// - `Unknown` → 500
@@ -260,13 +292,34 @@ pub fn to_anthropic_response(
                 .into_response()
         }
 
-        ErrorCategory::AllCredentialsCooling { retry_after_secs } => {
+        ErrorCategory::AllCredentialsCooling {
+            retry_after_secs,
+            source,
+            client_retryable,
+        } => {
+            if !client_retryable {
+                tracing::error!(
+                    error = %err,
+                    source = ?source,
+                    "所有凭据不可用但并非客户端限流，返回 503"
+                );
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(ErrorResponse::new(
+                        "service_unavailable",
+                        "No ready credentials available. Check Admin API for disabled or suspended credentials.",
+                    )),
+                )
+                    .into_response();
+            }
+
             // 下限从 60s 降到 5s：当配置了低 RPM 时，实际等待可能只需几秒，
             // 硬钳到 60s 会让客户端白等。上限 300s 保持不变。
             let secs = retry_after_secs.unwrap_or(60).clamp(5, 300);
             tracing::warn!(
                 error = %err,
                 retry_after_secs = secs,
+                source = ?source,
                 "所有凭据临时冷却，返回 429 + Retry-After"
             );
             (
@@ -389,6 +442,14 @@ mod tests {
         anyhow::anyhow!("{}", msg)
     }
 
+    fn rate_limit_cooling(retry_after_secs: Option<u64>) -> ErrorCategory {
+        ErrorCategory::AllCredentialsCooling {
+            retry_after_secs,
+            source: Some("rate_limit".to_string()),
+            client_retryable: true,
+        }
+    }
+
     fn default_ctx() -> ErrorRequestContext {
         ErrorRequestContext::default()
     }
@@ -452,7 +513,9 @@ mod tests {
         assert_eq!(
             classify(&err, &default_ctx()),
             ErrorCategory::AllCredentialsCooling {
-                retry_after_secs: Some(120)
+                retry_after_secs: Some(120),
+                source: None,
+                client_retryable: true,
             }
         );
     }
@@ -463,7 +526,24 @@ mod tests {
         assert_eq!(
             classify(&err, &default_ctx()),
             ErrorCategory::AllCredentialsCooling {
-                retry_after_secs: None
+                retry_after_secs: None,
+                source: None,
+                client_retryable: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_classify_all_cooling_down_server_error_is_not_client_retryable() {
+        let err = make_err(
+            "所有凭据均处于冷却/速率限制（retry_after_secs=120，原因：cooldown:server_error，来自凭据 #1）",
+        );
+        assert_eq!(
+            classify(&err, &default_ctx()),
+            ErrorCategory::AllCredentialsCooling {
+                retry_after_secs: Some(120),
+                source: Some("cooldown:server_error".to_string()),
+                client_retryable: false,
             }
         );
     }
@@ -573,12 +653,7 @@ mod tests {
                 ErrorCategory::NoCredentials,
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
-            (
-                ErrorCategory::AllCredentialsCooling {
-                    retry_after_secs: Some(120),
-                },
-                StatusCode::TOO_MANY_REQUESTS,
-            ),
+            (rate_limit_cooling(Some(120)), StatusCode::TOO_MANY_REQUESTS),
             (
                 ErrorCategory::RateLimitTransient,
                 StatusCode::TOO_MANY_REQUESTS,
@@ -612,9 +687,7 @@ mod tests {
     async fn test_response_retry_after_header() {
         let err = make_err("所有凭据均处于冷却/速率限制中 retry_after_secs=120");
         let ctx = default_ctx();
-        let category = ErrorCategory::AllCredentialsCooling {
-            retry_after_secs: Some(120),
-        };
+        let category = rate_limit_cooling(Some(120));
 
         let resp = to_anthropic_response(&category, &err, &ctx);
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -627,9 +700,7 @@ mod tests {
     async fn test_response_retry_after_clamping_low() {
         let err = make_err("所有凭据均处于冷却/速率限制中 retry_after_secs=3");
         let ctx = default_ctx();
-        let category = ErrorCategory::AllCredentialsCooling {
-            retry_after_secs: Some(3),
-        };
+        let category = rate_limit_cooling(Some(3));
 
         let resp = to_anthropic_response(&category, &err, &ctx);
         let retry_after = resp.headers().get(header::RETRY_AFTER).unwrap();
@@ -641,9 +712,7 @@ mod tests {
     async fn test_response_retry_after_clamping_high() {
         let err = make_err("所有凭据均处于冷却/速率限制中 retry_after_secs=999");
         let ctx = default_ctx();
-        let category = ErrorCategory::AllCredentialsCooling {
-            retry_after_secs: Some(999),
-        };
+        let category = rate_limit_cooling(Some(999));
 
         let resp = to_anthropic_response(&category, &err, &ctx);
         let retry_after = resp.headers().get(header::RETRY_AFTER).unwrap();
@@ -655,14 +724,29 @@ mod tests {
     async fn test_response_retry_after_default_when_none() {
         let err = make_err("所有凭据均处于冷却/速率限制中");
         let ctx = default_ctx();
-        let category = ErrorCategory::AllCredentialsCooling {
-            retry_after_secs: None,
-        };
+        let category = rate_limit_cooling(None);
 
         let resp = to_anthropic_response(&category, &err, &ctx);
         let retry_after = resp.headers().get(header::RETRY_AFTER).unwrap();
         // None → default 60, clamp [5, 300] → 60
         assert_eq!(retry_after.to_str().unwrap(), "60");
+    }
+
+    #[tokio::test]
+    async fn test_response_non_rate_limit_cooling_returns_503_without_retry_after() {
+        let err = make_err(
+            "所有凭据均处于冷却/速率限制（retry_after_secs=120，原因：cooldown:server_error，来自凭据 #1）",
+        );
+        let ctx = default_ctx();
+        let category = ErrorCategory::AllCredentialsCooling {
+            retry_after_secs: Some(120),
+            source: Some("cooldown:server_error".to_string()),
+            client_retryable: false,
+        };
+
+        let resp = to_anthropic_response(&category, &err, &ctx);
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(resp.headers().get(header::RETRY_AFTER).is_none());
     }
 
     #[tokio::test]

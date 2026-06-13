@@ -105,6 +105,11 @@ impl AdminService {
                     failure_count: entry.failure_count,
                     refresh_failure_count: entry.refresh_failure_count,
                     disabled_reason: entry.disable_reason.map(|reason| format!("{:?}", reason)),
+                    ready: entry.ready,
+                    cooldown_reason: entry.cooldown_reason,
+                    cooldown_remaining_secs: entry.cooldown_remaining_secs,
+                    rate_limited: entry.rate_limited,
+                    rate_limit_remaining_secs: entry.rate_limit_remaining_secs,
                     expires_at: entry.expires_at,
                     auth_method: entry.auth_method,
                     has_profile_arn: entry.has_profile_arn,
@@ -127,6 +132,8 @@ impl AdminService {
         CredentialsStatusResponse {
             total: snapshot.total,
             available: snapshot.available,
+            ready: snapshot.ready,
+            cooling: snapshot.cooling,
             credentials,
         }
     }

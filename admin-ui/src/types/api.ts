@@ -1,7 +1,12 @@
 // 凭据状态响应
 export interface CredentialsStatusResponse {
   total: number
+  /** 未禁用凭据数量，兼容旧字段 */
   available: number
+  /** 可立即承接请求的凭据数量 */
+  ready?: number
+  /** 当前处于 cooldown 的未禁用凭据数量 */
+  cooling?: number
   credentials: CredentialStatusItem[]
 }
 
@@ -13,6 +18,11 @@ export interface CredentialStatusItem {
   failureCount: number
   refreshFailureCount: number
   disabledReason?: string | null
+  ready?: boolean
+  cooldownReason?: string | null
+  cooldownRemainingSecs?: number | null
+  rateLimited?: boolean
+  rateLimitRemainingSecs?: number | null
   expiresAt: string | null
   authMethod: string | null
   hasProfileArn: boolean

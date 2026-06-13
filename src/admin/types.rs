@@ -10,8 +10,12 @@ use serde::{Deserialize, Serialize};
 pub struct CredentialsStatusResponse {
     /// 凭据总数
     pub total: usize,
-    /// 可用凭据数量（未禁用）
+    /// 未禁用凭据数量（兼容旧字段，不代表可立即承接请求）
     pub available: usize,
+    /// 可立即承接请求的凭据数量
+    pub ready: usize,
+    /// 当前处于 cooldown 的未禁用凭据数量
+    pub cooling: usize,
     /// 各凭据状态列表
     pub credentials: Vec<CredentialStatusItem>,
 }
@@ -32,6 +36,16 @@ pub struct CredentialStatusItem {
     pub refresh_failure_count: u32,
     /// 禁用原因
     pub disabled_reason: Option<String>,
+    /// 是否可立即承接请求（未禁用、未冷却、未触发本地速率限制）
+    pub ready: bool,
+    /// 冷却原因
+    pub cooldown_reason: Option<String>,
+    /// 冷却剩余秒数
+    pub cooldown_remaining_secs: Option<u64>,
+    /// 是否被本地速率限制挡住
+    pub rate_limited: bool,
+    /// 本地速率限制剩余秒数
+    pub rate_limit_remaining_secs: Option<u64>,
     /// Token 过期时间（RFC3339 格式）
     pub expires_at: Option<String>,
     /// 认证方式

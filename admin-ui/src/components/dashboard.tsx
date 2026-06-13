@@ -98,6 +98,12 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const endIndex = startIndex + itemsPerPage
   const currentCredentials = sortedCredentials.slice(startIndex, endIndex)
   const disabledCredentialCount = data?.credentials.filter(credential => credential.disabled).length || 0
+  const readyCredentialCount = data?.ready ?? data?.credentials.filter(credential =>
+    credential.ready ?? (!credential.disabled && !credential.cooldownReason && !credential.rateLimited)
+  ).length ?? 0
+  const coolingCredentialCount = data?.cooling ?? data?.credentials.filter(credential =>
+    Boolean(credential.cooldownReason)
+  ).length ?? 0
   const selectedDisabledCount = Array.from(selectedIds).filter(id => {
     const credential = data?.credentials.find(c => c.id === id)
     return Boolean(credential?.disabled)
@@ -604,11 +610,14 @@ export function Dashboard({ onLogout }: DashboardProps) {
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">
-                可用凭据
+                就绪凭据
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-green-600">{data?.available || 0}</div>
+              <div className="text-2xl font-bold text-green-600">{readyCredentialCount}</div>
+              <div className="text-xs text-muted-foreground">
+                未禁用 {data?.available || 0} / 冷却 {coolingCredentialCount}
+              </div>
             </CardContent>
           </Card>
           <Card

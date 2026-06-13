@@ -265,6 +265,22 @@ enum WaitDecision {
     Bail(anyhow::Error),
 }
 
+fn duration_secs_ceil(duration: StdDuration) -> u64 {
+    (duration.as_millis().div_ceil(1000) as u64).max(1)
+}
+
+fn cooldown_wait_source(reason: CooldownReason) -> &'static str {
+    match reason {
+        CooldownReason::RateLimitExceeded => "cooldown:rate_limit_exceeded",
+        CooldownReason::AccountSuspended => "cooldown:account_suspended",
+        CooldownReason::QuotaExhausted => "cooldown:quota_exhausted",
+        CooldownReason::TokenRefreshFailed => "cooldown:token_refresh_failed",
+        CooldownReason::AuthenticationFailed => "cooldown:authentication_failed",
+        CooldownReason::ServerError => "cooldown:server_error",
+        CooldownReason::ModelUnavailable => "cooldown:model_unavailable",
+    }
+}
+
 /// 构造“所有凭据均处于冷却/速率限制”的 429 + Retry-After 错误。
 ///
 /// 两个穷尽分支的 long-wait bail 与 all-due-to-cooling 的 wait-budget bail 复用同一文案，
@@ -273,7 +289,7 @@ fn cooling_retry_after_error(
     wait: StdDuration,
     min_wait_detail: Option<(u64, &'static str, StdDuration)>,
 ) -> anyhow::Error {
-    let secs = (wait.as_millis().div_ceil(1000) as u64).max(1);
+    let secs = duration_secs_ceil(wait);
     let (cid, source) = min_wait_detail
         .map(|(id, src, _)| (id, src))
         .unwrap_or((0, "unknown"));
@@ -1057,7 +1073,7 @@ impl MultiTokenManager {
                     "凭据处于冷却，跳过"
                 );
                 if min_wait.map(|w| remaining < w).unwrap_or(true) {
-                    min_wait_detail = Some((id, "cooldown", remaining));
+                    min_wait_detail = Some((id, cooldown_wait_source(reason), remaining));
                 }
                 min_wait = Some(min_wait.map(|w| w.min(remaining)).unwrap_or(remaining));
                 tried_ids.push(id);
@@ -1736,9 +1752,16 @@ impl MultiTokenManager {
                 .map(|e| {
                     let mut cred = e.credentials.clone();
                     cred.canonicalize_auth_method();
-                    // 仅持久化手动禁用状态，自动禁用（失败阈值/额度用尽等）不落盘，
-                    // 避免重启后自动禁用被误标记为手动禁用导致无法自愈
-                    cred.disabled = e.disable_reason == Some(DisableReason::Manual);
+                    // 仅持久化人工/终态禁用状态。FailureLimit/QuotaExceeded 等可自愈状态不落盘，
+                    // 避免重启后临时故障被误标记为手动禁用导致无法自愈。
+                    cred.disabled = matches!(
+                        e.disable_reason,
+                        Some(
+                            DisableReason::Manual
+                                | DisableReason::AuthenticationFailed
+                                | DisableReason::AccountSuspended
+                        )
+                    );
                     cred
                 })
                 .collect();
@@ -2051,7 +2074,7 @@ impl MultiTokenManager {
 
     /// 检查并执行全局自动恢复
     ///
-    /// 如果已到恢复时间，恢复所有自动禁用的凭据（Manual / AccountSuspended 除外）
+    /// 如果已到恢复时间，恢复所有自动禁用的凭据（Manual / AuthenticationFailed / AccountSuspended 除外）
     /// 覆盖熔断窗口期间因其他原因（如余额、认证）被改写禁用原因的凭据
     ///
     /// 返回是否执行了恢复
@@ -2070,11 +2093,13 @@ impl MultiTokenManager {
         let mut recovered_count = 0;
 
         for entry in entries.iter_mut() {
-            // 恢复所有自动禁用的凭据（Manual 和 AccountSuspended 除外）
+            // 恢复所有自动禁用的凭据（Manual、AuthenticationFailed 和 AccountSuspended 除外）
             if entry.disabled
                 && !matches!(
                     entry.disable_reason,
-                    Some(DisableReason::Manual) | Some(DisableReason::AccountSuspended)
+                    Some(DisableReason::Manual)
+                        | Some(DisableReason::AuthenticationFailed)
+                        | Some(DisableReason::AccountSuspended)
                 )
             {
                 entry.disabled = false;
@@ -2148,22 +2173,32 @@ impl MultiTokenManager {
     }
 
     /// 标记凭据为认证失败（如 invalid_grant）
-    /// 允许周期性恢复尝试（可能是暂时性 OAuth 故障）
+    ///
+    /// invalid_grant 代表 refresh token 已被上游明确拒绝，按终态问题处理：
+    /// 立即禁用、解除亲和绑定、写回 credentials，避免重启后反复回池触发 429/401 噪声。
     pub fn mark_authentication_failed(&self, id: u64) {
         let mut entries = self.entries.lock();
         if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
             entry.disabled = true;
             entry.disabled_at = Some(Utc::now());
             entry.recovery_attempts = 0;
-            entry.auto_heal_reason = Some(AutoHealReason::TooManyFailures);
+            entry.auto_heal_reason = None;
             entry.disable_reason = Some(DisableReason::AuthenticationFailed);
+            entry.last_used_at = Some(Utc::now().to_rfc3339());
+            entry.failure_count = MAX_FAILURES_PER_CREDENTIAL;
             tracing::warn!(
-                "凭据 #{} 已标记为认证失败（将在恢复周期中尝试重新验证）",
+                "凭据 #{} 已标记为认证失败（invalid_grant，已禁用，需人工处理）",
                 id
             );
         }
         drop(entries);
         self.affinity.remove_by_credential(id);
+        self.cooldown_manager.clear_cooldown(id);
+        self.rate_limiter.reset(id);
+        self.save_stats_debounced();
+        if let Err(e) = self.persist_credentials() {
+            tracing::warn!("认证失败凭据禁用状态持久化失败: {}", e);
+        }
     }
 
     /// 标记凭据为余额不足（允许周期性恢复尝试——余额可能月初重置）
@@ -2184,7 +2219,7 @@ impl MultiTokenManager {
     /// 获取可尝试恢复的禁用凭据列表
     ///
     /// 返回满足恢复条件的凭据 ID 和禁用原因：
-    /// - 非 Manual / AccountSuspended
+    /// - 非 Manual / AuthenticationFailed / AccountSuspended
     /// - 禁用时间超过退避间隔（基础 5 分钟，指数退避，最大 30 分钟）
     pub fn get_recovery_candidates(&self) -> Vec<(u64, DisableReason)> {
         let entries = self.entries.lock();
@@ -2195,9 +2230,10 @@ impl MultiTokenManager {
                 if !e.disabled {
                     return false;
                 }
-                // 不恢复手动禁用、账户暂停和模型不可用（后者有独立恢复机制）
+                // 不恢复手动禁用、认证失败、账户暂停和模型不可用（后者有独立恢复机制）
                 match e.disable_reason {
                     Some(DisableReason::Manual)
+                    | Some(DisableReason::AuthenticationFailed)
                     | Some(DisableReason::AccountSuspended)
                     | Some(DisableReason::ModelUnavailable) => {
                         return false;
@@ -2375,11 +2411,9 @@ impl MultiTokenManager {
 
     /// 获取管理器状态快照（用于 Admin API）
     pub fn snapshot(&self) -> ManagerSnapshot {
-        let entries = self.entries.lock();
-        let available = entries.iter().filter(|e| !e.disabled).count();
-
-        ManagerSnapshot {
-            entries: entries
+        let mut snapshot_entries: Vec<CredentialEntrySnapshot> = {
+            let entries = self.entries.lock();
+            entries
                 .iter()
                 .map(|e| {
                     // 使用缓存的哈希，如果不存在则计算并缓存
@@ -2424,11 +2458,51 @@ impl MultiTokenManager {
                         region: e.credentials.region.clone(),
                         api_region: e.credentials.api_region.clone(),
                         endpoint: e.credentials.endpoint.clone(),
+                        ready: false,
+                        cooldown_reason: None,
+                        cooldown_remaining_secs: None,
+                        rate_limited: false,
+                        rate_limit_remaining_secs: None,
                     }
                 })
-                .collect(),
-            total: entries.len(),
+                .collect()
+        };
+
+        let total = snapshot_entries.len();
+        let available = snapshot_entries.iter().filter(|e| !e.disabled).count();
+        let mut ready = 0usize;
+        let mut cooling = 0usize;
+
+        for entry in &mut snapshot_entries {
+            if entry.disabled {
+                continue;
+            }
+
+            if let Some((reason, remaining)) = self.cooldown_manager.check_cooldown(entry.id) {
+                cooling += 1;
+                entry.cooldown_reason = Some(reason.description().to_string());
+                entry.cooldown_remaining_secs = Some(duration_secs_ceil(remaining));
+                continue;
+            }
+
+            match self.rate_limiter.check_rate_limit(entry.id) {
+                Ok(()) => {
+                    entry.ready = true;
+                    ready += 1;
+                }
+                Err(wait) => {
+                    entry.rate_limited = true;
+                    entry.rate_limit_remaining_secs = Some(duration_secs_ceil(wait));
+                }
+            }
+        }
+
+        ManagerSnapshot {
+            entries: snapshot_entries,
+            total,
             available,
+            ready,
+            cooling,
         }
     }
 
@@ -2989,12 +3063,33 @@ impl MultiTokenManager {
             .set_cooldown_with_duration(id, reason, duration)
     }
 
-    /// 账户暂停：进入 AccountSuspended 冷却（默认 24h，到期自动回池），并解除亲和绑定
-    pub fn report_account_suspended(&self, id: u64) -> std::time::Duration {
-        let duration =
-            self.set_credential_cooldown_with_duration(id, CooldownReason::AccountSuspended, None);
+    /// 账户暂停：按终态问题立即禁用，并解除亲和绑定。
+    ///
+    /// 上游返回 suspended 时账号通常不可短期恢复；禁用并写回 credentials，
+    /// 避免重启后再次回池把客户端流量压到坏账号上。
+    pub fn report_account_suspended(&self, id: u64) -> bool {
+        let has_available = {
+            let mut entries = self.entries.lock();
+            if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                entry.disabled = true;
+                entry.disabled_at = Some(Utc::now());
+                entry.recovery_attempts = 0;
+                entry.auto_heal_reason = None;
+                entry.disable_reason = Some(DisableReason::AccountSuspended);
+                entry.last_used_at = Some(Utc::now().to_rfc3339());
+                entry.failure_count = MAX_FAILURES_PER_CREDENTIAL;
+                tracing::error!("凭据 #{} 账户暂停（suspended），已禁用，需人工处理", id);
+            }
+            entries.iter().any(|e| !e.disabled)
+        };
         self.affinity.remove_by_credential(id);
-        duration
+        self.cooldown_manager.clear_cooldown(id);
+        self.rate_limiter.reset(id);
+        self.save_stats_debounced();
+        if let Err(e) = self.persist_credentials() {
+            tracing::warn!("账户暂停凭据禁用状态持久化失败: {}", e);
+        }
+        has_available
     }
 
     /// 清除凭据冷却

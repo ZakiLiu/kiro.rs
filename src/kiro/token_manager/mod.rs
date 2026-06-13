@@ -511,7 +511,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_report_account_suspended_sets_cooldown_and_skips_acquire() {
+    async fn test_report_account_suspended_disables_and_skips_acquire() {
         let config = Config::default();
         let mut cred1 = KiroCredentials::default();
         cred1.access_token = Some("t1".to_string());
@@ -526,43 +526,41 @@ mod tests {
         let manager =
             MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
 
-        let duration = manager.report_account_suspended(1);
-        assert!(duration > std::time::Duration::ZERO);
-
-        // 进入 AccountSuspended 冷却（而非禁用）
-        let (reason, remaining) = manager.cooldown_manager().check_cooldown(1).unwrap();
-        assert_eq!(reason, CooldownReason::AccountSuspended);
-        assert!(remaining > std::time::Duration::ZERO);
+        let has_available = manager.report_account_suspended(1);
+        assert!(has_available);
+        assert!(manager.cooldown_manager().check_cooldown(1).is_none());
 
         let snapshot = manager.snapshot();
         let entry1 = snapshot.entries.iter().find(|e| e.id == 1).unwrap();
-        assert!(!entry1.disabled);
+        assert!(entry1.disabled);
+        assert_eq!(entry1.disable_reason, Some(DisableReason::AccountSuspended));
+        assert!(!entry1.ready);
+        assert_eq!(snapshot.available, 1);
+        assert_eq!(snapshot.ready, 1);
 
-        // acquire 跳过冷却中的凭据 1，选中凭据 2
+        // acquire 跳过已禁用的凭据 1，选中凭据 2
         let ctx = manager.acquire_context().await.unwrap();
         assert_eq!(ctx.id, 2);
     }
 
-    #[tokio::test]
-    async fn test_account_suspended_cooldown_expires_and_recovers() {
+    #[test]
+    fn test_mark_authentication_failed_disables_without_recovery_candidate() {
         let config = Config::default();
         let mut cred = KiroCredentials::default();
         cred.access_token = Some("t1".to_string());
         cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
 
         let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
+        manager.mark_authentication_failed(1);
 
-        manager.set_credential_cooldown_with_duration(
-            1,
-            CooldownReason::AccountSuspended,
-            Some(std::time::Duration::from_millis(50)),
+        let snapshot = manager.snapshot();
+        let entry = snapshot.entries.iter().find(|e| e.id == 1).unwrap();
+        assert!(entry.disabled);
+        assert_eq!(
+            entry.disable_reason,
+            Some(DisableReason::AuthenticationFailed)
         );
-        assert!(manager.cooldown_manager().check_cooldown(1).is_some());
-
-        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-
-        // 到期自动回池，无需人工清除
-        assert!(manager.cooldown_manager().check_cooldown(1).is_none());
+        assert!(manager.get_recovery_candidates().is_empty());
     }
 
     #[tokio::test]
