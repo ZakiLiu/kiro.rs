@@ -69,6 +69,11 @@ pub struct Model {
     pub max_completion_tokens: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<bool>,
+    #[serde(
+        rename = "additionalModelRequestFieldsSchema",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub additional_model_request_fields_schema: Option<serde_json::Value>,
 }
 
 /// 模型列表响应
@@ -147,6 +152,14 @@ pub struct MessagesRequest {
     pub tool_choice: Option<serde_json::Value>,
     pub thinking: Option<Thinking>,
     pub output_config: Option<OutputConfig>,
+    /// OpenAI-compatible reasoning effort hint.
+    ///
+    /// 部分客户端会把 `reasoning_effort` 放进 Claude `/v1/messages`
+    /// 兼容请求里；这里接住并映射到 Kiro native
+    /// `additionalModelRequestFields`，避免调用方必须改用
+    /// Anthropic `thinking` 字段。
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     /// Claude Code 请求中的 metadata，包含 session 信息
     pub metadata: Option<Metadata>,
 }

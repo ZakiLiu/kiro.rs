@@ -535,6 +535,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         }
     }

@@ -35,6 +35,9 @@ pub struct KiroRequest {
     /// Profile ARN（可选）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_arn: Option<String>,
+    /// 模型级附加请求字段（thinking/reasoning effort 等）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub additional_model_request_fields: Option<serde_json::Value>,
 }
 #[cfg(test)]
 mod tests {
@@ -63,6 +66,27 @@ mod tests {
                 .user_input_message
                 .content,
             "Test message"
+        );
+    }
+
+    #[test]
+    fn test_kiro_request_serializes_additional_model_request_fields_camel_case() {
+        let state = ConversationState::new("conv-thinking");
+        let request = KiroRequest {
+            conversation_state: state,
+            profile_arn: None,
+            additional_model_request_fields: Some(serde_json::json!({
+                "thinking": { "type": "adaptive", "display": "summarized" },
+                "output_config": { "effort": "high" }
+            })),
+        };
+
+        let value = serde_json::to_value(request).unwrap();
+        assert!(value.get("additionalModelRequestFields").is_some());
+        assert!(value.get("additional_model_request_fields").is_none());
+        assert_eq!(
+            value["additionalModelRequestFields"]["output_config"]["effort"],
+            "high"
         );
     }
 }

@@ -632,6 +632,11 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
         "Received request"
     );
 
+    let model_thinking_schema = |model_id: &str| {
+        super::converter::thinking_config_for_model(model_id)
+            .map(|_| super::converter::output_config_thinking_schema())
+    };
+
     let models = vec![
         Model {
             id: "claude-sonnet-4-6".to_string(),
@@ -644,6 +649,7 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(64_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema("claude-sonnet-4-6"),
         },
         Model {
             id: "claude-sonnet-4-6-thinking".to_string(),
@@ -656,6 +662,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(64_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-sonnet-4-6-thinking",
+            ),
         },
         Model {
             id: "claude-sonnet-4-6-agentic".to_string(),
@@ -668,6 +677,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(64_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-sonnet-4-6-agentic",
+            ),
         },
         Model {
             id: "claude-sonnet-4-5-20250929".to_string(),
@@ -680,6 +692,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(200_000),
             max_completion_tokens: Some(64_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-sonnet-4-5-20250929",
+            ),
         },
         Model {
             id: "claude-sonnet-4-5-20250929-thinking".to_string(),
@@ -692,6 +707,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(200_000),
             max_completion_tokens: Some(64_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-sonnet-4-5-20250929-thinking",
+            ),
         },
         Model {
             id: "claude-sonnet-4-5-20250929-agentic".to_string(),
@@ -704,6 +722,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(200_000),
             max_completion_tokens: Some(64_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-sonnet-4-5-20250929-agentic",
+            ),
         },
         Model {
             id: "claude-opus-4-5-20251101".to_string(),
@@ -716,6 +737,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(200_000),
             max_completion_tokens: Some(64_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-opus-4-5-20251101",
+            ),
         },
         Model {
             id: "claude-opus-4-5-20251101-thinking".to_string(),
@@ -728,6 +752,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(200_000),
             max_completion_tokens: Some(64_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-opus-4-5-20251101-thinking",
+            ),
         },
         Model {
             id: "claude-opus-4-5-20251101-agentic".to_string(),
@@ -740,6 +767,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(200_000),
             max_completion_tokens: Some(64_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-opus-4-5-20251101-agentic",
+            ),
         },
         Model {
             id: "claude-opus-4-6".to_string(),
@@ -752,6 +782,7 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(128_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema("claude-opus-4-6"),
         },
         Model {
             id: "claude-opus-4-6-thinking".to_string(),
@@ -764,6 +795,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(128_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-opus-4-6-thinking",
+            ),
         },
         Model {
             id: "claude-opus-4-6-agentic".to_string(),
@@ -776,6 +810,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(128_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-opus-4-6-agentic",
+            ),
         },
         Model {
             id: "claude-opus-4-7".to_string(),
@@ -788,6 +825,7 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(128_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema("claude-opus-4-7"),
         },
         Model {
             id: "claude-opus-4-7-thinking".to_string(),
@@ -800,6 +838,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(128_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-opus-4-7-thinking",
+            ),
         },
         Model {
             id: "claude-opus-4-7-agentic".to_string(),
@@ -812,6 +853,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(128_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-opus-4-7-agentic",
+            ),
         },
         Model {
             id: "claude-opus-4-8".to_string(),
@@ -824,6 +868,7 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(128_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema("claude-opus-4-8"),
         },
         Model {
             id: "claude-opus-4-8-thinking".to_string(),
@@ -836,6 +881,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(128_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-opus-4-8-thinking",
+            ),
         },
         Model {
             id: "claude-opus-4-8-agentic".to_string(),
@@ -848,6 +896,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(128_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-opus-4-8-agentic",
+            ),
         },
         Model {
             id: "claude-haiku-4-5-20251001".to_string(),
@@ -860,6 +911,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(200_000),
             max_completion_tokens: Some(64_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-haiku-4-5-20251001",
+            ),
         },
         Model {
             id: "claude-haiku-4-5-20251001-thinking".to_string(),
@@ -872,6 +926,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(200_000),
             max_completion_tokens: Some(64_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-haiku-4-5-20251001-thinking",
+            ),
         },
         Model {
             id: "claude-haiku-4-5-20251001-agentic".to_string(),
@@ -884,6 +941,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(200_000),
             max_completion_tokens: Some(64_000),
             thinking: Some(true),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-haiku-4-5-20251001-agentic",
+            ),
         },
     ];
 
@@ -1095,9 +1155,13 @@ pub async fn post_messages(
 
     // 构建 Kiro 请求
     let tool_name_map = conversion_result.tool_name_map;
+    let thinking_config = super::converter::thinking_config_for_model(&payload.model);
+    let additional_fields =
+        super::converter::build_additional_model_request_fields(&payload, thinking_config.as_ref());
     let mut kiro_request = KiroRequest {
         conversation_state: conversion_result.conversation_state,
         profile_arn: state.profile_arn.clone(),
+        additional_model_request_fields: additional_fields,
     };
 
     let mut request_body = match serde_json::to_string(&kiro_request) {
@@ -2015,6 +2079,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         }
     }
@@ -2151,6 +2216,7 @@ mod tests {
                 ))
                 .with_history(vec![KiroMessage::user("history", "model")]),
             profile_arn: None,
+            additional_model_request_fields: None,
         };
         if let KiroMessage::User(user) = &mut kiro_request.conversation_state.history[0] {
             user.user_input_message.images = vec![KiroImage::from_base64("png", big.clone())];

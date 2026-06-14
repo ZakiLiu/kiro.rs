@@ -30,6 +30,9 @@ use history::{
 };
 use model::MAX_TOTAL_IMAGES;
 use system::determine_chat_trigger_type;
+pub(crate) use system::{
+    build_additional_model_request_fields, output_config_thinking_schema, thinking_config_for_model,
+};
 use tools::{collect_history_tool_names, convert_tools, create_placeholder_tool};
 
 use super::types::MessagesRequest;
@@ -318,7 +321,11 @@ mod tests {
     use history::convert_assistant_message;
     use model::*;
     use schema::normalize_json_schema;
-    use system::{generate_thinking_prefix, wrap_system_for_history};
+    use system::{
+        ThinkingConfig, ThinkingSchemaPath, build_additional_model_request_fields,
+        extract_thinking_config_from_schema, generate_thinking_prefix,
+        output_config_thinking_schema, wrap_system_for_history,
+    };
     use tools::{collect_history_tool_names, create_placeholder_tool};
 
     #[test]
@@ -471,7 +478,7 @@ mod tests {
     fn test_determine_chat_trigger_type() {
         // 无工具时返回 MANUAL
         let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
             max_tokens: 1024,
             messages: vec![],
             stream: false,
@@ -480,6 +487,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
         assert_eq!(system::determine_chat_trigger_type(&req), "MANUAL");
@@ -559,6 +567,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
@@ -736,6 +745,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: Some(Metadata {
                 user_id: Some(
                     "user_0dede55c6dcc4a11a30bbb5e7f22e6fdf86cdeba3820019cc27612af4e1243cd_account__session_a0662283-7fd3-4399-a7eb-52b9a717ae88".to_string(),
@@ -768,6 +778,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
@@ -1189,6 +1200,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
@@ -1247,6 +1259,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
@@ -1302,6 +1315,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
@@ -1364,6 +1378,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
@@ -1518,6 +1533,7 @@ mod tests {
                 tool_choice: None,
                 thinking: None,
                 output_config: None,
+                reasoning_effort: None,
                 metadata: None,
             };
             let result = convert_request(&req, &CompressionConfig::default(), None).unwrap();
@@ -1610,6 +1626,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
@@ -1645,6 +1662,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
@@ -1680,6 +1698,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
@@ -1705,8 +1724,8 @@ mod tests {
     fn test_effort_whitelist_fallback() {
         use crate::anthropic::types::{Message as AnthropicMessage, OutputConfig, Thinking};
 
-        let req = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
+        let mut req = MessagesRequest {
+            model: "claude-sonnet-4-6".to_string(),
             max_tokens: 1024,
             messages: vec![AnthropicMessage {
                 role: "user".to_string(),
@@ -1723,14 +1742,31 @@ mod tests {
             output_config: Some(OutputConfig {
                 effort: "low".to_string(),
             }),
+            reasoning_effort: None,
             metadata: None,
         };
 
-        let prefix = generate_thinking_prefix(&req).unwrap();
-        assert!(prefix.contains("<thinking_effort>low</thinking_effort>"));
+        assert!(
+            generate_thinking_prefix(&req).is_none(),
+            "native additionalModelRequestFields 启用时不应再注入 legacy thinking 标签"
+        );
 
-        let req_invalid = MessagesRequest {
-            model: "claude-sonnet-4".to_string(),
+        let fields = build_additional_model_request_fields(&req, None).unwrap();
+        assert_eq!(fields["output_config"]["effort"], "low");
+
+        req.output_config = Some(OutputConfig {
+            effort: "ultra".to_string(),
+        });
+        let fields = build_additional_model_request_fields(&req, None).unwrap();
+        assert_eq!(fields["output_config"]["effort"], "xhigh");
+    }
+
+    #[test]
+    fn test_additional_model_request_fields_without_schema_uses_minimal_native_switch() {
+        use crate::anthropic::types::{Message as AnthropicMessage, Thinking};
+
+        let mut req = MessagesRequest {
+            model: "claude-sonnet-4-5-20250929".to_string(),
             max_tokens: 1024,
             messages: vec![AnthropicMessage {
                 role: "user".to_string(),
@@ -1744,18 +1780,93 @@ mod tests {
                 thinking_type: "adaptive".to_string(),
                 budget_tokens: 0,
             }),
-            output_config: Some(OutputConfig {
-                effort: "ultra".to_string(),
-            }),
+            output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
-        let prefix = generate_thinking_prefix(&req_invalid).unwrap();
-        assert!(
-            prefix.contains("<thinking_effort>high</thinking_effort>"),
-            "非法 effort 值应回退为 high，实际: {}",
-            prefix
-        );
+        let fields = build_additional_model_request_fields(&req, None).unwrap();
+        assert_eq!(fields["thinking"]["type"], "adaptive");
+        assert!(fields.get("output_config").is_none());
+        assert!(fields.get("reasoning").is_none());
+
+        req.thinking = Some(Thinking {
+            thinking_type: "disabled".to_string(),
+            budget_tokens: 0,
+        });
+        assert!(build_additional_model_request_fields(&req, None).is_none());
+    }
+
+    #[test]
+    fn test_additional_model_request_fields_budget_and_reasoning_paths() {
+        use crate::anthropic::types::{Message as AnthropicMessage, Thinking};
+
+        let base = || MessagesRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            max_tokens: 1024,
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: serde_json::json!("hello"),
+            }],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: Some(Thinking {
+                thinking_type: "enabled".to_string(),
+                budget_tokens: 16_001,
+            }),
+            output_config: None,
+            reasoning_effort: None,
+            metadata: None,
+        };
+
+        let fields = build_additional_model_request_fields(&base(), None).unwrap();
+        assert_eq!(fields["thinking"]["type"], "adaptive");
+        assert_eq!(fields["thinking"]["display"], "summarized");
+        assert_eq!(fields["output_config"]["effort"], "high");
+
+        let reasoning_config = ThinkingConfig {
+            schema_path: ThinkingSchemaPath::Reasoning,
+            efforts: vec!["low".into(), "medium".into(), "high".into(), "xhigh".into()],
+            default_effort: Some("medium".into()),
+        };
+        let mut req = base();
+        req.reasoning_effort = Some("max".to_string());
+        let fields = build_additional_model_request_fields(&req, Some(&reasoning_config)).unwrap();
+        assert_eq!(fields["reasoning"]["effort"], "xhigh");
+        assert!(fields.get("output_config").is_none());
+    }
+
+    #[test]
+    fn test_extract_thinking_config_from_schema() {
+        let schema = output_config_thinking_schema();
+        let config = extract_thinking_config_from_schema(&schema).unwrap();
+        assert_eq!(config.schema_path, ThinkingSchemaPath::OutputConfig);
+        assert_eq!(config.efforts, ["low", "medium", "high", "xhigh"]);
+
+        let reasoning_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "reasoning": {
+                    "type": "object",
+                    "properties": {
+                        "effort": { "enum": ["low", "high"] }
+                    }
+                }
+            }
+        });
+        let config = extract_thinking_config_from_schema(&reasoning_schema).unwrap();
+        assert_eq!(config.schema_path, ThinkingSchemaPath::Reasoning);
+        assert_eq!(config.efforts, ["low", "high"]);
+    }
+
+    #[test]
+    fn test_thinking_config_for_model_scopes_native_schema_to_claude_46_plus() {
+        assert!(system::thinking_config_for_model("claude-sonnet-4-6").is_some());
+        assert!(system::thinking_config_for_model("claude-opus-4.7-thinking").is_some());
+        assert!(system::thinking_config_for_model("claude-sonnet-4-5-20250929").is_none());
+        assert!(system::thinking_config_for_model("claude-haiku-4-5-20251001").is_none());
     }
 
     #[test]
@@ -1816,6 +1927,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
@@ -1845,6 +1957,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
@@ -1873,6 +1986,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
@@ -1904,6 +2018,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
@@ -1938,6 +2053,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 
@@ -2030,6 +2146,7 @@ mod tests {
             tool_choice: None,
             thinking: None,
             output_config: None,
+            reasoning_effort: None,
             metadata: None,
         };
 

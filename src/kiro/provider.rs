@@ -155,6 +155,25 @@ impl KiroProvider {
         Ok(())
     }
 
+    /// THINKING_SIGNATURE_INVALID 恢复路径：
+    /// 剥离 history 中所有 assistantResponseMessage.reasoningContent 后重试。
+    fn strip_reasoning_content_for_retry(request_body: &str) -> Option<String> {
+        let mut parsed = serde_json::from_str::<serde_json::Value>(request_body).ok()?;
+        if let Some(history) = parsed
+            .pointer_mut("/conversationState/history")
+            .and_then(|v| v.as_array_mut())
+        {
+            for msg in history.iter_mut() {
+                if let Some(arm) = msg.get_mut("assistantResponseMessage")
+                    && let Some(obj) = arm.as_object_mut()
+                {
+                    obj.remove("reasoningContent");
+                }
+            }
+        }
+        serde_json::to_string(&parsed).ok()
+    }
+
     /// 获取凭据对应的 HTTP Client
     ///
     /// 优先使用凭据级代理，否则使用默认 client
@@ -975,6 +994,40 @@ impl KiroProvider {
 
             // 400 Bad Request - 请求问题，重试/切换凭据无意义
             if status.as_u16() == 400 {
+                // THINKING_SIGNATURE_INVALID: 模型更新导致 history 中的 thinking
+                // signature 失效。自动剥离 reasoningContent 后重试一次（与官方 IDE 策略一致）。
+                if body.contains("THINKING_SIGNATURE_INVALID") {
+                    tracing::warn!(
+                        "THINKING_SIGNATURE_INVALID detected, stripping reasoningContent and retrying"
+                    );
+                    if let Some(retry_body) =
+                        Self::strip_reasoning_content_for_retry(&final_body_for_log)
+                    {
+                        let retry_request = client
+                            .post(&url)
+                            .body(retry_body)
+                            .header("Connection", "close");
+                        let retry_request = endpoint.decorate_api(retry_request, &request_ctx);
+                        if let Ok(retry_resp) = retry_request.send().await {
+                            if retry_resp.status().is_success() {
+                                tracing::info!("THINKING_SIGNATURE_INVALID retry succeeded");
+                                self.token_manager.report_success(ctx.id);
+                                self.token_manager.record_api_success(ctx.id);
+                                self.spawn_balance_refresh(ctx.id);
+                                return Ok(ApiCallResult {
+                                    response: retry_resp,
+                                    credential_id: ctx.id,
+                                });
+                            }
+                            tracing::warn!(
+                                "THINKING_SIGNATURE_INVALID retry also failed: {}",
+                                retry_resp.status()
+                            );
+                        }
+                    }
+                    // 重试失败，按正常 400 流程 bail
+                }
+
                 let is_too_long = Self::is_input_too_long(&body);
                 // 输入过长错误：只记录请求体大小，不输出完整内容（太占空间且无调试价值）
                 if is_too_long {
@@ -1544,6 +1597,53 @@ mod tests {
     fn create_test_provider(config: Config, credentials: KiroCredentials) -> KiroProvider {
         let tm = MultiTokenManager::new(config, vec![credentials], None, None, false).unwrap();
         KiroProvider::new(Arc::new(tm))
+    }
+
+    #[test]
+    fn test_strip_reasoning_content_for_retry_removes_only_history_assistant_reasoning() {
+        let body = serde_json::json!({
+            "conversationState": {
+                "history": [
+                    {
+                        "assistantResponseMessage": {
+                            "content": "answer",
+                            "reasoningContent": { "text": "stale", "signature": "bad" },
+                            "toolUses": []
+                        }
+                    },
+                    {
+                        "userInputMessage": {
+                            "content": "next",
+                            "reasoningContent": "must stay"
+                        }
+                    }
+                ],
+                "currentMessage": {
+                    "userInputMessage": { "content": "hello" }
+                }
+            },
+            "additionalModelRequestFields": {
+                "thinking": { "type": "adaptive" }
+            }
+        })
+        .to_string();
+
+        let stripped = KiroProvider::strip_reasoning_content_for_retry(&body).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&stripped).unwrap();
+
+        assert!(
+            parsed["conversationState"]["history"][0]["assistantResponseMessage"]
+                .get("reasoningContent")
+                .is_none()
+        );
+        assert_eq!(
+            parsed["conversationState"]["history"][1]["userInputMessage"]["reasoningContent"],
+            "must stay"
+        );
+        assert_eq!(
+            parsed["additionalModelRequestFields"]["thinking"]["type"],
+            "adaptive"
+        );
     }
 
     #[test]
