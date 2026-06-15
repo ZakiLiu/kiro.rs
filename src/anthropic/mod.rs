@@ -19,11 +19,11 @@
 
 mod cache_tracker;
 mod compressor;
-mod converter;
+pub(crate) mod converter;
 pub(crate) mod cross_request_cache;
 pub(crate) mod error_map;
 mod handlers;
-mod middleware;
+pub(crate) mod middleware;
 mod router;
 mod stream;
 mod tool_compression;

@@ -59,37 +59,113 @@ fn normalize_model_name(model: &str) -> String {
     model.to_string()
 }
 
-/// 模型映射：将 Anthropic 模型名映射到 Kiro 模型 ID
+/// 默认回退模型
+pub(super) const KIRO_MODEL_DEFAULT: &str = KIRO_MODEL_SONNET_4_5;
+
+/// 模型映射：将 Anthropic / OpenAI / Gemini 模型名映射到 Kiro 模型 ID
 ///
 /// 映射规则：
-/// - sonnet 且包含 4.6/4-6 → claude-sonnet-4.6，否则 → claude-sonnet-4.5
-/// - opus 且包含 4.5/4-5 → claude-opus-4.5，包含 4.7/4-7 → claude-opus-4.7，包含 4.8/4-8 → claude-opus-4.8，否则 → claude-opus-4.6
-/// - 所有 haiku → claude-haiku-4.5
+/// - Claude 家族：按版本号精确映射
+/// - GPT 家族：全部映射到对应 Claude 模型
+/// - Gemini 家族：全部映射到对应 Claude 模型
 /// - `-thinking` / `-agentic` 后缀会被剥离后再映射
+/// - 未知模型返回 None（由调用方决定兜底策略）
 pub fn map_model(model: &str) -> Option<String> {
     let normalized_model = normalize_model_name(model);
 
+    // Claude 家族
     if normalized_model.contains("sonnet") {
         if normalized_model.contains("4-6") || normalized_model.contains("4.6") {
-            Some(KIRO_MODEL_SONNET_4_6.to_string())
-        } else {
-            Some(KIRO_MODEL_SONNET_4_5.to_string())
+            return Some(KIRO_MODEL_SONNET_4_6.to_string());
         }
-    } else if normalized_model.contains("opus") {
-        if normalized_model.contains("4-5") || normalized_model.contains("4.5") {
-            Some(KIRO_MODEL_OPUS_4_5.to_string())
-        } else if normalized_model.contains("4-7") || normalized_model.contains("4.7") {
-            Some(KIRO_MODEL_OPUS_4_7.to_string())
-        } else if normalized_model.contains("4-8") || normalized_model.contains("4.8") {
-            Some(KIRO_MODEL_OPUS_4_8.to_string())
-        } else {
-            Some(KIRO_MODEL_OPUS_4_6.to_string())
-        }
-    } else if normalized_model.contains("haiku") {
-        Some(KIRO_MODEL_HAIKU_4_5.to_string())
-    } else {
-        None
+        return Some(KIRO_MODEL_SONNET_4_5.to_string());
     }
+    if normalized_model.contains("opus") {
+        if normalized_model.contains("4-5") || normalized_model.contains("4.5") {
+            return Some(KIRO_MODEL_OPUS_4_5.to_string());
+        } else if normalized_model.contains("4-7") || normalized_model.contains("4.7") {
+            return Some(KIRO_MODEL_OPUS_4_7.to_string());
+        } else if normalized_model.contains("4-8") || normalized_model.contains("4.8") {
+            return Some(KIRO_MODEL_OPUS_4_8.to_string());
+        }
+        return Some(KIRO_MODEL_OPUS_4_6.to_string());
+    }
+    if normalized_model.contains("haiku") {
+        return Some(KIRO_MODEL_HAIKU_4_5.to_string());
+    }
+
+    // GPT 家族 → Claude 映射
+    if normalized_model.starts_with("gpt-5.5") || normalized_model.starts_with("gpt-5-5") {
+        return Some(KIRO_MODEL_OPUS_4_6.to_string());
+    }
+    if normalized_model.starts_with("gpt-5") {
+        return Some(KIRO_MODEL_OPUS_4_6.to_string());
+    }
+    if normalized_model.starts_with("gpt-4.5") || normalized_model.starts_with("gpt-4-5") {
+        return Some(KIRO_MODEL_SONNET_4_6.to_string());
+    }
+    if normalized_model.starts_with("gpt-4o") || normalized_model == "gpt-4-turbo" {
+        return Some(KIRO_MODEL_SONNET_4_5.to_string());
+    }
+    if normalized_model.starts_with("gpt-4") {
+        return Some(KIRO_MODEL_SONNET_4_5.to_string());
+    }
+    if normalized_model.starts_with("gpt-3.5") || normalized_model.starts_with("gpt-3-5") {
+        return Some(KIRO_MODEL_HAIKU_4_5.to_string());
+    }
+    if normalized_model.starts_with("o4-mini") || normalized_model.starts_with("o3-mini") || normalized_model.starts_with("o1-mini") {
+        return Some(KIRO_MODEL_SONNET_4_5.to_string());
+    }
+    if normalized_model.starts_with("o1") || normalized_model.starts_with("o3") || normalized_model.starts_with("o4") {
+        return Some(KIRO_MODEL_OPUS_4_6.to_string());
+    }
+
+    // Fable 家族 → Claude 映射
+    if normalized_model.contains("fable-5") || normalized_model.contains("fable5") {
+        return Some(KIRO_MODEL_SONNET_4_6.to_string());
+    }
+
+    // Gemini 家族 → Claude 映射（strip models/ prefix for Gemini API paths）
+    let gemini_model = normalized_model.strip_prefix("models/").unwrap_or(&normalized_model);
+    if gemini_model.contains("gemini-3") && gemini_model.contains("pro") {
+        return Some(KIRO_MODEL_OPUS_4_6.to_string());
+    }
+    if gemini_model.contains("gemini-3") && gemini_model.contains("flash") {
+        return Some(KIRO_MODEL_SONNET_4_5.to_string());
+    }
+    if gemini_model.contains("gemini-2.5-pro") || gemini_model.contains("gemini-2-5-pro") {
+        return Some(KIRO_MODEL_SONNET_4_5.to_string());
+    }
+    if gemini_model.contains("gemini-2.5-flash") || gemini_model.contains("gemini-2-5-flash") {
+        return Some(KIRO_MODEL_HAIKU_4_5.to_string());
+    }
+    if gemini_model.contains("gemini-2") && gemini_model.contains("pro") {
+        return Some(KIRO_MODEL_SONNET_4_5.to_string());
+    }
+    if gemini_model.contains("gemini-1.5-pro") || gemini_model.contains("gemini-1-5-pro") {
+        return Some(KIRO_MODEL_SONNET_4_5.to_string());
+    }
+    if gemini_model.contains("gemini-1.5-flash") || gemini_model.contains("gemini-1-5-flash") {
+        return Some(KIRO_MODEL_HAIKU_4_5.to_string());
+    }
+    if gemini_model.contains("gemini") {
+        return Some(KIRO_MODEL_SONNET_4_5.to_string());
+    }
+
+    // 特殊模型
+    if normalized_model == "simple-task" {
+        return Some(KIRO_MODEL_HAIKU_4_5.to_string());
+    }
+    if normalized_model == "auto" || normalized_model == "default" {
+        return Some(KIRO_MODEL_DEFAULT.to_string());
+    }
+
+    // 直通：如果已经是有效的 Kiro 模型 ID，直接透传
+    if normalized_model.starts_with("claude-") {
+        return Some(normalized_model);
+    }
+
+    None
 }
 
 /// 判断模型名是否为 agentic 变体

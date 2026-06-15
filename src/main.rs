@@ -2,11 +2,13 @@ mod admin;
 mod admin_ui;
 mod anthropic;
 mod common;
+mod gemini;
 mod http_client;
 pub mod image;
 mod kiro;
 pub mod metrics;
 mod model;
+mod openai;
 #[cfg(feature = "pdf-support")]
 pub mod pdf;
 pub mod token;
@@ -310,9 +312,15 @@ async fn main() {
         api_key.len()
     );
     tracing::info!("可用 API:");
+    tracing::info!("  POST /v1/messages              (Claude 兼容)");
+    tracing::info!("  POST /anthropic/v1/messages     (Claude Code)");
+    tracing::info!("  POST /v1/chat/completions       (OpenAI 兼容)");
+    tracing::info!("  POST /v1/responses              (OpenAI Responses)");
+    tracing::info!("  POST /v1beta/models/*:generateContent (Gemini 兼容)");
     tracing::info!("  GET  /v1/models");
-    tracing::info!("  POST /v1/messages");
+    tracing::info!("  GET  /v1beta/models             (Gemini 模型)");
     tracing::info!("  POST /v1/messages/count_tokens");
+    tracing::info!("  GET  /health");
     if admin_key_valid {
         tracing::info!("Admin API:");
         tracing::info!("  GET  /api/admin/credentials");
