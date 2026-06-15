@@ -623,6 +623,11 @@ fn strip_empty_text_content_blocks(messages: &mut [super::types::Message]) -> us
     removed
 }
 
+/// GET /health
+pub async fn health() -> impl IntoResponse {
+    Json(json!({"status": "ok"}))
+}
+
 /// GET /v1/models
 ///
 /// 返回可用的模型列表。
