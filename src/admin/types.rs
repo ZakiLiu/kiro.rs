@@ -1,5 +1,6 @@
 //! Admin API 类型定义
 
+use crate::admin::proxy_pool::ProxyHealth;
 use serde::{Deserialize, Serialize};
 
 // ============ 凭据状态 ============
@@ -571,6 +572,425 @@ pub struct UpdateCompressionConfigRequest {
     pub max_history_turns: Option<usize>,
     pub max_history_chars: Option<usize>,
     pub max_request_body_bytes: Option<usize>,
+}
+
+// ============ 负载均衡模式 ============
+
+/// 负载均衡模式响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadBalancingModeResponse {
+    /// 当前模式（"priority" 或 "balanced"）
+    pub mode: String,
+}
+
+/// 设置负载均衡模式请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetLoadBalancingModeRequest {
+    /// 模式（"priority" 或 "balanced"）
+    pub mode: String,
+}
+
+// ============ 账号级风控 ============
+
+/// 账号级风控故障转移配置响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountThrottleConfigResponse {
+    /// 是否启用账号级 429 故障转移
+    pub failover: bool,
+    /// 冷却时长（秒）
+    pub cooldown_secs: u64,
+}
+
+/// 更新账号级风控故障转移配置
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAccountThrottleConfigRequest {
+    /// 是否启用故障转移；缺省表示不修改
+    #[serde(default)]
+    pub failover: Option<bool>,
+    /// 冷却时长（秒）；缺省表示不修改，1..=86400
+    #[serde(default)]
+    pub cooldown_secs: Option<u64>,
+}
+
+// ============ 日志治理 ============
+
+/// 日志治理配置响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogGovernanceConfigResponse {
+    /// 是否启用请求链路追踪写入
+    pub trace_enabled: bool,
+    /// trace 记录保留天数
+    pub trace_retention_days: u32,
+    /// 用量日志保留天数
+    pub usage_log_retention_days: u32,
+}
+
+/// 更新日志治理配置（字段缺省表示不修改）
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetLogGovernanceConfigRequest {
+    #[serde(default)]
+    pub trace_enabled: Option<bool>,
+    /// trace 保留天数，1..=365
+    #[serde(default)]
+    pub trace_retention_days: Option<u32>,
+    /// 用量日志保留天数，1..=365
+    #[serde(default)]
+    pub usage_log_retention_days: Option<u32>,
+}
+
+// ============ 代理池 ============
+
+/// 代理池条目
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyPoolEntry {
+    /// 唯一 ID（自增）
+    pub id: u64,
+    /// 代理 URL（如 socks5://user:pass@host:port）
+    pub url: String,
+    /// 备注标签（可选）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// 是否启用
+    pub enabled: bool,
+    /// 使用此代理的凭据数量
+    pub credential_count: u32,
+    /// 健康状态
+    pub health: ProxyHealth,
+    /// 最近一次成功探测的延迟（毫秒）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u32>,
+    /// 最近一次探测时间（RFC3339）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_checked_at: Option<String>,
+    /// 连续探测失败计数
+    pub consecutive_failures: u32,
+    /// 是否由健康检查自动禁用
+    pub auto_disabled: bool,
+}
+
+/// 代理池列表响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyPoolResponse {
+    pub total: usize,
+    pub proxies: Vec<ProxyPoolEntry>,
+}
+
+/// 单个代理健康检查响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyCheckResponse {
+    pub id: u64,
+    pub health: ProxyHealth,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_checked_at: Option<String>,
+    pub enabled: bool,
+    pub auto_disabled: bool,
+}
+
+/// 全量健康检查响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyCheckAllResponse {
+    pub healthy: usize,
+    pub unhealthy: usize,
+    pub auto_disabled: usize,
+}
+
+/// 轮询批量分配请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignRoundRobinRequest {
+    /// 目标凭据 ID 列表；为空或缺省表示对全部凭据分配
+    #[serde(default)]
+    pub credential_ids: Option<Vec<u64>>,
+}
+
+/// 轮询批量分配响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignRoundRobinResponse {
+    /// 成功分配的凭据数
+    pub assigned: usize,
+    /// 参与轮询的可用代理数
+    pub proxy_count: usize,
+}
+
+/// 添加代理请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddProxyRequest {
+    pub url: String,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// 批量导入代理请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchAddProxyRequest {
+    /// 代理 URL 列表（每行一个）
+    pub urls: Vec<String>,
+}
+
+/// 分配代理给凭据请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignProxyRequest {
+    /// 代理池中的代理 ID；null 表示清除代理
+    #[serde(default)]
+    pub proxy_id: Option<u64>,
+}
+
+// ============ 全局代理配置（新） ============
+
+/// 全局代理配置响应（仅 URL）
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalProxyResponse {
+    /// 当前全局代理 URL（null 表示未配置）
+    pub proxy_url: Option<String>,
+}
+
+/// 设置全局代理请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetGlobalProxyRequest {
+    /// 代理 URL，null 表示清除全局代理
+    pub proxy_url: Option<String>,
+}
+
+// ============ 登录API密钥修改 ============
+
+/// 修改登录API密钥（管理面板登录用 adminApiKey）请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAdminKeyRequest {
+    /// 新的登录API密钥
+    pub new_key: String,
+}
+
+// ============ 凭据更新 ============
+
+/// 更新凭据请求（仅可编辑字段，None 表示不修改，Some("") 表示清除）
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCredentialRequest {
+    /// 用户邮箱（用于前端显示）
+    pub email: Option<String>,
+    /// 凭据级代理 URL（空字符串表示清除）
+    pub proxy_url: Option<String>,
+    /// 凭据级代理认证用户名
+    pub proxy_username: Option<String>,
+    /// 凭据级代理认证密码
+    pub proxy_password: Option<String>,
+    /// 账号所属分组（None 表示不修改，Some 表示整体替换）
+    #[serde(default)]
+    pub groups: Option<Vec<String>>,
+    /// 账号来源渠道（None 表示不修改，空串表示清除）
+    #[serde(default)]
+    pub source_channel: Option<String>,
+}
+
+/// 更新 refreshToken 请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRefreshTokenRequest {
+    /// 新的刷新令牌
+    pub refresh_token: String,
+    /// 可选：同时更新 accessToken
+    #[serde(default)]
+    pub access_token: Option<String>,
+    /// 可选：同时更新 expiresAt
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}
+
+// ============ 客户端 API Key 分发 ============
+
+/// 客户端 Key 列表项（脱敏展示）
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientKeyItem {
+    pub id: u64,
+    /// 脱敏后的 Key 展示（如 csk_abcd...mnop）
+    pub masked_key: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub disabled: bool,
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<String>,
+    pub total_calls: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cache_creation_tokens: u64,
+    pub total_cache_read_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// 是否系统密钥（config.json apiKey 导入，不可删除）
+    #[serde(default)]
+    pub is_system: bool,
+}
+
+/// 客户端 Key 列表响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientKeysResponse {
+    pub total: usize,
+    pub keys: Vec<ClientKeyItem>,
+}
+
+/// 创建客户端 Key 请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateClientKeyRequest {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
+/// 创建客户端 Key 响应（明文 Key 仅在此处返回一次）
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateClientKeyResponse {
+    pub id: u64,
+    pub key: String,
+    pub name: String,
+    pub created_at: String,
+}
+
+/// 更新客户端 Key 元数据
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateClientKeyRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
+// ============ IdC 设备授权登录 ============
+
+/// 发起 IdC 设备授权请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartIdcLoginRequest {
+    pub region: String,
+    #[serde(default)]
+    pub start_url: Option<String>,
+    #[serde(default)]
+    pub priority: u32,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub proxy_url: Option<String>,
+}
+
+// ============ Social 登录（Portal PKCE OAuth） ============
+
+/// 发起 Social 登录请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartSocialLoginRequest {
+    /// 优先级（默认 0）
+    #[serde(default)]
+    pub priority: u32,
+    /// 用户邮箱（可选）
+    #[serde(default)]
+    pub email: Option<String>,
+    /// 代理 URL（可选）
+    #[serde(default)]
+    pub proxy_url: Option<String>,
+    /// Kiro auth endpoint（留空用默认）
+    #[serde(default)]
+    pub auth_endpoint: Option<String>,
+}
+
+/// 手动完成 Social 登录请求（远程访问场景：从浏览器地址栏复制回调 URL）
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompleteSocialLoginRequest {
+    /// OAuth 授权码（从回调 URL 的 code 参数提取）
+    pub code: String,
+    /// OAuth state（从回调 URL 的 state 参数提取，用于 CSRF 校验）
+    pub state: String,
+    /// 登录选项（从回调 URL 的 login_option 参数提取，可为空）
+    #[serde(default)]
+    pub login_option: String,
+    /// 回调 URL 的路径（如 /oauth/callback）
+    #[serde(default = "default_oauth_path")]
+    pub path: String,
+}
+
+fn default_oauth_path() -> String {
+    "/oauth/callback".to_string()
+}
+
+// ============ 账号分组（独立实体）============
+
+/// 单条分组（列表项）
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupItem {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub created_at: String,
+    /// 引用计数：有多少个凭据带这个分组
+    pub credential_count: usize,
+    /// 引用计数：有多少把客户端 Key 绑定这个分组
+    pub client_key_count: usize,
+}
+
+/// 分组列表响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupsResponse {
+    pub total: usize,
+    pub groups: Vec<GroupItem>,
+}
+
+/// 创建分组请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupRequest {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// 更新分组请求（改名 / 改备注；两者都可选）
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateGroupRequest {
+    /// 新名字；不传或与原名一致则不改名
+    #[serde(default)]
+    pub new_name: Option<String>,
+    /// 新备注；传空字符串清除备注；不传字段则保留
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// 删除分组的可选查询参数
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteGroupQuery {
+    /// 强制删除：即使仍有引用也删；同时级联清理凭据 / Key 的引用
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[cfg(test)]

@@ -1175,6 +1175,369 @@ impl AdminService {
             target.max_request_body_bytes = v;
         }
     }
+
+    // ============ 风控冷却 ============
+
+    /// 手动解除凭据的账号级风控冷却
+    pub fn clear_throttle(&self, _id: u64) -> Result<(), AdminServiceError> {
+        // TODO: MultiTokenManager.clear_cooldown() 尚未在 CURRENT 项目实现
+        Err(AdminServiceError::InternalError(
+            "clear_throttle 尚未实现".to_string(),
+        ))
+    }
+
+    // ============ 凭据更新 ============
+
+    /// 更新凭据可编辑字段
+    pub fn update_credential(
+        &self,
+        _id: u64,
+        _payload: super::types::UpdateCredentialRequest,
+    ) -> Result<(), AdminServiceError> {
+        // TODO: MultiTokenManager 的 update_proxy_for / update_email 尚未在 CURRENT 项目实现
+        Err(AdminServiceError::InternalError(
+            "update_credential 尚未实现".to_string(),
+        ))
+    }
+
+    /// 更新已禁用凭据的 refreshToken
+    pub fn update_refresh_token(
+        &self,
+        _id: u64,
+        _payload: super::types::UpdateRefreshTokenRequest,
+    ) -> Result<(), AdminServiceError> {
+        // TODO: MultiTokenManager.update_refresh_token() 尚未在 CURRENT 项目实现
+        Err(AdminServiceError::InternalError(
+            "update_refresh_token 尚未实现".to_string(),
+        ))
+    }
+
+    /// 重置凭据的 success_count
+    pub fn reset_success_count(
+        &self,
+        _id: Option<u64>,
+    ) -> Result<usize, AdminServiceError> {
+        // TODO: MultiTokenManager.reset_success_count() 尚未在 CURRENT 项目实现
+        Err(AdminServiceError::InternalError(
+            "reset_success_count 尚未实现".to_string(),
+        ))
+    }
+
+    // ============ 代理池 ============
+
+    /// 获取代理池列表
+    pub fn get_proxy_pool(&self) -> serde_json::Value {
+        // 代理池管理器尚未接入 AdminService，返回空列表
+        serde_json::json!({ "total": 0, "proxies": [] })
+    }
+
+    /// 添加代理到池中
+    pub fn add_proxy(
+        &self,
+        _url: String,
+        _label: Option<String>,
+    ) -> Result<serde_json::Value, AdminServiceError> {
+        Err(AdminServiceError::InternalError(
+            "代理池管理器尚未接入 AdminService".to_string(),
+        ))
+    }
+
+    /// 批量添加代理
+    pub fn batch_add_proxies(
+        &self,
+        _payload: super::types::BatchAddProxyRequest,
+    ) -> (Vec<serde_json::Value>, Vec<String>) {
+        (vec![], vec!["代理池管理器尚未接入 AdminService".to_string()])
+    }
+
+    /// 删除代理
+    pub fn delete_proxy(&self, _id: u64) -> Result<(), AdminServiceError> {
+        Err(AdminServiceError::InternalError(
+            "代理池管理器尚未接入 AdminService".to_string(),
+        ))
+    }
+
+    /// 设置代理启用/禁用
+    pub fn set_proxy_enabled(&self, _id: u64, _enabled: bool) -> Result<(), AdminServiceError> {
+        Err(AdminServiceError::InternalError(
+            "代理池管理器尚未接入 AdminService".to_string(),
+        ))
+    }
+
+    /// 分配代理给凭据
+    pub fn assign_proxy_to_credential(
+        &self,
+        _id: u64,
+        _payload: super::types::AssignProxyRequest,
+    ) -> Result<(), AdminServiceError> {
+        Err(AdminServiceError::InternalError(
+            "代理池管理器尚未接入 AdminService".to_string(),
+        ))
+    }
+
+    /// 探测代理连通性
+    pub async fn check_proxy(
+        &self,
+        _id: u64,
+    ) -> Result<serde_json::Value, AdminServiceError> {
+        Err(AdminServiceError::InternalError(
+            "代理池管理器尚未接入 AdminService".to_string(),
+        ))
+    }
+
+    /// 全量代理健康检查
+    pub async fn check_all_proxies(&self) -> serde_json::Value {
+        serde_json::json!({ "healthy": 0, "unhealthy": 0, "autoDisabled": 0 })
+    }
+
+    /// 轮询批量分配代理
+    pub fn assign_proxies_round_robin(
+        &self,
+        _credential_ids: Option<Vec<u64>>,
+    ) -> Result<serde_json::Value, AdminServiceError> {
+        Err(AdminServiceError::InternalError(
+            "代理池管理器尚未接入 AdminService".to_string(),
+        ))
+    }
+
+    // ============ 负载均衡配置 ============
+
+    /// 获取负载均衡模式
+    pub fn get_load_balancing_mode(&self) -> super::types::LoadBalancingModeResponse {
+        let config = self.config.read();
+        super::types::LoadBalancingModeResponse {
+            mode: config.load_balancing_mode.clone(),
+        }
+    }
+
+    /// 设置负载均衡模式
+    pub fn set_load_balancing_mode(
+        &self,
+        payload: super::types::SetLoadBalancingModeRequest,
+    ) -> Result<super::types::LoadBalancingModeResponse, AdminServiceError> {
+        let mode = payload.mode.trim().to_lowercase();
+        if mode != "priority" && mode != "balanced" {
+            return Err(AdminServiceError::InvalidRequest(
+                "mode 必须是 priority 或 balanced".to_string(),
+            ));
+        }
+        {
+            let mut config = self.config.write();
+            config.load_balancing_mode = mode.clone();
+            config
+                .save()
+                .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+        }
+        Ok(super::types::LoadBalancingModeResponse { mode })
+    }
+
+    // ============ 账号级风控 ============
+
+    /// 获取账号级风控故障转移配置
+    pub fn get_account_throttle_config(&self) -> super::types::AccountThrottleConfigResponse {
+        let config = self.config.read();
+        super::types::AccountThrottleConfigResponse {
+            failover: config.account_throttle_failover,
+            cooldown_secs: config.account_throttle_cooldown_secs,
+        }
+    }
+
+    /// 更新账号级风控故障转移配置
+    pub fn set_account_throttle_config(
+        &self,
+        payload: super::types::SetAccountThrottleConfigRequest,
+    ) -> Result<super::types::AccountThrottleConfigResponse, AdminServiceError> {
+        {
+            let mut config = self.config.write();
+            if let Some(failover) = payload.failover {
+                config.account_throttle_failover = failover;
+            }
+            if let Some(cooldown) = payload.cooldown_secs {
+                if !(1..=86400).contains(&cooldown) {
+                    return Err(AdminServiceError::InvalidRequest(
+                        "cooldown_secs 必须在 1~86400 之间".to_string(),
+                    ));
+                }
+                config.account_throttle_cooldown_secs = cooldown;
+            }
+            config
+                .save()
+                .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+        }
+        Ok(self.get_account_throttle_config())
+    }
+
+    // ============ 日志治理 ============
+
+    /// 获取日志治理配置
+    pub fn get_log_governance_config(&self) -> super::types::LogGovernanceConfigResponse {
+        let config = self.config.read();
+        super::types::LogGovernanceConfigResponse {
+            trace_enabled: config.trace_enabled,
+            trace_retention_days: config.trace_retention_days,
+            usage_log_retention_days: config.usage_log_retention_days,
+        }
+    }
+
+    /// 更新日志治理配置
+    pub fn set_log_governance_config(
+        &self,
+        payload: super::types::SetLogGovernanceConfigRequest,
+    ) -> Result<super::types::LogGovernanceConfigResponse, AdminServiceError> {
+        {
+            let mut config = self.config.write();
+            if let Some(enabled) = payload.trace_enabled {
+                config.trace_enabled = enabled;
+            }
+            if let Some(days) = payload.trace_retention_days {
+                if !(1..=365).contains(&days) {
+                    return Err(AdminServiceError::InvalidRequest(
+                        "trace_retention_days 必须在 1~365 之间".to_string(),
+                    ));
+                }
+                config.trace_retention_days = days;
+            }
+            if let Some(days) = payload.usage_log_retention_days {
+                if !(1..=365).contains(&days) {
+                    return Err(AdminServiceError::InvalidRequest(
+                        "usage_log_retention_days 必须在 1~365 之间".to_string(),
+                    ));
+                }
+                config.usage_log_retention_days = days;
+            }
+            config
+                .save()
+                .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+        }
+        Ok(self.get_log_governance_config())
+    }
+
+    // ============ 全局代理（新版） ============
+
+    /// 获取当前全局代理 URL
+    pub fn get_global_proxy(&self) -> Option<String> {
+        self.config.read().proxy_url.clone()
+    }
+
+    /// 设置或清除全局代理
+    pub fn set_global_proxy(&self, proxy_url: Option<String>) -> Result<(), AdminServiceError> {
+        let url = proxy_url
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        {
+            let mut config = self.config.write();
+            config.proxy_url = url;
+            config
+                .save()
+                .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    // ============ Admin Key 持久化 ============
+
+    /// 持久化 admin key 到 config.json
+    pub fn persist_admin_key(&self, new_key: &str) {
+        let mut config = self.config.write();
+        config.admin_api_key = Some(new_key.to_string());
+        if let Err(e) = config.save() {
+            tracing::warn!("持久化 admin_api_key 失败: {}", e);
+        }
+    }
+
+    /// 持久化 api key 到 config.json
+    pub fn persist_api_key(&self, new_key: &str) {
+        let mut config = self.config.write();
+        config.api_key = Some(new_key.to_string());
+        if let Err(e) = config.save() {
+            tracing::warn!("持久化 api_key 失败: {}", e);
+        }
+    }
+
+    // ============ Auth Flow STUBS ============
+    // 以下方法依赖 auth/social.rs 和 auth/idc.rs，尚未移植到 CURRENT 项目。
+    // 返回 501 Not Implemented 占位。
+
+    /// 发起 IdC 设备授权登录
+    pub async fn start_idc_login(
+        &self,
+        _payload: super::types::StartIdcLoginRequest,
+    ) -> Result<serde_json::Value, AdminServiceError> {
+        Err(AdminServiceError::InternalError(
+            "IdC 登录模块尚未实现".to_string(),
+        ))
+    }
+
+    /// 轮询 IdC 登录状态
+    pub async fn poll_idc_login(
+        &self,
+        _session_id: &str,
+    ) -> Result<serde_json::Value, AdminServiceError> {
+        Err(AdminServiceError::InternalError(
+            "IdC 登录模块尚未实现".to_string(),
+        ))
+    }
+
+    /// 发起 Social 登录
+    pub async fn start_social_login(
+        &self,
+        _payload: super::types::StartSocialLoginRequest,
+    ) -> Result<serde_json::Value, AdminServiceError> {
+        Err(AdminServiceError::InternalError(
+            "Social 登录模块尚未实现".to_string(),
+        ))
+    }
+
+    /// 轮询 Social 登录状态
+    pub async fn poll_social_login(
+        &self,
+        _session_id: &str,
+    ) -> Result<serde_json::Value, AdminServiceError> {
+        Err(AdminServiceError::InternalError(
+            "Social 登录模块尚未实现".to_string(),
+        ))
+    }
+
+    /// 完成 Social 登录
+    pub async fn complete_social_login(
+        &self,
+        _session_id: &str,
+        _code: String,
+        _state: String,
+        _login_option: String,
+        _path: String,
+    ) -> Result<serde_json::Value, AdminServiceError> {
+        Err(AdminServiceError::InternalError(
+            "Social 登录模块尚未实现".to_string(),
+        ))
+    }
+
+    /// 发起 Social 重新登录
+    pub async fn start_social_relogin(
+        &self,
+        _id: u64,
+        _payload: super::types::StartSocialLoginRequest,
+    ) -> Result<serde_json::Value, AdminServiceError> {
+        Err(AdminServiceError::InternalError(
+            "Social 登录模块尚未实现".to_string(),
+        ))
+    }
+
+    /// 发起 IdC 重新登录
+    pub async fn start_idc_relogin(
+        &self,
+        _id: u64,
+        _payload: super::types::StartIdcLoginRequest,
+    ) -> Result<serde_json::Value, AdminServiceError> {
+        Err(AdminServiceError::InternalError(
+            "IdC 登录模块尚未实现".to_string(),
+        ))
+    }
+
+    /// 获取 token_manager 引用（供 handler 层直接操作）
+    pub fn token_manager(&self) -> &MultiTokenManager {
+        &self.token_manager
+    }
 }
 
 #[cfg(test)]

@@ -9,8 +9,17 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from '@/components/ui/select'
 import { useAddCredential } from '@/hooks/use-credentials'
+import { useGroupOptions } from '@/hooks/use-groups'
 import { extractErrorMessage } from '@/lib/utils'
+import { GroupMultiSelect } from '@/components/group-select'
 
 interface AddCredentialDialogProps {
   open: boolean
@@ -23,39 +32,45 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
   const [refreshToken, setRefreshToken] = useState('')
   const [kiroApiKey, setKiroApiKey] = useState('')
   const [authMethod, setAuthMethod] = useState<AuthMethod>('social')
-  const [region, setRegion] = useState('')
+  const [authRegion, setAuthRegion] = useState('')
   const [apiRegion, setApiRegion] = useState('')
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
-  const [priority, setPriority] = useState('0')
   const [machineId, setMachineId] = useState('')
-  const [endpoint, setEndpoint] = useState('')
   const [proxyUrl, setProxyUrl] = useState('')
   const [proxyUsername, setProxyUsername] = useState('')
   const [proxyPassword, setProxyPassword] = useState('')
+  const [endpoint, setEndpoint] = useState('')
+  const [groups, setGroups] = useState<string[]>([])
+  const [sourceChannel, setSourceChannel] = useState('')
+
+  const groupOptions = useGroupOptions()
 
   const { mutate, isPending } = useAddCredential()
-  const isApiKey = authMethod === 'api_key'
 
   const resetForm = () => {
     setRefreshToken('')
     setKiroApiKey('')
     setAuthMethod('social')
-    setRegion('')
+    setAuthRegion('')
     setApiRegion('')
     setClientId('')
     setClientSecret('')
-    setPriority('0')
     setMachineId('')
-    setEndpoint('')
     setProxyUrl('')
     setProxyUsername('')
     setProxyPassword('')
+    setEndpoint('')
+    setGroups([])
+    setSourceChannel('')
   }
+
+  const isApiKey = authMethod === 'api_key'
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
 
+    // 验证必填字段
     if (isApiKey) {
       if (!kiroApiKey.trim()) {
         toast.error('请输入 Kiro API Key')
@@ -66,7 +81,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
         toast.error('请输入 Refresh Token')
         return
       }
-
+      // IdC/Builder-ID/IAM 需要额外字段
       if (authMethod === 'idc' && (!clientId.trim() || !clientSecret.trim())) {
         toast.error('IdC/Builder-ID/IAM 认证需要填写 Client ID 和 Client Secret')
         return
@@ -75,19 +90,20 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
 
     mutate(
       {
+        authMethod,
         refreshToken: isApiKey ? undefined : refreshToken.trim(),
         kiroApiKey: isApiKey ? kiroApiKey.trim() : undefined,
-        authMethod,
-        region: region.trim() || undefined,
+        authRegion: authRegion.trim() || undefined,
         apiRegion: apiRegion.trim() || undefined,
         clientId: isApiKey ? undefined : clientId.trim() || undefined,
         clientSecret: isApiKey ? undefined : clientSecret.trim() || undefined,
-        priority: parseInt(priority) || 0,
         machineId: machineId.trim() || undefined,
-        endpoint: endpoint.trim() || undefined,
         proxyUrl: proxyUrl.trim() || undefined,
         proxyUsername: proxyUsername.trim() || undefined,
         proxyPassword: proxyPassword.trim() || undefined,
+        endpoint: endpoint.trim() || undefined,
+        groups: groups,
+        sourceChannel: sourceChannel.trim() || undefined,
       },
       {
         onSuccess: (data) => {
@@ -111,8 +127,29 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
 
         <form onSubmit={handleSubmit} className="flex flex-col min-h-0 flex-1">
           <div className="space-y-4 py-4 overflow-y-auto flex-1 pr-1">
-            {/* 凭据密钥 */}
-            {isApiKey ? (
+            {/* 认证方式 */}
+            <div className="space-y-2">
+              <label htmlFor="authMethod" className="text-sm font-medium">
+                认证方式
+              </label>
+              <Select
+                value={authMethod}
+                onValueChange={(v) => setAuthMethod(v as AuthMethod)}
+                disabled={isPending}
+              >
+                <SelectTrigger id="authMethod" className="h-10 rounded-xl px-3.5">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="social">Social</SelectItem>
+                  <SelectItem value="idc">IdC/Builder-ID/IAM</SelectItem>
+                  <SelectItem value="api_key">API Key</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Kiro API Key (API Key 模式) */}
+            {isApiKey && (
               <div className="space-y-2">
                 <label htmlFor="kiroApiKey" className="text-sm font-medium">
                   Kiro API Key <span className="text-red-500">*</span>
@@ -126,7 +163,10 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
                   disabled={isPending}
                 />
               </div>
-            ) : (
+            )}
+
+            {/* Refresh Token (OAuth 模式) */}
+            {!isApiKey && (
               <div className="space-y-2">
                 <label htmlFor="refreshToken" className="text-sm font-medium">
                   Refresh Token <span className="text-red-500">*</span>
@@ -142,41 +182,23 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
               </div>
             )}
 
-            {/* 认证方式 */}
-            <div className="space-y-2">
-              <label htmlFor="authMethod" className="text-sm font-medium">
-                认证方式
-              </label>
-              <select
-                id="authMethod"
-                value={authMethod}
-                onChange={(e) => setAuthMethod(e.target.value as AuthMethod)}
-                disabled={isPending}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <option value="social">Social</option>
-                <option value="idc">IdC/Builder-ID/IAM</option>
-                <option value="api_key">API Key</option>
-              </select>
-            </div>
-
             {/* Region 配置 */}
             <div className="space-y-2">
               <label className="text-sm font-medium">Region 配置</label>
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <Input
-                    id="region"
-                    placeholder="Region"
-                    value={region}
-                    onChange={(e) => setRegion(e.target.value)}
+                    id="authRegion"
+                    placeholder="Auth Region"
+                    value={authRegion}
+                    onChange={(e) => setAuthRegion(e.target.value)}
                     disabled={isPending}
                   />
                 </div>
                 <div>
                   <Input
                     id="apiRegion"
-                    placeholder="API Region（可选覆盖）"
+                    placeholder="API Region"
                     value={apiRegion}
                     onChange={(e) => setApiRegion(e.target.value)}
                     disabled={isPending}
@@ -184,12 +206,12 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
                 </div>
               </div>
               <p className="text-xs text-muted-foreground">
-                Region 用于 Token 刷新，留空使用全局配置。API Region 可单独覆盖 API 请求所用的 Region
+                均可留空使用全局配置。Auth Region 用于 Token 刷新，API Region 用于 API 请求
               </p>
             </div>
 
             {/* IdC/Builder-ID/IAM 额外字段 */}
-            {authMethod === 'idc' && !isApiKey && (
+            {authMethod === 'idc' && (
               <>
                 <div className="space-y-2">
                   <label htmlFor="clientId" className="text-sm font-medium">
@@ -219,25 +241,6 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
               </>
             )}
 
-            {/* 优先级 */}
-            <div className="space-y-2">
-              <label htmlFor="priority" className="text-sm font-medium">
-                优先级
-              </label>
-              <Input
-                id="priority"
-                type="number"
-                min="0"
-                placeholder="数字越小优先级越高"
-                value={priority}
-                onChange={(e) => setPriority(e.target.value)}
-                disabled={isPending}
-              />
-              <p className="text-xs text-muted-foreground">
-                数字越小优先级越高，默认为 0
-              </p>
-            </div>
-
             {/* Machine ID */}
             <div className="space-y-2">
               <label htmlFor="machineId" className="text-sm font-medium">
@@ -255,24 +258,51 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
               </p>
             </div>
 
-            {/* Endpoint */}
+            {/* 端点 */}
             <div className="space-y-2">
               <label htmlFor="endpoint" className="text-sm font-medium">
-                Endpoint
+                端点
               </label>
-              <select
+              <Input
                 id="endpoint"
+                placeholder="留空使用默认端点（如 ide / cli）"
                 value={endpoint}
                 onChange={(e) => setEndpoint(e.target.value)}
                 disabled={isPending}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <option value="">默认值</option>
-                <option value="ide">ide</option>
-                <option value="cli">cli</option>
-              </select>
+              />
               <p className="text-xs text-muted-foreground">
-                留空时回退到全局 defaultEndpoint
+                可选。决定该凭据走哪套 Kiro API。留空使用全局 defaultEndpoint
+              </p>
+            </div>
+
+            {/* 账号分组 */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">账号分组</label>
+              <GroupMultiSelect
+                value={groups}
+                options={groupOptions}
+                onChange={setGroups}
+                disabled={isPending}
+              />
+              <p className="text-xs text-muted-foreground">
+                可选。绑定了某分组的客户端 Key 只会调度到含该分组的账号
+              </p>
+            </div>
+
+            {/* 账号来源渠道 */}
+            <div className="space-y-2">
+              <label htmlFor="sourceChannel" className="text-sm font-medium">
+                账号来源渠道（备注）
+              </label>
+              <Input
+                id="sourceChannel"
+                placeholder="例: 官方, 转售商A, 采购平台X"
+                value={sourceChannel}
+                onChange={(e) => setSourceChannel(e.target.value)}
+                disabled={isPending}
+              />
+              <p className="text-xs text-muted-foreground">
+                可选。纯备注，标记账号来源/渠道，便于追踪
               </p>
             </div>
 

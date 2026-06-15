@@ -160,6 +160,36 @@ pub struct Config {
     #[serde(default)]
     pub presets: Vec<Preset>,
 
+    // ── 运维管理（从 OTHER 移植） ──
+
+    /// 负载均衡模式："priority"（默认，按优先级）或 "balanced"（均衡分配）
+    #[serde(default = "default_load_balancing_mode")]
+    pub load_balancing_mode: String,
+
+    /// 是否启用请求追踪（SQLite），默认 false
+    #[serde(default)]
+    pub trace_enabled: bool,
+
+    /// 追踪日志保留天数，默认 7
+    #[serde(default = "default_trace_retention_days")]
+    pub trace_retention_days: u32,
+
+    /// 用量日志保留天数，默认 31
+    #[serde(default = "default_usage_log_retention_days")]
+    pub usage_log_retention_days: u32,
+
+    /// 账户级限流时是否故障转移到下一个凭据，默认 false
+    #[serde(default)]
+    pub account_throttle_failover: bool,
+
+    /// 账户级限流冷却秒数，默认 300
+    #[serde(default = "default_account_throttle_cooldown_secs")]
+    pub account_throttle_cooldown_secs: u64,
+
+    /// 非 streaming 场景是否提取 thinking 内容，默认 false
+    #[serde(default)]
+    pub extract_thinking: bool,
+
     /// 配置文件路径（运行时元数据，不写入 JSON）
     #[serde(skip)]
     config_path: Option<PathBuf>,
@@ -196,6 +226,22 @@ fn default_count_tokens_auth_type() -> String {
 
 fn default_endpoint() -> String {
     "ide".to_string()
+}
+
+fn default_load_balancing_mode() -> String {
+    "priority".to_string()
+}
+
+fn default_trace_retention_days() -> u32 {
+    7
+}
+
+fn default_usage_log_retention_days() -> u32 {
+    31
+}
+
+fn default_account_throttle_cooldown_secs() -> u64 {
+    300
 }
 
 fn default_prompt_cache_ttl_seconds() -> u64 {
@@ -387,6 +433,13 @@ impl Default for Config {
             cross_request_cache_enabled: default_true(),
             cross_request_cache_max_entries: default_cross_request_cache_max_entries(),
             presets: Vec::new(),
+            load_balancing_mode: default_load_balancing_mode(),
+            trace_enabled: false,
+            trace_retention_days: default_trace_retention_days(),
+            usage_log_retention_days: default_usage_log_retention_days(),
+            account_throttle_failover: false,
+            account_throttle_cooldown_secs: default_account_throttle_cooldown_secs(),
+            extract_thinking: false,
             config_path: None,
         }
     }

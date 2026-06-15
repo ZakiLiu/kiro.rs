@@ -135,6 +135,7 @@ struct StreamRequestContext<'a> {
     metrics: Option<&'a std::sync::Arc<crate::metrics::MetricsCollector>>,
     request_start: std::time::Instant,
     adaptive_outcome: Option<&'a AdaptiveCompressionOutcome>,
+    defer_message_start: bool,
 }
 
 struct NonStreamRequestContext<'a> {
@@ -1293,6 +1294,7 @@ pub async fn post_messages(
             metrics: state.metrics.as_ref(),
             request_start,
             adaptive_outcome: adaptive_outcome.as_ref(),
+            defer_message_start: uri.path().starts_with("/anthropic/"),
         };
         handle_stream_request(provider, stream_request).await
     } else {
@@ -1368,6 +1370,11 @@ async fn handle_stream_request(
         context.thinking_enabled,
         context.tool_name_map,
     );
+
+    // Claude Code 端点启用 defer 模式，等 contextUsageEvent 精确 input_tokens
+    if context.defer_message_start {
+        ctx.defer_message_start = true;
+    }
 
     // 生成初始事件
     let initial_events = ctx.generate_initial_events();

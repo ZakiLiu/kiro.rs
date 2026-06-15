@@ -48,6 +48,10 @@ pub struct StreamContext {
     pub thinking_extracted: bool,
     /// thinking 块索引
     pub thinking_block_index: Option<i32>,
+    /// 是否延迟发送 message_start（等 contextUsageEvent 到来后再发，提供精确 input_tokens）
+    pub defer_message_start: bool,
+    /// message_start 是否已发送
+    pub message_start_sent: bool,
     /// Q 上游 reasoningContentEvent 通过独立事件流推 thinking 内容（与老的
     /// 嵌入 `<thinking>` 标签格式互斥）；此字段标记 reasoning 块是否打开。
     pub reasoning_block_open: bool,
@@ -90,6 +94,8 @@ impl StreamContext {
             in_thinking_block: false,
             thinking_extracted: false,
             thinking_block_index: None,
+            defer_message_start: false,
+            message_start_sent: false,
             reasoning_block_open: false,
             pending_reasoning_signature: None,
             text_block_index: None,
@@ -101,18 +107,22 @@ impl StreamContext {
 
     /// 生成 message_start 事件
     pub fn create_message_start_event(&self) -> serde_json::Value {
-        let billed_input_tokens = self
-            .cache_usage
-            .map(|cache_usage| {
-                billed_input_tokens(
-                    self.input_tokens,
-                    cache_usage.cache_creation_input_tokens,
-                    cache_usage.cache_read_input_tokens,
-                )
-            })
-            .unwrap_or(self.input_tokens);
+        // 优先使用 contextUsageEvent 提供的精确值
+        let effective_input_tokens = if let Some(ctx_tokens) = self.context_input_tokens {
+            ctx_tokens
+        } else {
+            self.cache_usage
+                .map(|cache_usage| {
+                    billed_input_tokens(
+                        self.input_tokens,
+                        cache_usage.cache_creation_input_tokens,
+                        cache_usage.cache_read_input_tokens,
+                    )
+                })
+                .unwrap_or(self.input_tokens)
+        };
         let mut usage = json!({
-            "input_tokens": billed_input_tokens,
+            "input_tokens": effective_input_tokens,
             "output_tokens": 1,
         });
         if let Some(cache_usage) = self.cache_usage {
@@ -142,17 +152,66 @@ impl StreamContext {
     pub fn generate_initial_events(&mut self) -> Vec<SseEvent> {
         let mut events = Vec::new();
 
+        if self.defer_message_start {
+            // defer 模式：跳过 message_start，等 contextUsageEvent 后再发
+            tracing::debug!("defer_message_start 启用，message_start 将在收到 contextUsageEvent 后发送");
+            return events;
+        }
+
         // message_start
         let msg_start = self.create_message_start_event();
         if let Some(event) = self.state_manager.handle_message_start(msg_start) {
             events.push(event);
         }
+        self.message_start_sent = true;
 
         events
     }
 
+    /// 当收到 contextUsageEvent 后，用精确 input_tokens 补发 message_start
+    fn emit_deferred_message_start(&mut self) -> Vec<SseEvent> {
+        if self.message_start_sent {
+            return Vec::new();
+        }
+        self.message_start_sent = true;
+
+        let msg_start = self.create_message_start_event();
+        if let Some(event) = self.state_manager.handle_message_start(msg_start) {
+            tracing::debug!(
+                input_tokens = ?self.context_input_tokens,
+                "补发 deferred message_start（精确 input_tokens）"
+            );
+            vec![event]
+        } else {
+            Vec::new()
+        }
+    }
+
     /// 处理 Kiro 事件并转换为 Anthropic SSE 事件
     pub fn process_kiro_event(&mut self, event: &Event) -> Vec<SseEvent> {
+        // 安全网：如果 defer 模式下还没发 message_start，收到内容事件时用估算值兜底补发
+        if self.defer_message_start && !self.message_start_sent {
+            let needs_fallback = matches!(
+                event,
+                Event::AssistantResponse(_) | Event::ReasoningContent(_) | Event::ToolUse(_)
+            );
+            if needs_fallback {
+                tracing::debug!("defer 模式下未等到 contextUsageEvent，用估算值补发 message_start");
+                let mut fallback_events = Vec::new();
+                self.message_start_sent = true;
+                let msg_start = self.create_message_start_event();
+                if let Some(event) = self.state_manager.handle_message_start(msg_start) {
+                    fallback_events.push(event);
+                }
+                let mut rest = self.process_kiro_event_inner(event);
+                fallback_events.append(&mut rest);
+                return fallback_events;
+            }
+        }
+        self.process_kiro_event_inner(event)
+    }
+
+    fn process_kiro_event_inner(&mut self, event: &Event) -> Vec<SseEvent> {
         match event {
             Event::InitialResponse { conversation_id } => {
                 // 服务端首帧含 server-authoritative conversationId。当前
@@ -196,7 +255,8 @@ impl StreamContext {
                     actual_input_tokens,
                     context_window as i32
                 );
-                Vec::new()
+                // defer 模式：contextUsageEvent 到了，补发 message_start（精确 input_tokens）
+                self.emit_deferred_message_start()
             }
             Event::Metering(metering) => {
                 self.metering = Some(metering.clone());

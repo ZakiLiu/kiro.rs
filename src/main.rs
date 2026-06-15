@@ -163,7 +163,7 @@ async fn main() {
         config.read().clone(),
         credentials_list,
         proxy_config.clone(),
-        Some(credentials_path.into()),
+        Some(credentials_path.clone().into()),
         is_multiple_format,
     )
     .unwrap_or_else(|e| {
@@ -238,6 +238,69 @@ async fn main() {
 
     // 构建 Prompt 预设（从配置加载，共享引用供 Admin API 运行时 CRUD）
     let presets = Arc::new(RwLock::new(config.read().presets.clone()));
+
+    // ── 运维模块初始化 ──
+
+    // 请求追踪（SQLite）
+    let trace_store = if config.read().trace_enabled {
+        let db_path = std::path::Path::new(&credentials_path)
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("traces.db");
+        let retention = config.read().trace_retention_days;
+        match admin::trace_db::TraceStore::open(db_path.clone(), true, retention) {
+            Ok(store) => {
+                let store = Arc::new(store);
+                tracing::info!("请求追踪已启用 (SQLite: {})", db_path.display());
+                Some(store)
+            }
+            Err(e) => {
+                tracing::warn!("请求追踪初始化失败: {}, 将禁用追踪", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // 用量统计（JSONL）
+    let usage_dir = std::path::Path::new(&credentials_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("usage_logs");
+    let usage_recorder = Arc::new(
+        admin::usage_stats::UsageRecorder::with_retention(
+            usage_dir.clone(),
+            config.read().usage_log_retention_days as i64,
+        ),
+    );
+    let usage_aggregator = Arc::new(admin::usage_stats::UsageAggregator::new());
+    usage_aggregator.rebuild_from_logs(&usage_dir);
+    tracing::info!("用量统计已启用 (保留 {} 天)", config.read().usage_log_retention_days);
+
+    // Client Key 管理器
+    let client_keys_path = std::path::Path::new(&credentials_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("client_keys.json");
+    let client_key_manager = Arc::new(
+        admin::client_keys::ClientKeyManager::load(&client_keys_path)
+            .unwrap_or_else(|_| {
+                admin::client_keys::ClientKeyManager::new()
+            }),
+    );
+
+    // 分组管理器
+    let groups_path = std::path::Path::new(&credentials_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("groups.json");
+    let group_manager = Arc::new(
+        admin::groups::GroupManager::load(&groups_path)
+            .unwrap_or_else(|_| {
+                admin::groups::GroupManager::new()
+            }),
+    );
     if !presets.read().is_empty() {
         tracing::info!(count = presets.read().len(), "已加载 Prompt 预设");
     }
@@ -279,8 +342,15 @@ async fn main() {
                     metrics_collector.clone(),
                     endpoint_names.clone(),
                 );
-                let admin_state =
-                    admin::AdminState::new(admin_key, admin_service).with_presets(presets.clone());
+                let mut admin_state =
+                    admin::AdminState::new(admin_key, admin_service)
+                        .with_presets(presets.clone())
+                        .with_client_keys(client_key_manager.clone())
+                        .with_usage_aggregator(usage_aggregator.clone())
+                        .with_groups(group_manager.clone());
+                if let Some(ts) = &trace_store {
+                    admin_state = admin_state.with_trace_store(ts.clone());
+                }
                 let admin_app = admin::create_admin_router(admin_state);
 
                 // 创建 Admin UI 路由

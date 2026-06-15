@@ -14,7 +14,12 @@ mod handlers;
 mod middleware;
 mod router;
 mod service;
+pub mod client_keys;
+pub mod proxy_pool;
+pub mod trace_db;
 pub mod types;
+pub mod usage_stats;
+pub mod groups;
 
 pub use middleware::AdminState;
 pub use router::create_admin_router;
