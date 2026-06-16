@@ -71,6 +71,12 @@ pub struct CredentialStatusItem {
     pub endpoint: Option<String>,
     /// 最终生效的 endpoint 名称
     pub effective_endpoint: String,
+    /// 账号所属分组
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+    /// 账号来源渠道
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_channel: Option<String>,
 }
 
 // ============ 操作请求 ============

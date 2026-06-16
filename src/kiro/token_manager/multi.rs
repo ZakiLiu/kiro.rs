@@ -2458,6 +2458,8 @@ impl MultiTokenManager {
                         region: e.credentials.region.clone(),
                         api_region: e.credentials.api_region.clone(),
                         endpoint: e.credentials.endpoint.clone(),
+                        groups: e.credentials.groups.clone(),
+                        source_channel: e.credentials.source_channel.clone(),
                         ready: false,
                         cooldown_reason: None,
                         cooldown_remaining_secs: None,
@@ -2617,6 +2619,8 @@ impl MultiTokenManager {
         proxy_url: Option<Option<String>>,
         proxy_username: Option<Option<String>>,
         proxy_password: Option<Option<String>>,
+        groups: Option<Vec<String>>,
+        source_channel: Option<Option<String>>,
     ) -> anyhow::Result<()> {
         {
             let mut entries = self.entries.lock();
@@ -2635,6 +2639,12 @@ impl MultiTokenManager {
             }
             if let Some(v) = proxy_password {
                 entry.credentials.proxy_password = v;
+            }
+            if let Some(v) = groups {
+                entry.credentials.groups = v;
+            }
+            if let Some(v) = source_channel {
+                entry.credentials.source_channel = v;
             }
         }
         self.persist_credentials()?;

@@ -131,6 +131,8 @@ impl AdminService {
                     api_region: entry.api_region,
                     endpoint,
                     effective_endpoint,
+                    groups: entry.groups,
+                    source_channel: entry.source_channel,
                 }
             })
             .collect();
@@ -375,7 +377,9 @@ impl AdminService {
             proxy_url: req.proxy_url,
             proxy_username: req.proxy_username,
             proxy_password: req.proxy_password,
-            disabled: false, // 新添加的凭据默认启用
+            groups: Vec::new(),
+            source_channel: None,
+            disabled: false,
             runtime_only: false,
         };
 
@@ -698,6 +702,8 @@ impl AdminService {
             proxy_url: None,
             proxy_username: None,
             proxy_password: None,
+            groups: Vec::new(),
+            source_channel: None,
             disabled: false,
             runtime_only: false,
         };
@@ -1215,9 +1221,20 @@ impl AdminService {
         let email = payload.email.map(|e| {
             if e.trim().is_empty() { None } else { Some(e) }
         });
+        let source_channel = payload.source_channel.map(|s| {
+            if s.trim().is_empty() { None } else { Some(s) }
+        });
 
         self.token_manager
-            .update_credential_fields(id, email, proxy_url, proxy_username, proxy_password)
+            .update_credential_fields(
+                id,
+                email,
+                proxy_url,
+                proxy_username,
+                proxy_password,
+                payload.groups,
+                source_channel,
+            )
             .map_err(|e| self.classify_proxy_error(e))
     }
 

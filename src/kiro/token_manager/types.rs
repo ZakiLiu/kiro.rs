@@ -166,6 +166,10 @@ pub struct CredentialEntrySnapshot {
     pub api_region: Option<String>,
     /// 最终生效的 endpoint 名称
     pub endpoint: Option<String>,
+    /// 账号所属分组
+    pub groups: Vec<String>,
+    /// 账号来源渠道
+    pub source_channel: Option<String>,
     /// 是否可立即承接请求（未禁用、未冷却、未触发本地速率限制）
     pub ready: bool,
     /// 冷却原因（人类可读描述）

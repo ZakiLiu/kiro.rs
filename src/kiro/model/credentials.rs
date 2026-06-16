@@ -104,6 +104,14 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
 
+    /// 账号所属分组（引用 GroupManager 中的分组名字）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+
+    /// 账号来源渠道（可选，用于前端显示）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_channel: Option<String>,
+
     /// 凭据是否被禁用（默认为 false）
     #[serde(default)]
     pub disabled: bool,
@@ -380,6 +388,8 @@ mod tests {
             proxy_url: None,
             proxy_username: None,
             proxy_password: None,
+            groups: Vec::new(),
+            source_channel: None,
             disabled: false,
             runtime_only: false,
         };
@@ -500,6 +510,8 @@ mod tests {
             proxy_url: None,
             proxy_username: None,
             proxy_password: None,
+            groups: Vec::new(),
+            source_channel: None,
             disabled: false,
             runtime_only: false,
         };
@@ -532,6 +544,8 @@ mod tests {
             proxy_url: None,
             proxy_username: None,
             proxy_password: None,
+            groups: Vec::new(),
+            source_channel: None,
             disabled: false,
             runtime_only: false,
         };
@@ -650,6 +664,8 @@ mod tests {
             proxy_url: None,
             proxy_username: None,
             proxy_password: None,
+            groups: Vec::new(),
+            source_channel: None,
             disabled: false,
             runtime_only: false,
         };
