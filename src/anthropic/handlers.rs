@@ -1087,6 +1087,9 @@ pub async fn post_messages(
         }
     }
 
+    // 预处理：剥离客户端安全限制 + 注入 preset/自定义 system prompt
+    super::preprocess::inject_system_prompt(&mut payload, &state.prompt_config);
+
     // 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
     override_thinking_from_model_name(&mut payload);
 

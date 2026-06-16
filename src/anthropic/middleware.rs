@@ -104,6 +104,8 @@ pub struct AppState {
     pub usage_aggregator: Option<SharedAggregator>,
     /// 请求链路追踪（SQLite 落盘）
     pub trace_store: Option<SharedTraceStore>,
+    /// Prompt 注入运行时配置（剥离限制 + preset 注入）
+    pub prompt_config: crate::model::runtime::SharedPromptConfig,
 }
 
 impl AppState {
@@ -125,6 +127,15 @@ impl AppState {
             usage_recorder: None,
             usage_aggregator: None,
             trace_store: None,
+            prompt_config: Arc::new(parking_lot::RwLock::new(
+                crate::model::runtime::PromptRuntimeConfig {
+                    enabled: false,
+                    enabled_presets: Vec::new(),
+                    custom_content: None,
+                    position: crate::model::config::SystemPromptPosition::Append,
+                    strip_system_restrictions: false,
+                },
+            )),
         }
     }
 
@@ -180,6 +191,11 @@ impl AppState {
 
     pub fn with_trace_store(mut self, store: SharedTraceStore) -> Self {
         self.trace_store = Some(store);
+        self
+    }
+
+    pub fn with_prompt_config(mut self, cfg: crate::model::runtime::SharedPromptConfig) -> Self {
+        self.prompt_config = cfg;
         self
     }
 

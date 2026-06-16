@@ -323,13 +323,15 @@ async fn main() {
     }
 
     // 构建 Anthropic API 路由（从第一个凭据获取 profile_arn）
+    let prompt_config = model::runtime::shared_from_config(&config.read());
     let mut app_state = anthropic::middleware::AppState::new(&api_key, prompt_cache_runtime.clone())
         .with_kiro_provider(kiro_provider.clone())
         .with_compression_config(compression_config.clone())
         .with_presets(presets.clone())
         .with_client_keys(client_key_manager.clone())
         .with_usage_recorder(usage_recorder.clone())
-        .with_usage_aggregator(usage_aggregator.clone());
+        .with_usage_aggregator(usage_aggregator.clone())
+        .with_prompt_config(prompt_config);
     if let Some(arn) = &first_credentials.profile_arn {
         app_state = app_state.with_profile_arn(arn);
     }

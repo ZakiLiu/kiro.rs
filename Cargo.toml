@@ -48,3 +48,4 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 base64 = "0.22"       # Base64 编解码
 lopdf = { version = "0.39", optional = true }  # PDF 文本提取（pdf-support feature）
 rusqlite = { version = "0.33", features = ["bundled"] }  # SQLite（请求追踪）
+regex = "1"            # 系统提示词限制剥离

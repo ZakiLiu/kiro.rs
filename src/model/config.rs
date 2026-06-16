@@ -190,9 +190,40 @@ pub struct Config {
     #[serde(default)]
     pub extract_thinking: bool,
 
+    // ── 系统提示词控制 ──
+
+    /// 是否剥离客户端 system prompt 中的安全限制，默认 false
+    #[serde(default)]
+    pub strip_system_restrictions: bool,
+
+    /// 系统提示词注入总开关，默认 false
+    #[serde(default)]
+    pub system_prompt_enabled: bool,
+
+    /// 启用的内置 preset ID 列表（如 ["override", "pentest"]）
+    #[serde(default)]
+    pub enabled_presets: Vec<String>,
+
+    /// 自定义补充系统提示词
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+
+    /// 系统提示词注入位置，默认 Append
+    #[serde(default)]
+    pub system_prompt_position: SystemPromptPosition,
+
     /// 配置文件路径（运行时元数据，不写入 JSON）
     #[serde(skip)]
     config_path: Option<PathBuf>,
+}
+
+/// 系统提示词注入位置
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SystemPromptPosition {
+    Prepend,
+    #[default]
+    Append,
 }
 
 fn default_host() -> String {
@@ -440,6 +471,11 @@ impl Default for Config {
             account_throttle_failover: false,
             account_throttle_cooldown_secs: default_account_throttle_cooldown_secs(),
             extract_thinking: false,
+            strip_system_restrictions: false,
+            system_prompt_enabled: false,
+            enabled_presets: Vec::new(),
+            system_prompt: None,
+            system_prompt_position: SystemPromptPosition::Append,
             config_path: None,
         }
     }
