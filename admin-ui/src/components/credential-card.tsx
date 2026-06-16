@@ -409,7 +409,7 @@ export function CredentialCard({
             </label>
             <div className="min-w-0 flex-1">
               <CardTitle className="truncate text-[15px] leading-5">
-                {credential.email || `凭据 #${credential.id}`}
+                {credential.email ? `#${credential.id} ${credential.email}` : `凭据 #${credential.id}`}
               </CardTitle>
               <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1 overflow-hidden">
                 {balance?.subscriptionTitle && (
