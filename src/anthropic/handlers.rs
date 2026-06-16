@@ -1428,6 +1428,21 @@ async fn handle_stream_request(
                 model = %context.model,
                 "请求失败（流式，含重试耗时）"
             );
+            record_request_telemetry(
+                state,
+                auth,
+                context.model,
+                true,
+                0,
+                context.input_tokens,
+                0,
+                0,
+                0,
+                0.0,
+                elapsed_ms,
+                "error",
+                Vec::new(),
+            );
             return map_kiro_provider_error_to_response(
                 context.request_body,
                 e,
@@ -1690,6 +1705,21 @@ async fn handle_non_stream_request(
                 elapsed_ms = elapsed_ms,
                 model = %context.model,
                 "请求失败（非流式，含重试耗时）"
+            );
+            record_request_telemetry(
+                state,
+                auth,
+                context.model,
+                false,
+                0,
+                context.input_tokens,
+                0,
+                0,
+                0,
+                0.0,
+                elapsed_ms,
+                "error",
+                Vec::new(),
             );
             return map_kiro_provider_error_to_response(
                 context.request_body,
