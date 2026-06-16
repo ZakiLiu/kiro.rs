@@ -2609,6 +2609,69 @@ impl MultiTokenManager {
             .collect()
     }
 
+    /// 更新凭据可编辑字段（Admin API）
+    pub fn update_credential_fields(
+        &self,
+        id: u64,
+        email: Option<Option<String>>,
+        proxy_url: Option<Option<String>>,
+        proxy_username: Option<Option<String>>,
+        proxy_password: Option<Option<String>>,
+    ) -> anyhow::Result<()> {
+        {
+            let mut entries = self.entries.lock();
+            let entry = entries
+                .iter_mut()
+                .find(|e| e.id == id)
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?;
+            if let Some(v) = email {
+                entry.credentials.email = v;
+            }
+            if let Some(v) = proxy_url {
+                entry.credentials.proxy_url = v;
+            }
+            if let Some(v) = proxy_username {
+                entry.credentials.proxy_username = v;
+            }
+            if let Some(v) = proxy_password {
+                entry.credentials.proxy_password = v;
+            }
+        }
+        self.persist_credentials()?;
+        Ok(())
+    }
+
+    /// 更新凭据的 refreshToken（Admin API）
+    ///
+    /// 同时清除 access_token 以触发下次请求时重新刷新。
+    pub fn update_refresh_token(
+        &self,
+        id: u64,
+        refresh_token: String,
+        access_token: Option<String>,
+        expires_at: Option<String>,
+    ) -> anyhow::Result<()> {
+        {
+            let mut entries = self.entries.lock();
+            let entry = entries
+                .iter_mut()
+                .find(|e| e.id == id)
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?;
+            entry.credentials.refresh_token = Some(refresh_token);
+            if let Some(at) = access_token {
+                entry.credentials.access_token = Some(at);
+            } else {
+                entry.credentials.access_token = None;
+            }
+            if let Some(ea) = expires_at {
+                entry.credentials.expires_at = Some(ea);
+            }
+            entry.refresh_token_hash = credential_secret_hash(&entry.credentials);
+        }
+        self.persist_credentials()?;
+        Ok(())
+    }
+
     /// 重置凭据失败计数并重新启用（Admin API）
     ///
     /// 同时清除 CooldownManager 和 RateLimiter 的运行时状态，

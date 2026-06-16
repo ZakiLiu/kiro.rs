@@ -1200,25 +1200,41 @@ impl AdminService {
     /// 更新凭据可编辑字段
     pub fn update_credential(
         &self,
-        _id: u64,
-        _payload: super::types::UpdateCredentialRequest,
+        id: u64,
+        payload: super::types::UpdateCredentialRequest,
     ) -> Result<(), AdminServiceError> {
-        // TODO: MultiTokenManager 的 update_proxy_for / update_email 尚未在 CURRENT 项目实现
-        Err(AdminServiceError::InternalError(
-            "update_credential 尚未实现".to_string(),
-        ))
+        let proxy_url = payload.proxy_url.map(|u| {
+            if u.trim().is_empty() { None } else { Some(u) }
+        });
+        let proxy_username = payload.proxy_username.map(|u| {
+            if u.trim().is_empty() { None } else { Some(u) }
+        });
+        let proxy_password = payload.proxy_password.map(|p| {
+            if p.trim().is_empty() { None } else { Some(p) }
+        });
+        let email = payload.email.map(|e| {
+            if e.trim().is_empty() { None } else { Some(e) }
+        });
+
+        self.token_manager
+            .update_credential_fields(id, email, proxy_url, proxy_username, proxy_password)
+            .map_err(|e| self.classify_proxy_error(e))
     }
 
     /// 更新已禁用凭据的 refreshToken
     pub fn update_refresh_token(
         &self,
-        _id: u64,
-        _payload: super::types::UpdateRefreshTokenRequest,
+        id: u64,
+        payload: super::types::UpdateRefreshTokenRequest,
     ) -> Result<(), AdminServiceError> {
-        // TODO: MultiTokenManager.update_refresh_token() 尚未在 CURRENT 项目实现
-        Err(AdminServiceError::InternalError(
-            "update_refresh_token 尚未实现".to_string(),
-        ))
+        self.token_manager
+            .update_refresh_token(
+                id,
+                payload.refresh_token,
+                payload.access_token,
+                payload.expires_at,
+            )
+            .map_err(|e| self.classify_proxy_error(e))
     }
 
     /// 重置凭据的 success_count
