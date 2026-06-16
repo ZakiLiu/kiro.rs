@@ -39,6 +39,7 @@ pub struct ApiCallResult {
     pub attempts: Vec<TraceAttempt>,
 }
 
+
 /// MCP 调用结果
 pub struct McpCallResult {
     pub response: reqwest::Response,
@@ -426,19 +427,6 @@ impl KiroProvider {
         self.call_api_with_retry(request_body, false, user_id).await
     }
 
-    /// 发送流式 API 请求
-    ///
-    /// 支持多凭据故障转移：
-    /// - 400 Bad Request: 直接返回错误，不计入凭据失败
-    /// - 401/403: 视为凭据/权限问题，计入失败次数并允许故障转移
-    /// - 402 MONTHLY_REQUEST_COUNT: 视为额度用尽，禁用凭据并切换
-    /// - 429/5xx/网络等瞬态错误: 重试但不禁用或切换凭据（避免误把所有凭据锁死）
-    ///
-    /// # Arguments
-    /// * `request_body` - JSON 格式的请求体字符串
-    ///
-    /// # Returns
-    /// 返回原始的 HTTP Response，调用方负责处理流式数据
     pub async fn call_api_stream(
         &self,
         request_body: &str,

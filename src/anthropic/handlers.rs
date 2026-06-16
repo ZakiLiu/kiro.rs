@@ -1427,10 +1427,26 @@ async fn handle_stream_request(
                 model = %context.model,
                 "请求失败（流式，含重试耗时）"
             );
+            let error_snippet = e.to_string();
+            let error_snippet_short = if error_snippet.len() > 200 {
+                format!("{}...", &error_snippet[..200])
+            } else {
+                error_snippet.clone()
+            };
             record_request_telemetry(
                 state, auth, context.model, true, 0,
                 context.input_tokens, 0, 0, 0, 0.0,
-                elapsed_ms, "error", Vec::new(), None,
+                elapsed_ms, "error",
+                vec![crate::admin::trace_db::TraceAttempt {
+                    attempt: 0,
+                    credential_id: 0,
+                    endpoint: String::new(),
+                    http_status: None,
+                    outcome: "ERROR".to_string(),
+                    error_snippet: Some(error_snippet_short),
+                    duration_ms: elapsed_ms,
+                }],
+                None,
             );
             return map_kiro_provider_error_to_response(
                 context.request_body, e, context.adaptive_outcome,
@@ -1685,10 +1701,26 @@ async fn handle_non_stream_request(
                 model = %context.model,
                 "请求失败（非流式，含重试耗时）"
             );
+            let error_snippet = e.to_string();
+            let error_snippet_short = if error_snippet.len() > 200 {
+                format!("{}...", &error_snippet[..200])
+            } else {
+                error_snippet.clone()
+            };
             record_request_telemetry(
                 state, auth, context.model, false, 0,
                 context.input_tokens, 0, 0, 0, 0.0,
-                elapsed_ms, "error", Vec::new(), None,
+                elapsed_ms, "error",
+                vec![crate::admin::trace_db::TraceAttempt {
+                    attempt: 0,
+                    credential_id: 0,
+                    endpoint: String::new(),
+                    http_status: None,
+                    outcome: "ERROR".to_string(),
+                    error_snippet: Some(error_snippet_short),
+                    duration_ms: elapsed_ms,
+                }],
+                None,
             );
             return map_kiro_provider_error_to_response(
                 context.request_body, e, context.adaptive_outcome,
