@@ -115,6 +115,10 @@ pub struct KiroCredentials {
     /// 凭据是否被禁用（默认为 false）
     #[serde(default)]
     pub disabled: bool,
+
+    /// 禁用原因（持久化，重启后可恢复真实原因）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_reason: Option<String>,
 }
 
 /// 判断是否为零（用于跳过序列化）
@@ -391,6 +395,7 @@ mod tests {
             groups: Vec::new(),
             source_channel: None,
             disabled: false,
+            disable_reason: None,
             runtime_only: false,
         };
 
@@ -513,6 +518,7 @@ mod tests {
             groups: Vec::new(),
             source_channel: None,
             disabled: false,
+            disable_reason: None,
             runtime_only: false,
         };
 
@@ -547,6 +553,7 @@ mod tests {
             groups: Vec::new(),
             source_channel: None,
             disabled: false,
+            disable_reason: None,
             runtime_only: false,
         };
 
@@ -667,6 +674,7 @@ mod tests {
             groups: Vec::new(),
             source_channel: None,
             disabled: false,
+            disable_reason: None,
             runtime_only: false,
         };
 

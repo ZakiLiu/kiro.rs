@@ -592,6 +592,7 @@ impl AdminService {
             groups: req.groups,
             source_channel: req.source_channel,
             disabled: false,
+            disable_reason: None,
             runtime_only: false,
         };
 
@@ -917,6 +918,7 @@ impl AdminService {
             groups: Vec::new(),
             source_channel: None,
             disabled: false,
+            disable_reason: None,
             runtime_only: false,
         };
 

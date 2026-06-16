@@ -343,6 +343,18 @@ pub(super) fn resolve_symlink_target(path: &PathBuf) -> PathBuf {
     path.clone()
 }
 
+fn parse_disable_reason(s: Option<&str>) -> DisableReason {
+    match s {
+        Some("AuthenticationFailed") => DisableReason::AuthenticationFailed,
+        Some("AccountSuspended") => DisableReason::AccountSuspended,
+        Some("QuotaExceeded") => DisableReason::QuotaExceeded,
+        Some("FailureLimit") => DisableReason::FailureLimit,
+        Some("RefreshFailureLimit") => DisableReason::RefreshFailureLimit,
+        Some("InsufficientBalance") => DisableReason::InsufficientBalance,
+        _ => DisableReason::Manual,
+    }
+}
+
 impl MultiTokenManager {
     /// 创建多凭据 Token 管理器
     ///
@@ -413,7 +425,7 @@ impl MultiTokenManager {
                         None
                     },
                     disable_reason: if cred.disabled {
-                        Some(DisableReason::Manual)
+                        Some(parse_disable_reason(cred.disable_reason.as_deref()))
                     } else {
                         None
                     },
@@ -1759,16 +1771,23 @@ impl MultiTokenManager {
                 .map(|e| {
                     let mut cred = e.credentials.clone();
                     cred.canonicalize_auth_method();
-                    // 仅持久化人工/终态禁用状态。FailureLimit/QuotaExceeded 等可自愈状态不落盘，
-                    // 避免重启后临时故障被误标记为手动禁用导致无法自愈。
-                    cred.disabled = matches!(
+                    // 仅持久化终态禁用状态（Manual/AuthFailed/Suspended/QuotaExceeded）。
+                    // FailureLimit/RefreshFailureLimit 等可自愈状态不落盘，重启后自动恢复。
+                    let is_terminal = matches!(
                         e.disable_reason,
                         Some(
                             DisableReason::Manual
                                 | DisableReason::AuthenticationFailed
                                 | DisableReason::AccountSuspended
+                                | DisableReason::QuotaExceeded
                         )
                     );
+                    cred.disabled = is_terminal;
+                    cred.disable_reason = if is_terminal {
+                        e.disable_reason.map(|r| format!("{:?}", r))
+                    } else {
+                        None
+                    };
                     cred
                 })
                 .collect();
