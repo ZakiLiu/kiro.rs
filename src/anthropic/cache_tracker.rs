@@ -88,9 +88,15 @@ impl CacheTracker {
         let mut active_ttl: Option<Duration> = None;
         let mut seen_breakpoints: std::collections::BTreeSet<usize> =
             std::collections::BTreeSet::new();
+        let mut message_end_block_indices: Vec<usize> = Vec::new();
 
         for (index, block) in flattened.into_iter().enumerate() {
             cumulative_tokens = cumulative_tokens.saturating_add(block.tokens);
+
+            // 记录消息边界（用于自动注入 breakpoint）
+            if block.is_message_end && block.message_index.is_some() {
+                message_end_block_indices.push(index);
+            }
 
             let block_bytes = serde_json::to_vec(&block.value).unwrap_or_default();
             let block_hash: [u8; 32] = Sha256::digest(&block_bytes).into();
@@ -129,73 +135,61 @@ impl CacheTracker {
             }
         }
 
-        // 自动注入 breakpoint：客户端没发 cache_control 时，在关键位置插入默认 5min breakpoint
-        // 策略：最后一个 tool → 最后一个 system → 倒数第二条消息结尾
+        // 自动注入 breakpoint：客户端没发 cache_control 时，在关键位置插入缓存锚点
+        //
+        // 策略（最多 4 个 breakpoint，Anthropic 上限）：
+        // 1. 最后一个 tool definition    → 1h TTL（tools 几乎不变）
+        // 2. 最后一个 system block       → 1h TTL（system prompt 稳定）
+        // 3. 倒数第二条消息结尾           → 5min TTL（历史前缀缓存）
+        // 4. 历史中段消息结尾（~50%位置） → 5min TTL（长对话中段复用）
         if breakpoints.is_empty() && !blocks.is_empty() {
-            let auto_ttl = DEFAULT_CACHE_TTL;
-            let mut auto_injected = false;
-
-            // 1. 最后一个 tool block
-            if let Some(idx) = blocks.iter().rposition(|_| true).and_then(|_| {
-                (0..blocks.len()).rev().find(|&i| {
-                    let b = &blocks[i];
-                    // tool blocks are the first ones, before system and messages
-                    b.cumulative_tokens > 0 && i < blocks.len()
-                })
-            }) {
-                // Find the last tool block by checking kind in original flattened data
-                // Simpler: just use indices from the flatten order
-                let _ = idx; // will use targeted approach below
-            }
-
-            // Find boundaries: count tool blocks, system blocks, then messages
             let tool_count = payload.tools.as_ref().map(|t| t.len()).unwrap_or(0);
             let system_count = payload.system.as_ref().map(|s| s.len()).unwrap_or(0);
+            let static_block_count = tool_count + system_count;
 
-            // Inject at last tool (if tools exist)
-            if tool_count > 0 {
-                let last_tool_idx = tool_count - 1;
-                if seen_breakpoints.insert(last_tool_idx) {
-                    breakpoints.push(CacheBreakpoint {
-                        block_index: last_tool_idx,
-                        ttl: auto_ttl,
-                    });
-                    auto_injected = true;
+            // 使用循环中已收集的消息边界索引
+            let message_end_indices = &message_end_block_indices;
+
+            let mut inject = |idx: usize, ttl: Duration| -> bool {
+                if idx < blocks.len() && seen_breakpoints.insert(idx) {
+                    breakpoints.push(CacheBreakpoint { block_index: idx, ttl });
+                    true
+                } else {
+                    false
                 }
+            };
+
+            let mut count = 0usize;
+
+            // 1. 最后一个 tool（1h TTL）
+            if tool_count > 0 && inject(tool_count - 1, ONE_HOUR_CACHE_TTL) {
+                count += 1;
             }
 
-            // Inject at last system block (if system exists)
-            if system_count > 0 {
-                let last_system_idx = tool_count + system_count - 1;
-                if last_system_idx < blocks.len() && seen_breakpoints.insert(last_system_idx) {
-                    breakpoints.push(CacheBreakpoint {
-                        block_index: last_system_idx,
-                        ttl: auto_ttl,
-                    });
-                    auto_injected = true;
-                }
+            // 2. 最后一个 system（1h TTL）
+            if system_count > 0 && inject(static_block_count - 1, ONE_HOUR_CACHE_TTL) {
+                count += 1;
             }
 
-            // Inject at second-to-last message end (captures history prefix)
-            let message_block_indices: Vec<usize> = (0..blocks.len())
-                .filter(|&i| i >= tool_count + system_count)
-                .collect();
-            if message_block_indices.len() >= 2 {
-                // Find the last block of the second-to-last message
-                let target_idx = message_block_indices[message_block_indices.len() - 2];
-                if seen_breakpoints.insert(target_idx) {
-                    breakpoints.push(CacheBreakpoint {
-                        block_index: target_idx,
-                        ttl: auto_ttl,
-                    });
-                    auto_injected = true;
-                }
+            // 3. 倒数第二条消息结尾（5min TTL）— 最新一轮对话前的完整历史
+            if message_end_indices.len() >= 2 {
+                let idx = message_end_indices[message_end_indices.len() - 2];
+                if inject(idx, DEFAULT_CACHE_TTL) { count += 1; }
             }
 
-            if auto_injected {
+            // 4. 历史中段（~50% 位置）（5min TTL）— 长对话中段复用
+            if message_end_indices.len() >= 6 {
+                let mid = message_end_indices.len() / 2;
+                let idx = message_end_indices[mid];
+                if inject(idx, DEFAULT_CACHE_TTL) { count += 1; }
+            }
+
+            if count > 0 {
                 tracing::debug!(
-                    breakpoint_count = breakpoints.len(),
-                    "客户端未发送 cache_control，已自动注入缓存 breakpoint"
+                    breakpoint_count = count,
+                    message_count = message_end_indices.len(),
+                    "客户端未发送 cache_control，已自动注入 {} 个缓存 breakpoint",
+                    count
                 );
             }
         }
