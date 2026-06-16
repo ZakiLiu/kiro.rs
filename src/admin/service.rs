@@ -19,11 +19,12 @@ use crate::model::config::{CompressionConfig, Config};
 use parking_lot::RwLock;
 
 use super::error::AdminServiceError;
+use super::proxy_pool::ProxyPoolManager;
 use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, CachedBalanceItem,
     CachedBalancesResponse, CredentialMetrics, CredentialStatusItem, CredentialsStatusResponse,
     ImportAction, ImportItemResult, ImportSummary, ImportTokenJsonRequest, ImportTokenJsonResponse,
-    MetricsSummaryResponse, ModelMetrics, ProxyConfigResponse, TokenJsonItem,
+    MetricsSummaryResponse, ModelMetrics, ProxyConfigResponse, ProxyPoolEntry, TokenJsonItem,
     UpdateProxyConfigRequest,
 };
 
@@ -52,6 +53,7 @@ pub struct AdminService {
     balance_cache: Mutex<HashMap<u64, CachedBalance>>,
     cache_path: Option<PathBuf>,
     known_endpoints: HashSet<String>,
+    proxy_pool: ProxyPoolManager,
 }
 
 impl AdminService {
@@ -74,6 +76,12 @@ impl AdminService {
             token_manager.restore_balance_cache(*id, cached.data.remaining, cached.cached_at);
         }
 
+        let proxy_pool_path = token_manager
+            .cache_dir()
+            .map(|d| d.join("proxy_pool.json"));
+        let tls_backend = config.read().tls_backend;
+        let proxy_pool = ProxyPoolManager::new(proxy_pool_path, tls_backend);
+
         Self {
             token_manager,
             kiro_provider,
@@ -84,6 +92,7 @@ impl AdminService {
             balance_cache: Mutex::new(balance_cache),
             cache_path,
             known_endpoints: known_endpoints.into_iter().collect(),
+            proxy_pool,
         }
     }
 
@@ -1225,43 +1234,77 @@ impl AdminService {
 
     // ============ 代理池 ============
 
+    fn proxy_entry_to_pool_entry(e: &super::proxy_pool::ProxyEntry) -> ProxyPoolEntry {
+        ProxyPoolEntry {
+            id: e.id,
+            url: e.url.clone(),
+            label: e.label.clone(),
+            enabled: e.enabled,
+            credential_count: 0,
+            health: e.health,
+            latency_ms: e.latency_ms,
+            last_checked_at: e.last_checked_at.clone(),
+            consecutive_failures: e.consecutive_failures,
+            auto_disabled: e.auto_disabled,
+        }
+    }
+
     /// 获取代理池列表
     pub fn get_proxy_pool(&self) -> serde_json::Value {
-        // 代理池管理器尚未接入 AdminService，返回空列表
-        serde_json::json!({ "total": 0, "proxies": [] })
+        let entries = self.proxy_pool.list();
+        let proxies: Vec<ProxyPoolEntry> = entries
+            .iter()
+            .map(|e| Self::proxy_entry_to_pool_entry(e))
+            .collect();
+        serde_json::json!({
+            "total": proxies.len(),
+            "proxies": proxies,
+        })
     }
 
     /// 添加代理到池中
     pub fn add_proxy(
         &self,
-        _url: String,
-        _label: Option<String>,
+        url: String,
+        label: Option<String>,
     ) -> Result<serde_json::Value, AdminServiceError> {
-        Err(AdminServiceError::InternalError(
-            "代理池管理器尚未接入 AdminService".to_string(),
-        ))
+        let entry = self
+            .proxy_pool
+            .add(url, label)
+            .map_err(|e| self.classify_proxy_error(e))?;
+        let pool_entry = Self::proxy_entry_to_pool_entry(&entry);
+        serde_json::to_value(pool_entry)
+            .map_err(|e| AdminServiceError::InternalError(e.to_string()))
     }
 
     /// 批量添加代理
     pub fn batch_add_proxies(
         &self,
-        _payload: super::types::BatchAddProxyRequest,
+        payload: super::types::BatchAddProxyRequest,
     ) -> (Vec<serde_json::Value>, Vec<String>) {
-        (vec![], vec!["代理池管理器尚未接入 AdminService".to_string()])
+        let (added, errors) = self.proxy_pool.batch_add(payload.urls);
+        let values: Vec<serde_json::Value> = added
+            .iter()
+            .filter_map(|e| {
+                let pe = Self::proxy_entry_to_pool_entry(e);
+                serde_json::to_value(pe).ok()
+            })
+            .collect();
+        (values, errors)
     }
 
     /// 删除代理
-    pub fn delete_proxy(&self, _id: u64) -> Result<(), AdminServiceError> {
-        Err(AdminServiceError::InternalError(
-            "代理池管理器尚未接入 AdminService".to_string(),
-        ))
+    pub fn delete_proxy(&self, id: u64) -> Result<(), AdminServiceError> {
+        self.proxy_pool
+            .delete(id)
+            .map_err(|e| self.classify_proxy_error(e))
     }
 
     /// 设置代理启用/禁用
-    pub fn set_proxy_enabled(&self, _id: u64, _enabled: bool) -> Result<(), AdminServiceError> {
-        Err(AdminServiceError::InternalError(
-            "代理池管理器尚未接入 AdminService".to_string(),
-        ))
+    pub fn set_proxy_enabled(&self, id: u64, enabled: bool) -> Result<(), AdminServiceError> {
+        self.proxy_pool
+            .set_enabled(id, enabled)
+            .map_err(|e| self.classify_proxy_error(e))
     }
 
     /// 分配代理给凭据
@@ -1270,24 +1313,42 @@ impl AdminService {
         _id: u64,
         _payload: super::types::AssignProxyRequest,
     ) -> Result<(), AdminServiceError> {
+        // TODO: 需要 MultiTokenManager 提供 set_credential_proxy 方法
         Err(AdminServiceError::InternalError(
-            "代理池管理器尚未接入 AdminService".to_string(),
+            "凭据级代理分配尚未实现（需要 MultiTokenManager 支持）".to_string(),
         ))
     }
 
     /// 探测代理连通性
     pub async fn check_proxy(
         &self,
-        _id: u64,
+        id: u64,
     ) -> Result<serde_json::Value, AdminServiceError> {
-        Err(AdminServiceError::InternalError(
-            "代理池管理器尚未接入 AdminService".to_string(),
-        ))
+        let entry = self
+            .proxy_pool
+            .check_one(id)
+            .await
+            .map_err(|e| self.classify_proxy_error(e))?;
+        let resp = super::types::ProxyCheckResponse {
+            id: entry.id,
+            health: entry.health,
+            latency_ms: entry.latency_ms,
+            last_checked_at: entry.last_checked_at,
+            enabled: entry.enabled,
+            auto_disabled: entry.auto_disabled,
+        };
+        serde_json::to_value(resp)
+            .map_err(|e| AdminServiceError::InternalError(e.to_string()))
     }
 
     /// 全量代理健康检查
     pub async fn check_all_proxies(&self) -> serde_json::Value {
-        serde_json::json!({ "healthy": 0, "unhealthy": 0, "autoDisabled": 0 })
+        let summary = self.proxy_pool.check_all().await;
+        serde_json::json!({
+            "healthy": summary.healthy,
+            "unhealthy": summary.unhealthy,
+            "autoDisabled": summary.auto_disabled,
+        })
     }
 
     /// 轮询批量分配代理
@@ -1295,9 +1356,21 @@ impl AdminService {
         &self,
         _credential_ids: Option<Vec<u64>>,
     ) -> Result<serde_json::Value, AdminServiceError> {
+        // TODO: 需要 MultiTokenManager 提供 set_credential_proxy 方法
         Err(AdminServiceError::InternalError(
-            "代理池管理器尚未接入 AdminService".to_string(),
+            "轮询代理分配尚未实现（需要 MultiTokenManager 支持）".to_string(),
         ))
+    }
+
+    fn classify_proxy_error(&self, e: anyhow::Error) -> AdminServiceError {
+        let msg = e.to_string();
+        if msg.contains("不存在") {
+            AdminServiceError::NotFound { id: 0 }
+        } else if msg.contains("已存在") || msg.contains("无效") || msg.contains("不能为空") {
+            AdminServiceError::InvalidCredential(msg)
+        } else {
+            AdminServiceError::InternalError(msg)
+        }
     }
 
     // ============ 负载均衡配置 ============
