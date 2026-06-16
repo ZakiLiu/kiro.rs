@@ -2682,6 +2682,66 @@ impl MultiTokenManager {
         Ok(())
     }
 
+    /// 统计指定分组被多少个凭据引用
+    pub fn count_credentials_with_group(&self, group: &str) -> usize {
+        let entries = self.entries.lock();
+        entries
+            .iter()
+            .filter(|e| e.credentials.groups.iter().any(|g| g == group))
+            .count()
+    }
+
+    /// 把所有凭据 `groups` 字段中等于 `old` 的元素改为 `new`（分组改名级联用）。
+    pub fn rename_credential_group(&self, old: &str, new: &str) -> anyhow::Result<usize> {
+        let mut affected = 0usize;
+        {
+            let mut entries = self.entries.lock();
+            for entry in entries.iter_mut() {
+                let groups = &mut entry.credentials.groups;
+                let mut hit = false;
+                let mut already_has_new = false;
+                for g in groups.iter() {
+                    if g == old {
+                        hit = true;
+                    }
+                    if g == new {
+                        already_has_new = true;
+                    }
+                }
+                if hit {
+                    groups.retain(|g| g != old);
+                    if !already_has_new {
+                        groups.push(new.to_string());
+                    }
+                    affected += 1;
+                }
+            }
+        }
+        if affected > 0 {
+            self.persist_credentials()?;
+        }
+        Ok(affected)
+    }
+
+    /// 从所有凭据的 `groups` 中移除指定分组名（强删分组级联用）。
+    pub fn remove_credential_group(&self, name: &str) -> anyhow::Result<usize> {
+        let mut affected = 0usize;
+        {
+            let mut entries = self.entries.lock();
+            for entry in entries.iter_mut() {
+                let before = entry.credentials.groups.len();
+                entry.credentials.groups.retain(|g| g != name);
+                if entry.credentials.groups.len() != before {
+                    affected += 1;
+                }
+            }
+        }
+        if affected > 0 {
+            self.persist_credentials()?;
+        }
+        Ok(affected)
+    }
+
     /// 重置凭据失败计数并重新启用（Admin API）
     ///
     /// 同时清除 CooldownManager 和 RateLimiter 的运行时状态，

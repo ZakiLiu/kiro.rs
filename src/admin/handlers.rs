@@ -1395,9 +1395,10 @@ fn group_to_item(
     g: &super::groups::Group,
     state: &AdminState,
 ) -> super::types::GroupItem {
-    // credential_count 需要 token_manager().count_credentials_with_group()
-    // 该方法在 CURRENT 的 MultiTokenManager 上尚未实现，暂返回 0
-    let credential_count = 0;
+    let credential_count = state
+        .service
+        .token_manager()
+        .count_credentials_with_group(&g.name);
     let client_key_count = state
         .client_keys
         .as_ref()
@@ -1501,6 +1502,22 @@ pub async fn update_group(
                         .into_response();
                 }
             }
+            // 级联更新凭据的分组引用（失败时回滚分组改名）
+            if let Err(e) = state
+                .service
+                .token_manager()
+                .rename_credential_group(&name, trimmed)
+            {
+                let _ = groups.rename(trimmed, &name);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(super::types::AdminErrorResponse::internal_error(format!(
+                        "级联更新凭据失败: {}",
+                        e
+                    ))),
+                )
+                    .into_response();
+            }
             // 级联更新客户端 Key 的分组引用
             if let Some(ck) = &state.client_keys {
                 ck.rename_group(&name, trimmed);
@@ -1562,25 +1579,42 @@ pub async fn delete_group(
             .into_response();
     }
 
-    // credential_count 检查暂时跳过（MultiTokenManager 未实现 count_credentials_with_group）
+    let cred_count = state
+        .service
+        .token_manager()
+        .count_credentials_with_group(&name);
     let key_count = state
         .client_keys
         .as_ref()
         .map(|ck| ck.count_with_group(&name))
         .unwrap_or(0);
 
-    if key_count > 0 && !query.force {
+    if (cred_count > 0 || key_count > 0) && !query.force {
         return (
             StatusCode::CONFLICT,
             Json(super::types::AdminErrorResponse::invalid_request(format!(
-                "分组仍被引用（客户端 Key {}），传 ?force=true 级联清理",
-                key_count
+                "分组仍被引用（凭据 {} / 客户端 Key {}），传 ?force=true 级联清理",
+                cred_count, key_count
             ))),
         )
             .into_response();
     }
 
     if query.force {
+        if let Err(e) = state
+            .service
+            .token_manager()
+            .remove_credential_group(&name)
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(super::types::AdminErrorResponse::internal_error(format!(
+                    "级联清理凭据失败: {}",
+                    e
+                ))),
+            )
+                .into_response();
+        }
         if let Some(ck) = &state.client_keys {
             ck.clear_group(&name);
         }
