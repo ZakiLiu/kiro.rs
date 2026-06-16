@@ -13,4 +13,5 @@ pub mod credentials;
 pub mod events;
 pub mod requests;
 pub mod token_refresh;
+pub mod available_models;
 pub mod usage_limits;

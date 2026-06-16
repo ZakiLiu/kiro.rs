@@ -6,6 +6,7 @@ use crate::kiro::endpoint::{
 };
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
+use crate::kiro::model::available_models::ListAvailableModelsResponse;
 use crate::kiro::model::usage_limits::UsageLimitsResponse;
 use crate::model::config::Config;
 use anyhow::bail;
@@ -94,6 +95,98 @@ pub(crate) async fn get_usage_limits(
         anyhow::anyhow!("JSON 解析失败: {}", e)
     })?;
     Ok(data)
+}
+
+/// 获取凭据可用模型列表
+pub(crate) async fn get_available_models(
+    credentials: &KiroCredentials,
+    config: &Config,
+    token: &str,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<ListAvailableModelsResponse> {
+    let sso_region = credentials.effective_auth_region(config);
+    let candidates = rest_api_region_candidates(sso_region);
+    let machine_id = machine_id::generate_from_credentials(credentials, config)
+        .ok_or_else(|| anyhow::anyhow!("无法生成 machineId"))?;
+    let kiro_version = &config.kiro_version;
+    let os_name = &config.system_version;
+    let node_version = &config.node_version;
+
+    let profile_arn_query = credentials
+        .profile_arn
+        .as_deref()
+        .filter(|arn| arn.contains(":profile/"))
+        .map(|arn| format!("&profileArn={}", urlencoding::encode(arn)))
+        .unwrap_or_default();
+
+    let user_agent = format!(
+        "aws-sdk-js/1.0.0 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererruntime#1.0.0 m/N,E KiroIDE-{}-{}",
+        os_name, node_version, kiro_version, machine_id
+    );
+    let amz_user_agent = format!("aws-sdk-js/1.0.0 KiroIDE-{}-{}", kiro_version, machine_id);
+
+    let client = build_client(proxy, 60, config.tls_backend)?;
+
+    let mut last_error: Option<String> = None;
+    for (idx, region) in candidates.iter().enumerate() {
+        let host = format!("q.{}.amazonaws.com", region);
+        let url = format!(
+            "https://{}/ListAvailableModels?origin=AI_EDITOR{}",
+            host, profile_arn_query
+        );
+
+        let mut request = client
+            .get(&url)
+            .header("x-amz-user-agent", &amz_user_agent)
+            .header("user-agent", &user_agent)
+            .header("host", &host)
+            .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
+            .header("amz-sdk-request", "attempt=1; max=1")
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Connection", "close");
+
+        if credentials.is_api_key_credential() {
+            request = request.header("tokentype", "API_KEY");
+        }
+
+        let response = request.send().await?;
+        let status = response.status();
+
+        if status.is_success() {
+            return response
+                .json::<ListAvailableModelsResponse>()
+                .await
+                .map_err(|e| anyhow::anyhow!("解析可用模型响应失败: {}", e));
+        }
+
+        let body_text = response.text().await.unwrap_or_default();
+        if status.as_u16() == 403 && idx + 1 < candidates.len() {
+            last_error = Some(format!("{} {}", status, body_text));
+            continue;
+        }
+
+        let error_msg = match status.as_u16() {
+            401 => "认证失败，Token 无效或已过期",
+            403 => "权限不足，无法获取可用模型",
+            429 => "请求过于频繁，已被限流",
+            500..=599 => "服务器错误，AWS 服务暂时不可用",
+            _ => "获取可用模型失败",
+        };
+        bail!("{}: {} {}", error_msg, status, body_text);
+    }
+
+    bail!(
+        "权限不足，无法获取可用模型: {}",
+        last_error.unwrap_or_else(|| "无可用端点".to_string())
+    )
+}
+
+fn rest_api_region_candidates(sso_region: &str) -> Vec<&str> {
+    if sso_region.starts_with("eu-") {
+        vec!["eu-central-1", "us-east-1"]
+    } else {
+        vec!["us-east-1", "eu-central-1"]
+    }
 }
 
 // ============================================================================

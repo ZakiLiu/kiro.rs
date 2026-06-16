@@ -952,6 +952,27 @@ fn default_oauth_path() -> String {
     "/oauth/callback".to_string()
 }
 
+// ============ 可用模型 ============
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableModelsResponse {
+    pub id: u64,
+    pub models: Vec<AvailableModelItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableModelItem {
+    pub model_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<i64>,
+}
+
 // ============ Auth Flow 响应 ============
 
 /// Social 登录发起响应

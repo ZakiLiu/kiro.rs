@@ -255,6 +255,31 @@ impl AdminService {
             .map_err(|e| self.classify_error(e, id))
     }
 
+    /// 获取凭据可用模型列表
+    pub async fn get_available_models(
+        &self,
+        id: u64,
+    ) -> Result<super::types::AvailableModelsResponse, AdminServiceError> {
+        let resp = self
+            .token_manager
+            .get_available_models_for(id)
+            .await
+            .map_err(|e| self.classify_balance_error(e, id))?;
+
+        let models = resp
+            .models
+            .into_iter()
+            .map(|m| super::types::AvailableModelItem {
+                model_id: m.model_id,
+                model_name: m.model_name,
+                description: m.description,
+                max_input_tokens: m.token_limits.and_then(|t| t.max_input_tokens),
+            })
+            .collect();
+
+        Ok(super::types::AvailableModelsResponse { id, models })
+    }
+
     /// 获取凭据余额（带缓存）
     pub async fn get_balance(&self, id: u64) -> Result<BalanceResponse, AdminServiceError> {
         // 先查缓存

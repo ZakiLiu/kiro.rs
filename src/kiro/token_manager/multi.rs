@@ -2949,6 +2949,85 @@ impl MultiTokenManager {
         }
     }
 
+    /// 获取指定凭据可用的模型列表（Admin API）
+    pub async fn get_available_models_for(
+        &self,
+        id: u64,
+    ) -> anyhow::Result<crate::kiro::model::available_models::ListAvailableModelsResponse> {
+        use super::types::get_available_models;
+
+        let config = self.config.read().clone();
+        let credentials = {
+            let entries = self.entries.lock();
+            entries
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.credentials.clone())
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
+        };
+
+        let token = if credentials.is_api_key_credential() {
+            credentials
+                .kiro_api_key
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("凭据无 kiroApiKey"))?
+        } else {
+            let needs_refresh =
+                is_token_expired(&credentials) || is_token_expiring_soon(&credentials);
+            if needs_refresh {
+                let lock = self.get_refresh_lock(id);
+                let _guard =
+                    match tokio::time::timeout(StdDuration::from_secs(70), lock.lock()).await {
+                        Ok(guard) => guard,
+                        Err(_) => anyhow::bail!("凭据 #{} 查询模型等待锁超时（70s）", id),
+                    };
+                let current_creds = {
+                    let entries = self.entries.lock();
+                    entries
+                        .iter()
+                        .find(|e| e.id == id)
+                        .map(|e| e.credentials.clone())
+                        .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
+                };
+                if is_token_expired(&current_creds) || is_token_expiring_soon(&current_creds) {
+                    let proxy = self.proxy.read().clone();
+                    let new_creds =
+                        refresh_token_with_id(&current_creds, &config, proxy.as_ref(), id).await?;
+                    {
+                        let mut entries = self.entries.lock();
+                        if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                            entry.credentials = new_creds.clone();
+                            entry.refresh_token_hash = credential_secret_hash(&new_creds);
+                        }
+                    }
+                    let _ = self.persist_credentials();
+                    new_creds
+                        .access_token
+                        .ok_or_else(|| anyhow::anyhow!("刷新后无 access_token"))?
+                } else {
+                    current_creds
+                        .access_token
+                        .ok_or_else(|| anyhow::anyhow!("凭据无 access_token"))?
+                }
+            } else {
+                credentials
+                    .access_token
+                    .ok_or_else(|| anyhow::anyhow!("凭据无 access_token"))?
+            }
+        };
+
+        let credentials = {
+            let entries = self.entries.lock();
+            entries
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.credentials.clone())
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
+        };
+        let proxy = self.proxy.read().clone();
+        get_available_models(&credentials, &config, &token, proxy.as_ref()).await
+    }
+
     /// 添加新凭据（Admin API）
     ///
     /// # 流程
