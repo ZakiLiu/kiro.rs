@@ -2583,6 +2583,32 @@ impl MultiTokenManager {
         Ok(())
     }
 
+    /// 设置凭据级代理（Admin API）
+    ///
+    /// `proxy_url` 为 `None` 时清除凭据级代理（回退到全局代理），
+    /// 为 `Some("direct")` 时显式不使用代理。
+    pub fn set_credential_proxy(&self, id: u64, proxy_url: Option<String>) -> anyhow::Result<()> {
+        {
+            let mut entries = self.entries.lock();
+            let entry = entries
+                .iter_mut()
+                .find(|e| e.id == id)
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?;
+            entry.credentials.proxy_url = proxy_url;
+        }
+        self.persist_credentials()?;
+        Ok(())
+    }
+
+    /// 获取所有凭据的代理配置快照（id → proxy_url）
+    pub fn get_credential_proxy_urls(&self) -> Vec<(u64, Option<String>)> {
+        self.entries
+            .lock()
+            .iter()
+            .map(|e| (e.id, e.credentials.proxy_url.clone()))
+            .collect()
+    }
+
     /// 重置凭据失败计数并重新启用（Admin API）
     ///
     /// 同时清除 CooldownManager 和 RateLimiter 的运行时状态，

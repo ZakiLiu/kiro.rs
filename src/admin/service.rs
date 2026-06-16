@@ -1234,27 +1234,30 @@ impl AdminService {
 
     // ============ 代理池 ============
 
-    fn proxy_entry_to_pool_entry(e: &super::proxy_pool::ProxyEntry) -> ProxyPoolEntry {
-        ProxyPoolEntry {
-            id: e.id,
-            url: e.url.clone(),
-            label: e.label.clone(),
-            enabled: e.enabled,
-            credential_count: 0,
-            health: e.health,
-            latency_ms: e.latency_ms,
-            last_checked_at: e.last_checked_at.clone(),
-            consecutive_failures: e.consecutive_failures,
-            auto_disabled: e.auto_disabled,
-        }
-    }
-
     /// 获取代理池列表
     pub fn get_proxy_pool(&self) -> serde_json::Value {
         let entries = self.proxy_pool.list();
+        let cred_proxies = self.token_manager.get_credential_proxy_urls();
         let proxies: Vec<ProxyPoolEntry> = entries
             .iter()
-            .map(|e| Self::proxy_entry_to_pool_entry(e))
+            .map(|e| {
+                let credential_count = cred_proxies
+                    .iter()
+                    .filter(|(_, url)| url.as_deref() == Some(&e.url))
+                    .count() as u32;
+                ProxyPoolEntry {
+                    id: e.id,
+                    url: e.url.clone(),
+                    label: e.label.clone(),
+                    enabled: e.enabled,
+                    credential_count,
+                    health: e.health,
+                    latency_ms: e.latency_ms,
+                    last_checked_at: e.last_checked_at.clone(),
+                    consecutive_failures: e.consecutive_failures,
+                    auto_disabled: e.auto_disabled,
+                }
+            })
             .collect();
         serde_json::json!({
             "total": proxies.len(),
@@ -1272,7 +1275,7 @@ impl AdminService {
             .proxy_pool
             .add(url, label)
             .map_err(|e| self.classify_proxy_error(e))?;
-        let pool_entry = Self::proxy_entry_to_pool_entry(&entry);
+        let pool_entry = Self::new_proxy_pool_entry(&entry);
         serde_json::to_value(pool_entry)
             .map_err(|e| AdminServiceError::InternalError(e.to_string()))
     }
@@ -1286,11 +1289,25 @@ impl AdminService {
         let values: Vec<serde_json::Value> = added
             .iter()
             .filter_map(|e| {
-                let pe = Self::proxy_entry_to_pool_entry(e);
-                serde_json::to_value(pe).ok()
+                serde_json::to_value(Self::new_proxy_pool_entry(e)).ok()
             })
             .collect();
         (values, errors)
+    }
+
+    fn new_proxy_pool_entry(e: &super::proxy_pool::ProxyEntry) -> ProxyPoolEntry {
+        ProxyPoolEntry {
+            id: e.id,
+            url: e.url.clone(),
+            label: e.label.clone(),
+            enabled: e.enabled,
+            credential_count: 0,
+            health: e.health,
+            latency_ms: e.latency_ms,
+            last_checked_at: e.last_checked_at.clone(),
+            consecutive_failures: e.consecutive_failures,
+            auto_disabled: e.auto_disabled,
+        }
     }
 
     /// 删除代理
@@ -1310,13 +1327,28 @@ impl AdminService {
     /// 分配代理给凭据
     pub fn assign_proxy_to_credential(
         &self,
-        _id: u64,
-        _payload: super::types::AssignProxyRequest,
+        id: u64,
+        payload: super::types::AssignProxyRequest,
     ) -> Result<(), AdminServiceError> {
-        // TODO: 需要 MultiTokenManager 提供 set_credential_proxy 方法
-        Err(AdminServiceError::InternalError(
-            "凭据级代理分配尚未实现（需要 MultiTokenManager 支持）".to_string(),
-        ))
+        let proxy_url = match payload.proxy_id {
+            Some(proxy_id) => {
+                let entries = self.proxy_pool.list();
+                let entry = entries
+                    .iter()
+                    .find(|e| e.id == proxy_id)
+                    .ok_or_else(|| AdminServiceError::NotFound { id: proxy_id })?;
+                if !entry.enabled {
+                    return Err(AdminServiceError::InvalidCredential(
+                        format!("代理 #{} 已禁用，无法分配", proxy_id),
+                    ));
+                }
+                Some(entry.url.clone())
+            }
+            None => None,
+        };
+        self.token_manager
+            .set_credential_proxy(id, proxy_url)
+            .map_err(|e| self.classify_proxy_error(e))
     }
 
     /// 探测代理连通性
@@ -1354,12 +1386,39 @@ impl AdminService {
     /// 轮询批量分配代理
     pub fn assign_proxies_round_robin(
         &self,
-        _credential_ids: Option<Vec<u64>>,
+        credential_ids: Option<Vec<u64>>,
     ) -> Result<serde_json::Value, AdminServiceError> {
-        // TODO: 需要 MultiTokenManager 提供 set_credential_proxy 方法
-        Err(AdminServiceError::InternalError(
-            "轮询代理分配尚未实现（需要 MultiTokenManager 支持）".to_string(),
-        ))
+        let available_urls = self.proxy_pool.assignable_urls();
+        if available_urls.is_empty() {
+            return Err(AdminServiceError::InvalidCredential(
+                "代理池中没有可分配的代理（需要启用且健康的代理）".to_string(),
+            ));
+        }
+
+        let target_ids: Vec<u64> = match credential_ids {
+            Some(ids) => ids,
+            None => self.token_manager.all_enabled_credential_ids(),
+        };
+
+        let mut assigned = 0u32;
+        let mut errors = Vec::new();
+        for (i, &cred_id) in target_ids.iter().enumerate() {
+            let proxy_url = &available_urls[i % available_urls.len()];
+            match self
+                .token_manager
+                .set_credential_proxy(cred_id, Some(proxy_url.clone()))
+            {
+                Ok(()) => assigned += 1,
+                Err(e) => errors.push(format!("凭据 #{}: {}", cred_id, e)),
+            }
+        }
+
+        Ok(serde_json::json!({
+            "assigned": assigned,
+            "total": target_ids.len(),
+            "proxyCount": available_urls.len(),
+            "errors": errors,
+        }))
     }
 
     fn classify_proxy_error(&self, e: anyhow::Error) -> AdminServiceError {
