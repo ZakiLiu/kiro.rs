@@ -306,16 +306,32 @@ async fn main() {
     }
 
     // 构建 Anthropic API 路由（从第一个凭据获取 profile_arn）
-    let anthropic_app = anthropic::create_router_with_provider(
-        &api_key,
-        Some(kiro_provider.clone()),
-        first_credentials.profile_arn.clone(),
-        compression_config.clone(),
-        prompt_cache_runtime.clone(),
-        metrics_collector.clone(),
-        cross_request_cache,
-        presets.clone(),
+    let mut app_state = anthropic::middleware::AppState::new(&api_key, prompt_cache_runtime.clone())
+        .with_kiro_provider(kiro_provider.clone())
+        .with_compression_config(compression_config.clone())
+        .with_presets(presets.clone())
+        .with_client_keys(client_key_manager.clone())
+        .with_usage_recorder(usage_recorder.clone())
+        .with_usage_aggregator(usage_aggregator.clone());
+    if let Some(arn) = &first_credentials.profile_arn {
+        app_state = app_state.with_profile_arn(arn);
+    }
+    if let Some(m) = &metrics_collector {
+        app_state = app_state.with_metrics(m.clone());
+    }
+    if let Some(cache) = cross_request_cache {
+        app_state = app_state.with_cross_request_cache(cache);
+    }
+    if let Some(ts) = &trace_store {
+        app_state = app_state.with_trace_store(ts.clone());
+    }
+    // Bootstrap 系统 Key（幂等，把 config.json apiKey 注册为 id=0 客户端 Key）
+    client_key_manager.ensure_system_key(
+        "System Default".to_string(),
+        Some("从 config.json apiKey 自动导入".to_string()),
+        api_key.clone(),
     );
+    let anthropic_app = anthropic::router::create_router_from_state(app_state);
 
     // 构建 Admin API 路由（如果配置了非空的 admin_api_key）
     // 安全检查：空字符串被视为未配置，防止空 key 绕过认证

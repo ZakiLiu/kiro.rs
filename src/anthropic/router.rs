@@ -66,6 +66,11 @@ pub fn create_router_with_provider(
     if let Some(cache) = cross_request_cache {
         state = state.with_cross_request_cache(cache);
     }
+    create_router_from_state(state)
+}
+
+/// 从已构造的 AppState 创建路由（供 main.rs 在注入运维组件后使用）
+pub fn create_router_from_state(state: AppState) -> Router {
 
     // 需要认证的 /v1 路由（Claude + OpenAI 共享 /v1 前缀）
     let openai_routes = crate::openai::router::openai_routes();

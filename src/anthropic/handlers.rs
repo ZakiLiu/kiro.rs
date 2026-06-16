@@ -2,10 +2,14 @@
 
 use std::convert::Infallible;
 
+use crate::admin::trace_db::{TraceKeySource, TraceRecord};
+use crate::admin::usage_stats::UsageRecord;
 use crate::kiro::model::events::{Event, MeteringEvent};
 use crate::kiro::model::requests::kiro::KiroRequest;
 use crate::kiro::parser::decoder::EventStreamDecoder;
 use crate::token;
+
+use super::middleware::AuthIdentity;
 use anyhow::Error;
 use axum::{
     Json as JsonExtractor,
@@ -37,6 +41,94 @@ use crate::metrics::{MetricEvent, MetricEventType};
 use super::converter::{ConversionError, convert_request};
 use super::error_map::{self, ErrorRequestContext};
 use super::middleware::AppState;
+
+/// 记录请求用量（usage + trace + client key 回写）
+pub(crate) fn record_request_telemetry(
+    state: &AppState,
+    auth: &AuthIdentity,
+    model: &str,
+    is_stream: bool,
+    credential_id: u64,
+    input_tokens: i32,
+    output_tokens: i32,
+    cache_creation_tokens: i32,
+    cache_read_tokens: i32,
+    credits: f64,
+    duration_ms: u64,
+    status: &str,
+    attempts: Vec<crate::admin::trace_db::TraceAttempt>,
+) {
+    let record = UsageRecord {
+        ts: chrono::Utc::now().to_rfc3339(),
+        key_id: auth.key_id,
+        credential_id,
+        model: model.to_string(),
+        input_tokens: input_tokens.max(0) as u64,
+        output_tokens: output_tokens.max(0) as u64,
+        cache_creation_tokens: cache_creation_tokens.max(0) as u64,
+        cache_read_tokens: cache_read_tokens.max(0) as u64,
+        credits,
+        duration_ms,
+        status: status.to_string(),
+    };
+    if let Some(recorder) = &state.usage_recorder {
+        recorder.record(&record);
+    }
+    if let Some(aggregator) = &state.usage_aggregator {
+        aggregator.ingest(&record);
+    }
+    if auth.key_id > 0 {
+        if let Some(mgr) = &state.client_keys {
+            mgr.record_usage(
+                auth.key_id,
+                record.input_tokens,
+                record.output_tokens,
+                record.cache_creation_tokens,
+                record.cache_read_tokens,
+                credits,
+            );
+        }
+    }
+    if let Some(store) = &state.trace_store {
+        if store.is_enabled() {
+            let trace = TraceRecord {
+                trace_id: Uuid::new_v4().to_string(),
+                ts: record.ts.clone(),
+                key_id: auth.key_id,
+                key_source: auth.key_source,
+                model: model.to_string(),
+                is_stream,
+                final_status: status.to_string(),
+                final_credential_id: credential_id,
+                error_type: if status != "success" { Some(status.to_string()) } else { None },
+                error_message: None,
+                total_attempts: attempts.len().max(1) as u32,
+                duration_ms,
+                interrupted_after_bytes: None,
+                input_tokens: record.input_tokens,
+                output_tokens: record.output_tokens,
+                cache_creation_tokens: record.cache_creation_tokens,
+                cache_read_tokens: record.cache_read_tokens,
+                credits,
+                first_token_ms: None,
+                attempts,
+            };
+            store.insert(&trace);
+        }
+    }
+}
+/// 流式路径的 token 用量快照，由 unfold closure 在流结束时写入，
+/// 供 handler 层读取后传给 record_request_telemetry。
+#[derive(Default)]
+struct StreamUsageSnapshot {
+    input_tokens: i32,
+    output_tokens: i32,
+    thinking_tokens: i32,
+    cache_creation: i32,
+    cache_read: i32,
+    credits: f64,
+}
+
 use super::stream::{CacheUsageBreakdown, SseEvent, StreamContext};
 use super::types::{
     CountTokensRequest, CountTokensResponse, ErrorResponse, MessagesRequest, Model, ModelsResponse,
@@ -965,6 +1057,7 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
 pub async fn post_messages(
     OriginalUri(uri): OriginalUri,
     State(state): State<AppState>,
+    axum::Extension(auth): axum::Extension<AuthIdentity>,
     headers: HeaderMap,
     JsonExtractor(mut payload): JsonExtractor<MessagesRequest>,
 ) -> Response {
@@ -1296,7 +1389,7 @@ pub async fn post_messages(
             adaptive_outcome: adaptive_outcome.as_ref(),
             defer_message_start: uri.path().starts_with("/anthropic/"),
         };
-        handle_stream_request(provider, stream_request).await
+        handle_stream_request(provider, stream_request, &state, &auth).await
     } else {
         // 非流式响应
         let non_stream_request = NonStreamRequestContext {
@@ -1313,12 +1406,14 @@ pub async fn post_messages(
             request_start,
             adaptive_outcome: adaptive_outcome.as_ref(),
         };
-        handle_non_stream_request(provider, non_stream_request).await
+        handle_non_stream_request(provider, non_stream_request, &state, &auth).await
     }
 }
 async fn handle_stream_request(
     provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
     context: StreamRequestContext<'_>,
+    state: &AppState,
+    auth: &AuthIdentity,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let api_result = match provider
@@ -1379,8 +1474,48 @@ async fn handle_stream_request(
     // 生成初始事件
     let initial_events = ctx.generate_initial_events();
 
+    // 克隆 Arc 用于流式结束时的用量/追踪记录
+    let stream_state = state.clone();
+    let stream_auth = auth.clone();
+    let stream_model = context.model.to_string();
+    let stream_credential_id = api_result.credential_id;
+    let stream_start = context.request_start;
+    let stream_input_tokens = context.input_tokens;
+    let stream_attempts = api_result.attempts;
+
+    // 用于从 unfold closure 中提取流结束时的真实 token 用量
+    let usage_snapshot = std::sync::Arc::new(parking_lot::Mutex::new(None::<StreamUsageSnapshot>));
+    let usage_snapshot_for_stream = usage_snapshot.clone();
+
     // 创建 SSE 流
-    let stream = create_sse_stream(api_result.response, ctx, initial_events);
+    let stream = create_sse_stream(
+        api_result.response,
+        ctx,
+        initial_events,
+        usage_snapshot_for_stream,
+    );
+
+    // 在流结束后追加用量记录（从 snapshot 读取真实 token 计数）
+    let stream = stream.chain(futures::stream::once(async move {
+        let duration_ms = stream_start.elapsed().as_millis() as u64;
+        let snap = usage_snapshot.lock().take().unwrap_or_default();
+        record_request_telemetry(
+            &stream_state,
+            &stream_auth,
+            &stream_model,
+            true,
+            stream_credential_id,
+            stream_input_tokens,
+            snap.output_tokens,
+            snap.cache_creation,
+            snap.cache_read,
+            snap.credits,
+            duration_ms,
+            "success",
+            stream_attempts,
+        );
+        Ok(Bytes::new()) // 空 bytes，不影响流
+    }));
 
     // 记录 RequestCompleted 指标（流式：记录到首字节的延迟）
     let ttfb_ms = context.request_start.elapsed().as_millis() as u64;
@@ -1425,6 +1560,7 @@ fn create_sse_stream(
     response: reqwest::Response,
     ctx: StreamContext,
     initial_events: Vec<SseEvent>,
+    usage_snapshot: std::sync::Arc<parking_lot::Mutex<Option<StreamUsageSnapshot>>>,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
     // 先发送初始事件
     let initial_stream = stream::iter(
@@ -1439,8 +1575,8 @@ fn create_sse_stream(
     let ping_interval = interval_at(Instant::now() + ping_period, ping_period);
 
     let processing_stream = stream::unfold(
-        (body_stream, ctx, EventStreamDecoder::new(), false, ping_interval),
-        |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval)| async move {
+        (body_stream, ctx, EventStreamDecoder::new(), false, ping_interval, usage_snapshot),
+        |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval, usage_snapshot)| async move {
             if finished {
                 return None;
             }
@@ -1477,7 +1613,7 @@ fn create_sse_stream(
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
 
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, usage_snapshot)))
                         }
                         Some(Err(e)) => {
                             tracing::error!("读取响应流失败: {}", e);
@@ -1486,20 +1622,38 @@ fn create_sse_stream(
                             // 会把不完整 assistant turn 当成正常结束写回 history。
                             ctx.state_manager.set_stop_reason("error");
                             let final_events = ctx.generate_final_events();
+                            // 写入 usage snapshot 供 handler 层 telemetry 使用
+                            *usage_snapshot.lock() = Some(StreamUsageSnapshot {
+                                input_tokens: ctx.input_tokens,
+                                output_tokens: ctx.output_tokens,
+                                thinking_tokens: ctx.thinking_tokens,
+                                cache_creation: ctx.cache_usage.map(|c| c.cache_creation_input_tokens).unwrap_or(0),
+                                cache_read: ctx.cache_usage.map(|c| c.cache_read_input_tokens).unwrap_or(0),
+                                credits: ctx.metering.as_ref().map(|m| m.usage).unwrap_or(0.0),
+                            });
                             let bytes: Vec<Result<Bytes, Infallible>> = final_events
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, usage_snapshot)))
                         }
                         None => {
                             // 流结束，发送最终事件
                             let final_events = ctx.generate_final_events();
+                            // 写入 usage snapshot 供 handler 层 telemetry 使用
+                            *usage_snapshot.lock() = Some(StreamUsageSnapshot {
+                                input_tokens: ctx.input_tokens,
+                                output_tokens: ctx.output_tokens,
+                                thinking_tokens: ctx.thinking_tokens,
+                                cache_creation: ctx.cache_usage.map(|c| c.cache_creation_input_tokens).unwrap_or(0),
+                                cache_read: ctx.cache_usage.map(|c| c.cache_read_input_tokens).unwrap_or(0),
+                                credits: ctx.metering.as_ref().map(|m| m.usage).unwrap_or(0.0),
+                            });
                             let bytes: Vec<Result<Bytes, Infallible>> = final_events
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, usage_snapshot)))
                         }
                     }
                 }
@@ -1507,7 +1661,7 @@ fn create_sse_stream(
                 _ = ping_interval.tick() => {
                     tracing::trace!("发送 ping 保活事件");
                     let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval)))
+                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, usage_snapshot)))
                 }
             }
         },
@@ -1521,6 +1675,8 @@ fn create_sse_stream(
 async fn handle_non_stream_request(
     provider: std::sync::Arc<crate::kiro::provider::KiroProvider>,
     context: NonStreamRequestContext<'_>,
+    state: &AppState,
+    auth: &AuthIdentity,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let api_result = match provider
@@ -1839,6 +1995,23 @@ async fn handle_non_stream_request(
                 .with_tokens(context.input_tokens, output_tokens),
         );
     }
+
+    let credits = metering.as_ref().map(|m| m.usage).unwrap_or(0.0);
+    record_request_telemetry(
+        state,
+        auth,
+        context.model,
+        false,
+        api_result.credential_id,
+        context.input_tokens,
+        output_tokens,
+        final_cache_context.map(|c| c.cache_creation_input_tokens).unwrap_or(0),
+        final_cache_context.map(|c| c.cache_read_input_tokens).unwrap_or(0),
+        credits,
+        total_ms,
+        "success",
+        api_result.attempts,
+    );
 
     (
         StatusCode::OK,

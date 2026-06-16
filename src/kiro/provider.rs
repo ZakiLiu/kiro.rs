@@ -10,11 +10,12 @@ use reqwest::Client;
 use reqwest::header::HeaderMap;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 #[cfg(not(feature = "sensitive-logs"))]
 use crate::common::utf8::floor_char_boundary;
+use crate::admin::trace_db::{self, TraceAttempt, truncate_snippet};
 use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::cooldown::CooldownReason;
 use crate::kiro::endpoint::{
@@ -35,6 +36,7 @@ pub(crate) fn is_suspended_signal(s: &str) -> bool {
 pub struct ApiCallResult {
     pub response: reqwest::Response,
     pub credential_id: u64,
+    pub attempts: Vec<TraceAttempt>,
 }
 
 /// MCP 调用结果
@@ -827,6 +829,7 @@ impl KiroProvider {
         let max_consecutive_429: usize = (available / 2).max(MIN_TOTAL_RETRIES);
         let mut global_rate_limit_waits: usize = 0;
         const MAX_GLOBAL_RATE_LIMIT_WAITS: usize = 2;
+        let mut attempts: Vec<TraceAttempt> = Vec::new();
 
         for attempt in 0..max_retries {
             // 获取调用上下文（绑定 index、credentials、token），支持用户亲和性
@@ -911,15 +914,26 @@ impl KiroProvider {
             let _request_for_log = request.try_clone();
 
             // 发送请求
+            let attempt_start = Instant::now();
             let response = match request.send().await {
                 Ok(resp) => resp,
                 Err(e) => {
+                    let duration_ms = attempt_start.elapsed().as_millis() as u64;
                     tracing::warn!(
                         "API 请求发送失败（尝试 {}/{}）: {}",
                         attempt + 1,
                         max_retries,
                         e
                     );
+                    attempts.push(TraceAttempt {
+                        attempt: attempt as u32,
+                        credential_id: ctx.id,
+                        endpoint: endpoint_name.to_string(),
+                        http_status: None,
+                        outcome: trace_db::outcome::NETWORK_ERROR.to_string(),
+                        error_snippet: truncate_snippet(&e.to_string()),
+                        duration_ms,
+                    });
                     // 网络错误通常是上游/链路瞬态问题，不应导致"禁用凭据"或"切换凭据"
                     // （否则一段时间网络抖动会把所有凭据都误禁用，需要重启才能恢复）
                     last_error = Some(e.into());
@@ -945,16 +959,45 @@ impl KiroProvider {
                     endpoint = %endpoint_name,
                     "API 请求成功"
                 );
+                attempts.push(TraceAttempt {
+                    attempt: attempt as u32,
+                    credential_id: ctx.id,
+                    endpoint: endpoint_name.to_string(),
+                    http_status: Some(status.as_u16()),
+                    outcome: trace_db::outcome::SUCCESS.to_string(),
+                    error_snippet: None,
+                    duration_ms: attempt_start.elapsed().as_millis() as u64,
+                });
                 // 后台异步刷新余额缓存
                 self.spawn_balance_refresh(ctx.id);
                 return Ok(ApiCallResult {
                     response,
                     credential_id: ctx.id,
+                    attempts,
                 });
             }
 
             // 失败响应：读取 body 用于日志/错误信息
             let body = response.text().await.unwrap_or_default();
+
+            let attempt_outcome = match status.as_u16() {
+                400 => trace_db::outcome::BAD_REQUEST,
+                401 | 403 => trace_db::outcome::AUTH_FAILED,
+                402 => trace_db::outcome::QUOTA_EXHAUSTED,
+                429 => trace_db::outcome::ACCOUNT_THROTTLED,
+                408 => trace_db::outcome::TRANSIENT,
+                s if (500..600).contains(&s) => trace_db::outcome::TRANSIENT,
+                _ => trace_db::outcome::UNKNOWN,
+            };
+            attempts.push(TraceAttempt {
+                attempt: attempt as u32,
+                credential_id: ctx.id,
+                endpoint: endpoint_name.to_string(),
+                http_status: Some(status.as_u16()),
+                outcome: attempt_outcome.to_string(),
+                error_snippet: truncate_snippet(&body),
+                duration_ms: attempt_start.elapsed().as_millis() as u64,
+            });
 
             // 402 Payment Required
             if status.as_u16() == 402 {
@@ -1017,6 +1060,7 @@ impl KiroProvider {
                                 return Ok(ApiCallResult {
                                     response: retry_resp,
                                     credential_id: ctx.id,
+                                    attempts,
                                 });
                             }
                             tracing::warn!(

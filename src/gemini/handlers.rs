@@ -15,7 +15,9 @@ use serde_json::json;
 use tokio::time::{Instant, interval_at};
 use std::time::Duration;
 
-use crate::anthropic::middleware::AppState;
+use crate::admin::trace_db::TraceAttempt;
+use crate::anthropic::handlers::record_request_telemetry;
+use crate::anthropic::middleware::{AppState, AuthIdentity};
 use crate::kiro::model::events::Event;
 use crate::kiro::parser::decoder::EventStreamDecoder;
 use crate::token;
@@ -25,6 +27,7 @@ use super::types::*;
 
 pub async fn generate_content(
     State(state): State<AppState>,
+    axum::Extension(auth): axum::Extension<AuthIdentity>,
     Path(model_action): Path<String>,
     Json(payload): Json<GenerateContentRequest>,
 ) -> impl IntoResponse {
@@ -73,9 +76,9 @@ pub async fn generate_content(
     let input_tokens = token::count_tokens(&request_body) as i32;
 
     if is_stream {
-        handle_stream(provider, &request_body, model, input_tokens).await
+        handle_stream(provider, &request_body, model, input_tokens, &state, &auth).await
     } else {
-        handle_non_stream(provider, &request_body, model, input_tokens).await
+        handle_non_stream(provider, &request_body, model, input_tokens, &state, &auth).await
     }
 }
 
@@ -84,7 +87,10 @@ async fn handle_stream(
     request_body: &str,
     model: &str,
     input_tokens: i32,
+    state: &AppState,
+    auth: &AuthIdentity,
 ) -> Response {
+    let start = Instant::now();
     let result = match provider.call_api_stream(request_body, None).await {
         Ok(r) => r,
         Err(e) => {
@@ -97,8 +103,13 @@ async fn handle_stream(
         }
     };
 
+    let credential_id = result.credential_id;
+    let attempts = result.attempts;
     let response = result.response;
-    let stream = create_gemini_sse_stream(response, model.to_string(), input_tokens);
+    let stream = create_gemini_sse_stream(
+        response, model.to_string(), input_tokens,
+        state.clone(), auth.clone(), credential_id, attempts, start,
+    );
 
     Response::builder()
         .status(StatusCode::OK)
@@ -115,8 +126,13 @@ fn create_gemini_sse_stream(
     response: reqwest::Response,
     model: String,
     input_tokens: i32,
+    state: AppState,
+    auth: AuthIdentity,
+    credential_id: u64,
+    attempts: Vec<TraceAttempt>,
+    start: Instant,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
-    let _model = model;
+    let _model = model.clone();
 
     async_stream::stream! {
         let mut decoder = EventStreamDecoder::new();
@@ -203,6 +219,13 @@ fn create_gemini_sse_stream(
         };
         let json = serde_json::to_string(&final_chunk).unwrap_or_default();
         yield Ok(Bytes::from(format!("data: {}\n\ndata: [DONE]\n\n", json)));
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        record_request_telemetry(
+            &state, &auth, &model, true, credential_id,
+            final_input_tokens, output_tokens, 0, 0,
+            0.0, duration_ms, "success", attempts,
+        );
     }
 }
 
@@ -211,7 +234,10 @@ async fn handle_non_stream(
     request_body: &str,
     model: &str,
     input_tokens: i32,
+    state: &AppState,
+    auth: &AuthIdentity,
 ) -> Response {
+    let start = Instant::now();
     let result = match provider.call_api(request_body, None).await {
         Ok(r) => r,
         Err(e) => {
@@ -224,6 +250,8 @@ async fn handle_non_stream(
         }
     };
 
+    let credential_id = result.credential_id;
+    let attempts = result.attempts;
     let response_bytes = match result.response.bytes().await {
         Ok(b) => b,
         Err(e) => {
@@ -288,6 +316,13 @@ async fn handle_non_stream(
             total_token_count: final_input_tokens + output_tokens,
         }),
     };
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    record_request_telemetry(
+        state, auth, model, false, credential_id,
+        final_input_tokens, output_tokens, 0, 0,
+        0.0, duration_ms, "success", attempts,
+    );
 
     (StatusCode::OK, Json(json!(response))).into_response()
 }

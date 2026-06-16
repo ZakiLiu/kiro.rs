@@ -15,7 +15,9 @@ use serde_json::json;
 use tokio::time::{Instant, interval_at};
 use std::time::Duration;
 
-use crate::anthropic::middleware::AppState;
+use crate::admin::trace_db::TraceAttempt;
+use crate::anthropic::handlers::record_request_telemetry;
+use crate::anthropic::middleware::{AppState, AuthIdentity};
 use crate::kiro::model::events::Event;
 use crate::kiro::parser::decoder::EventStreamDecoder;
 use crate::token;
@@ -26,6 +28,7 @@ use super::types::*;
 
 pub async fn post_chat_completions(
     State(state): State<AppState>,
+    axum::Extension(auth): axum::Extension<AuthIdentity>,
     Json(payload): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
     tracing::info!(model = %payload.model, stream = %payload.stream, "OpenAI /v1/chat/completions");
@@ -68,9 +71,9 @@ pub async fn post_chat_completions(
     let input_tokens = token::count_tokens(&request_body) as i32;
 
     if is_stream {
-        handle_stream(provider, &request_body, &conversion.model, input_tokens).await
+        handle_stream(provider, &request_body, &conversion.model, input_tokens, &state, &auth).await
     } else {
-        handle_non_stream(provider, &request_body, &conversion.model, input_tokens).await
+        handle_non_stream(provider, &request_body, &conversion.model, input_tokens, &state, &auth).await
     }
 }
 
@@ -79,7 +82,10 @@ async fn handle_stream(
     request_body: &str,
     model: &str,
     input_tokens: i32,
+    state: &AppState,
+    auth: &AuthIdentity,
 ) -> Response {
+    let start = Instant::now();
     let result = match provider.call_api_stream(request_body, None).await {
         Ok(r) => r,
         Err(e) => {
@@ -92,8 +98,13 @@ async fn handle_stream(
         }
     };
 
+    let credential_id = result.credential_id;
+    let attempts = result.attempts;
     let response = result.response;
-    let stream = create_openai_sse_stream(response, model.to_string(), input_tokens);
+    let stream = create_openai_sse_stream(
+        response, model.to_string(), input_tokens,
+        state.clone(), auth.clone(), credential_id, attempts, start,
+    );
 
     Response::builder()
         .status(StatusCode::OK)
@@ -114,6 +125,11 @@ fn create_openai_sse_stream(
     response: reqwest::Response,
     model: String,
     input_tokens: i32,
+    state: AppState,
+    auth: AuthIdentity,
+    credential_id: u64,
+    attempts: Vec<TraceAttempt>,
+    start: Instant,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
     let model = model;
 
@@ -175,6 +191,14 @@ fn create_openai_sse_stream(
         for chunk in ctx.generate_final_chunk() {
             yield Ok(Bytes::from(chunk));
         }
+
+        let (final_input, final_output, final_cache_read) = ctx.usage_values();
+        let duration_ms = start.elapsed().as_millis() as u64;
+        record_request_telemetry(
+            &state, &auth, &model, true, credential_id,
+            final_input, final_output, 0, final_cache_read,
+            0.0, duration_ms, "success", attempts,
+        );
     }
 }
 
@@ -183,7 +207,10 @@ async fn handle_non_stream(
     request_body: &str,
     model: &str,
     input_tokens: i32,
+    state: &AppState,
+    auth: &AuthIdentity,
 ) -> Response {
+    let start = Instant::now();
     let result = match provider.call_api(request_body, None).await {
         Ok(r) => r,
         Err(e) => {
@@ -196,6 +223,8 @@ async fn handle_non_stream(
         }
     };
 
+    let credential_id = result.credential_id;
+    let attempts = result.attempts;
     let response_bytes = match result.response.bytes().await {
         Ok(b) => b,
         Err(e) => {
@@ -320,7 +349,7 @@ async fn handle_non_stream(
             index: 0,
             message: ChoiceMessage {
                 role: "assistant",
-                content: if tool_calls.is_empty() && !text_content.is_empty() {
+                content: if !text_content.is_empty() {
                     Some(text_content)
                 } else if tool_calls.is_empty() {
                     Some(String::new())
@@ -349,11 +378,19 @@ async fn handle_non_stream(
         },
     };
 
+    let duration_ms = start.elapsed().as_millis() as u64;
+    record_request_telemetry(
+        state, auth, model, false, credential_id,
+        final_input_tokens, output_tokens, 0, cache_read_tokens,
+        0.0, duration_ms, "success", attempts,
+    );
+
     (StatusCode::OK, Json(json!(response))).into_response()
 }
 
 pub async fn post_responses(
     State(state): State<AppState>,
+    axum::Extension(auth): axum::Extension<AuthIdentity>,
     Json(payload): Json<ResponsesRequest>,
 ) -> impl IntoResponse {
     tracing::info!(model = %payload.model, stream = %payload.stream, "OpenAI /v1/responses");
@@ -407,7 +444,7 @@ pub async fn post_responses(
     // Responses API 强制走非流式路径再包装为 Responses 格式
     // 原因：Responses SSE 格式 (response.output_text.delta) 与 Chat Completion SSE 格式完全不同，
     // 直接复用 handle_stream 会返回错误的 SSE 事件类型
-    let resp = handle_non_stream(provider, &request_body, &conversion.model, input_tokens).await;
+    let resp = handle_non_stream(provider, &request_body, &conversion.model, input_tokens, &state, &auth).await;
     wrap_as_responses_response(resp, &payload).await
 }
 

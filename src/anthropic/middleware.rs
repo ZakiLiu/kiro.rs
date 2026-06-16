@@ -12,14 +12,26 @@ use axum::{
 };
 use parking_lot::RwLock;
 
+use crate::admin::client_keys::SharedClientKeyManager;
+use crate::admin::trace_db::SharedTraceStore;
+use crate::admin::usage_stats::{SharedAggregator, SharedRecorder};
 use crate::common::auth;
 use crate::kiro::provider::KiroProvider;
 use crate::metrics::MetricsCollector;
 use crate::model::config::{CompressionConfig, Preset};
 
+use crate::admin::trace_db::TraceKeySource;
+
 use super::cache_tracker::CacheTracker;
 use super::cross_request_cache::CrossRequestCache;
 use super::types::ErrorResponse;
+
+/// 鉴权结果，注入到 request extension 中供 handler 读取
+#[derive(Clone, Debug)]
+pub struct AuthIdentity {
+    pub key_id: u64,
+    pub key_source: TraceKeySource,
+}
 
 #[derive(Clone)]
 pub(crate) struct PromptCacheSnapshot {
@@ -84,6 +96,14 @@ pub struct AppState {
     pub cross_request_cache: Option<Arc<CrossRequestCache>>,
     /// Prompt 预设列表（共享引用，支持 Admin API 运行时 CRUD）
     pub presets: Arc<RwLock<Vec<Preset>>>,
+    /// 客户端 Key 管理器（鉴权 + 用量回写）
+    pub client_keys: Option<SharedClientKeyManager>,
+    /// 用量记录器（JSONL 落盘）
+    pub usage_recorder: Option<SharedRecorder>,
+    /// 用量聚合器（内存时序桶，供 Admin API 查询）
+    pub usage_aggregator: Option<SharedAggregator>,
+    /// 请求链路追踪（SQLite 落盘）
+    pub trace_store: Option<SharedTraceStore>,
 }
 
 impl AppState {
@@ -101,6 +121,10 @@ impl AppState {
             metrics: None,
             cross_request_cache: None,
             presets: Arc::new(RwLock::new(Vec::new())),
+            client_keys: None,
+            usage_recorder: None,
+            usage_aggregator: None,
+            trace_store: None,
         }
     }
 
@@ -139,28 +163,67 @@ impl AppState {
         self
     }
 
+    pub fn with_client_keys(mut self, mgr: SharedClientKeyManager) -> Self {
+        self.client_keys = Some(mgr);
+        self
+    }
+
+    pub fn with_usage_recorder(mut self, rec: SharedRecorder) -> Self {
+        self.usage_recorder = Some(rec);
+        self
+    }
+
+    pub fn with_usage_aggregator(mut self, agg: SharedAggregator) -> Self {
+        self.usage_aggregator = Some(agg);
+        self
+    }
+
+    pub fn with_trace_store(mut self, store: SharedTraceStore) -> Self {
+        self.trace_store = Some(store);
+        self
+    }
+
     pub fn prompt_cache_snapshot(&self) -> PromptCacheSnapshot {
         self.prompt_cache_runtime.read().snapshot()
     }
 }
 
-/// API Key 认证中间件
+/// API Key 认证中间件（双轨：master apiKey + 客户端 Key）
 pub async fn auth_middleware(
     State(state): State<AppState>,
-    request: Request<Body>,
+    mut request: Request<Body>,
     next: Next,
 ) -> Response {
-    match auth::extract_api_key(&request) {
-        // 纵深防御：拒绝空提取 key。即使配置层已校验非空 apiKey，
-        // 也避免空 key 在任何异常配置下绕过认证。
-        Some(key) if !key.is_empty() && auth::constant_time_eq(&key, &state.api_key) => {
-            next.run(request).await
-        }
+    let key = match auth::extract_api_key(&request) {
+        Some(k) if !k.is_empty() => k,
         _ => {
             let error = ErrorResponse::authentication_error();
-            (StatusCode::UNAUTHORIZED, Json(error)).into_response()
+            return (StatusCode::UNAUTHORIZED, Json(error)).into_response();
+        }
+    };
+
+    // 1) master apiKey
+    if auth::constant_time_eq(&key, &state.api_key) {
+        request.extensions_mut().insert(AuthIdentity {
+            key_id: 0,
+            key_source: TraceKeySource::MasterApiKey,
+        });
+        return next.run(request).await;
+    }
+
+    // 2) 客户端 Key（csk_* 前缀）
+    if let Some(ref mgr) = state.client_keys {
+        if let Some(id) = mgr.verify_and_touch(&key) {
+            request.extensions_mut().insert(AuthIdentity {
+                key_id: id,
+                key_source: TraceKeySource::ClientKey,
+            });
+            return next.run(request).await;
         }
     }
+
+    let error = ErrorResponse::authentication_error();
+    (StatusCode::UNAUTHORIZED, Json(error)).into_response()
 }
 
 /// CORS 中间件层

@@ -108,6 +108,10 @@ impl OpenAIStreamContext {
         chunks
     }
 
+    pub fn usage_values(&self) -> (i32, i32, i32) {
+        (self.input_tokens, self.output_tokens, self.cache_read_tokens)
+    }
+
     pub fn generate_final_chunk(&mut self) -> Vec<String> {
         if self.finished {
             return vec![];

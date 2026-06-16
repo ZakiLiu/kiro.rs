@@ -1037,24 +1037,12 @@ fn parse_group_filter(params: &HashMap<String, String>) -> Option<String> {
 
 /// 把 group 名转换为该分组下所有凭据 id 的白名单
 fn group_to_cred_ids(
-    state: &AdminState,
+    _state: &AdminState,
     group: Option<&str>,
 ) -> Option<std::collections::HashSet<u64>> {
-    let g = group?;
-    let snapshot = state.service.get_all_credentials();
-    Some(
-        snapshot
-            .credentials
-            .iter()
-            .filter(|c| {
-                // CURRENT project 的 CredentialStatusItem 没有 groups 字段，
-                // 使用 email 作为临时匹配占位（group 过滤需要 service 层支持）
-                // TODO: 添加 groups 字段到 CredentialStatusItem 后恢复正确逻辑
-                false && c.email.as_deref() == Some(g)
-            })
-            .map(|c| c.id)
-            .collect(),
-    )
+    let _g = group?;
+    // TODO: CredentialStatusItem 尚无 groups 字段，group 过滤暂返回空集（fail-closed）
+    Some(std::collections::HashSet::new())
 }
 
 fn parse_granularity(params: &HashMap<String, String>) -> Result<StatsGranularity, String> {
