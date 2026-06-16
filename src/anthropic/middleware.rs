@@ -202,16 +202,7 @@ pub async fn auth_middleware(
         }
     };
 
-    // 1) master apiKey
-    if auth::constant_time_eq(&key, &state.api_key) {
-        request.extensions_mut().insert(AuthIdentity {
-            key_id: 0,
-            key_source: TraceKeySource::MasterApiKey,
-        });
-        return next.run(request).await;
-    }
-
-    // 2) 客户端 Key（csk_* 前缀）
+    // 所有 Key 统一走客户端 Key 管理器校验（master apiKey 已通过 ensure_system_key 注册为系统 Key）
     if let Some(ref mgr) = state.client_keys {
         if let Some(id) = mgr.verify_and_touch(&key) {
             request.extensions_mut().insert(AuthIdentity {
@@ -220,6 +211,15 @@ pub async fn auth_middleware(
             });
             return next.run(request).await;
         }
+    }
+
+    // 兜底：ClientKeyManager 未初始化时回退 master apiKey 直接比对
+    if auth::constant_time_eq(&key, &state.api_key) {
+        request.extensions_mut().insert(AuthIdentity {
+            key_id: 0,
+            key_source: TraceKeySource::MasterApiKey,
+        });
+        return next.run(request).await;
     }
 
     let error = ErrorResponse::authentication_error();
