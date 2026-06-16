@@ -210,6 +210,15 @@ pub struct BalanceResponse {
     pub usage_percentage: f64,
     /// 下次重置时间（Unix 时间戳）
     pub next_reset_at: Option<f64>,
+    /// 用户当前是否开启了超额
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overage_enabled: Option<bool>,
+    /// 账号是否能开启超额
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overage_capable: Option<bool>,
+    /// 上游 overageCapability 原始字符串
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overage_capability_raw: Option<String>,
 }
 
 /// 缓存余额信息

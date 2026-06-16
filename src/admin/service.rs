@@ -466,6 +466,9 @@ impl AdminService {
             remaining,
             usage_percentage,
             next_reset_at: usage.next_date_reset,
+            overage_enabled: usage.overage_enabled(),
+            overage_capable: usage.overage_capable(),
+            overage_capability_raw: usage.overage_capability_raw().map(|s| s.to_string()),
         })
     }
 
