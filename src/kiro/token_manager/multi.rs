@@ -3255,6 +3255,27 @@ impl MultiTokenManager {
         has_available
     }
 
+    /// 账号级风控限流：设冷却 + 解绑 affinity，返回剩余非禁用凭据数
+    pub fn report_account_throttled(&self, id: u64, duration: StdDuration) -> usize {
+        self.set_credential_cooldown_with_duration(
+            id,
+            CooldownReason::RateLimitExceeded,
+            Some(duration),
+        );
+        self.affinity.remove_by_credential(id);
+        self.available_count()
+    }
+
+    /// 是否启用账号级风控故障转移
+    pub fn get_account_throttle_failover(&self) -> bool {
+        self.config.read().account_throttle_failover
+    }
+
+    /// 获取账号级风控冷却秒数
+    pub fn get_account_throttle_cooldown_secs(&self) -> u64 {
+        self.config.read().account_throttle_cooldown_secs
+    }
+
     /// 清除凭据冷却
     #[allow(dead_code)]
     pub fn clear_credential_cooldown(&self, id: u64) -> bool {

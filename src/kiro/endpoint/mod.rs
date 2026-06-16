@@ -45,6 +45,18 @@ pub trait KiroEndpoint: Send + Sync {
     fn is_bearer_token_invalid(&self, body: &str) -> bool {
         default_is_bearer_token_invalid(body)
     }
+
+    fn is_account_throttled(&self, body: &str) -> bool {
+        default_is_account_throttled(body)
+    }
+
+    fn is_client_validation_error(&self, body: &str) -> bool {
+        default_is_client_validation_error(body)
+    }
+
+    fn is_gateway_timeout(&self, body: &str) -> bool {
+        default_is_gateway_timeout(body)
+    }
 }
 
 pub struct RequestContext<'a> {
@@ -79,4 +91,44 @@ pub fn default_is_monthly_request_limit(body: &str) -> bool {
 
 pub fn default_is_bearer_token_invalid(body: &str) -> bool {
     body.contains("The bearer token included in the request is invalid")
+}
+
+pub fn default_is_account_throttled(body: &str) -> bool {
+    body.contains("suspicious activity") && body.contains("temporary limits")
+}
+
+pub fn default_is_gateway_timeout(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    body.contains("524")
+        && (lower.contains("status code")
+            || lower.contains("gateway timeout")
+            || lower.contains("server-side issue"))
+}
+
+const CLIENT_VALIDATION_REASONS: &[&str] = &[
+    "INVALID_TOOL_CALL_ID",
+    "MISSING_TOOL_RESULT",
+    "DUPLICATE_TOOL_RESULT",
+    "ORPHANED_TOOL_RESULT",
+    "INVALID_MESSAGE_ORDERING",
+];
+
+pub fn default_is_client_validation_error(body: &str) -> bool {
+    let reason_hit = CLIENT_VALIDATION_REASONS.iter().any(|r| body.contains(r));
+    if reason_hit {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+            let top = value.get("reason").and_then(|v| v.as_str());
+            let nested = value.pointer("/error/reason").and_then(|v| v.as_str());
+            if [top, nested]
+                .into_iter()
+                .flatten()
+                .any(|r| CLIENT_VALIDATION_REASONS.contains(&r))
+            {
+                return true;
+            }
+        } else {
+            return true;
+        }
+    }
+    false
 }

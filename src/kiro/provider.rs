@@ -1021,7 +1021,17 @@ impl KiroProvider {
                         );
                     }
                 }
-                // 其他 402（如 OVERAGE）→ 仅跳过此凭据，不禁用
+                // 其他 402（如 OVERAGE）→ 设冷却跳过，不禁用
+                tracing::warn!(
+                    credential_id = %ctx.id,
+                    "{} API 请求遇到 402 OVERAGE，设 300s 冷却跳过（不禁用）",
+                    api_type
+                );
+                self.token_manager.set_credential_cooldown_with_duration(
+                    ctx.id,
+                    CooldownReason::QuotaExhausted,
+                    Some(Duration::from_secs(300)),
+                );
                 last_error = Some(anyhow::anyhow!(
                     "{} API 请求失败: {} {}",
                     api_type,
@@ -1190,9 +1200,57 @@ impl KiroProvider {
                 continue;
             }
 
+            // 429 + suspicious activity = 账号级临时风控
+            if status.as_u16() == 429
+                && self.token_manager.get_account_throttle_failover()
+                && endpoint.is_account_throttled(&body)
+            {
+                let cooldown_secs = self
+                    .token_manager
+                    .get_account_throttle_cooldown_secs()
+                    .max(1);
+                let cooldown = Duration::from_secs(cooldown_secs);
+                tracing::warn!(
+                    credential_id = %ctx.id,
+                    cooldown_secs = cooldown_secs,
+                    "{} API 请求失败（账号级风控，凭据 #{} 冷却 {}s 并切换）",
+                    api_type, ctx.id, cooldown_secs
+                );
+                let remaining = self.token_manager.report_account_throttled(ctx.id, cooldown);
+                last_error = Some(anyhow::anyhow!(
+                    "{} API 请求失败（账号级风控，凭据 #{} 已冷却 {}s）: {} {}",
+                    api_type, ctx.id, cooldown_secs, status, body
+                ));
+                if remaining == 0 {
+                    anyhow::bail!(
+                        "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：account_throttle，来自凭据 #{}）",
+                        cooldown_secs, ctx.id
+                    );
+                }
+                failed_ids.push(ctx.id);
+                continue;
+            }
+
+            // 客户端请求格式错误：不重试、不切换凭据、立即终止（避免 503 风暴）
+            if endpoint.is_client_validation_error(&body) {
+                tracing::warn!(
+                    "{} API 请求失败（客户端请求格式错误，不重试）: {} {}",
+                    api_type, status, body
+                );
+                anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+            }
+
+            // 524 / 网关超时：快速返回，让客户端下次重连
+            if status.as_u16() == 524 || endpoint.is_gateway_timeout(&body) {
+                tracing::warn!(
+                    "{} API 请求失败（上游网关超时，不重试）: {} {}",
+                    api_type, status, body
+                );
+                anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+            }
+
             if status.as_u16() == 429 {
                 // MODEL_TEMPORARILY_UNAVAILABLE 不再触发全局熔断，改为普通 429 冷却。
-                // 上游过载是平台级问题，不应该禁用所有凭据。
                 if Self::is_model_temporarily_unavailable(&body) {
                     tracing::warn!(
                         credential_id = %ctx.id,
@@ -1261,10 +1319,9 @@ impl KiroProvider {
                     status,
                     body
                 ));
-                failed_ids.push(ctx.id);
-                // 429 也需要 backoff，避免毫秒级疯狂轮转造成 thundering herd
+                // 429 不 push failed_ids（cooldown 自然排除），用慢退避给配额恢复时间
                 if attempt + 1 < max_retries {
-                    sleep(Self::retry_delay(attempt)).await;
+                    sleep(Self::retry_delay_throttle(attempt)).await;
                 }
                 continue;
             }
@@ -1340,9 +1397,18 @@ impl KiroProvider {
     }
 
     fn retry_delay(attempt: usize) -> Duration {
-        // 指数退避 + 少量抖动，避免上游抖动时放大故障
         const BASE_MS: u64 = 200;
         const MAX_MS: u64 = 2_000;
+        let exp = BASE_MS.saturating_mul(2u64.saturating_pow(attempt.min(6) as u32));
+        let backoff = exp.min(MAX_MS);
+        let jitter_max = (backoff / 4).max(1);
+        let jitter = fastrand::u64(0..=jitter_max);
+        Duration::from_millis(backoff.saturating_add(jitter))
+    }
+
+    fn retry_delay_throttle(attempt: usize) -> Duration {
+        const BASE_MS: u64 = 1_000;
+        const MAX_MS: u64 = 8_000;
         let exp = BASE_MS.saturating_mul(2u64.saturating_pow(attempt.min(6) as u32));
         let backoff = exp.min(MAX_MS);
         let jitter_max = (backoff / 4).max(1);
