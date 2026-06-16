@@ -952,6 +952,42 @@ fn default_oauth_path() -> String {
     "/oauth/callback".to_string()
 }
 
+// ============ Auth Flow 响应 ============
+
+/// Social 登录发起响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartSocialLoginResponse {
+    pub session_id: String,
+    pub portal_url: String,
+    pub expires_at: String,
+}
+
+/// IdC 登录发起响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartIdcLoginResponse {
+    pub session_id: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_uri_complete: Option<String>,
+    pub expires_at: String,
+    pub poll_interval: i64,
+}
+
+/// 轮询登录状态响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase", tag = "status")]
+pub enum PollIdcLoginResponse {
+    #[serde(rename = "pending")]
+    Pending,
+    #[serde(rename = "expired")]
+    Expired,
+    #[serde(rename = "success")]
+    Success { credential_id: u64 },
+}
+
 // ============ 账号分组（独立实体）============
 
 /// 单条分组（列表项）

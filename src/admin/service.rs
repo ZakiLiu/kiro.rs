@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -18,8 +18,13 @@ use crate::metrics::{MetricEventType, MetricsCollector};
 use crate::model::config::{CompressionConfig, Config};
 use parking_lot::RwLock;
 
+use crate::kiro::auth::idc::{self, BUILDER_ID_START_URL};
+use crate::kiro::auth::social;
 use super::error::AdminServiceError;
 use super::proxy_pool::ProxyPoolManager;
+use super::types::{
+    PollIdcLoginResponse, StartIdcLoginResponse, StartSocialLoginResponse,
+};
 use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, CachedBalanceItem,
     CachedBalancesResponse, CredentialMetrics, CredentialStatusItem, CredentialsStatusResponse,
@@ -40,6 +45,33 @@ struct CachedBalance {
     data: BalanceResponse,
 }
 
+/// Social 登录会话
+struct SocialAuthSession {
+    auth_endpoint: String,
+    state: String,
+    code_verifier: String,
+    redirect_uri: String,
+    expires_at: chrono::DateTime<Utc>,
+    callback_rx: tokio::sync::Mutex<tokio::sync::oneshot::Receiver<social::OAuthCallbackData>>,
+    cred_template: KiroCredentials,
+    proxy: Option<crate::http_client::ProxyConfig>,
+    _server_handle: social::ServerHandle,
+    relogin_target_id: Option<u64>,
+}
+
+/// IdC 设备授权登录会话
+struct IdcAuthSession {
+    region: String,
+    client_id: String,
+    client_secret: String,
+    device_code: String,
+    expires_at: chrono::DateTime<Utc>,
+    poll_interval: i64,
+    cred_template: KiroCredentials,
+    proxy: Option<crate::http_client::ProxyConfig>,
+    relogin_target_id: Option<u64>,
+}
+
 /// Admin 服务
 ///
 /// 封装所有 Admin API 的业务逻辑
@@ -54,6 +86,8 @@ pub struct AdminService {
     cache_path: Option<PathBuf>,
     known_endpoints: HashSet<String>,
     proxy_pool: ProxyPoolManager,
+    social_sessions: Arc<Mutex<HashMap<String, SocialAuthSession>>>,
+    idc_sessions: Arc<Mutex<HashMap<String, IdcAuthSession>>>,
 }
 
 impl AdminService {
@@ -93,6 +127,8 @@ impl AdminService {
             cache_path,
             known_endpoints: known_endpoints.into_iter().collect(),
             proxy_pool,
+            social_sessions: Arc::new(Mutex::new(HashMap::new())),
+            idc_sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1619,84 +1655,361 @@ impl AdminService {
         }
     }
 
-    // ============ Auth Flow STUBS ============
-    // 以下方法依赖 auth/social.rs 和 auth/idc.rs，尚未移植到 CURRENT 项目。
-    // 返回 501 Not Implemented 占位。
+    // ============ Social 登录（Portal PKCE OAuth）============
 
-    /// 发起 IdC 设备授权登录
-    pub async fn start_idc_login(
-        &self,
-        _payload: super::types::StartIdcLoginRequest,
-    ) -> Result<serde_json::Value, AdminServiceError> {
-        Err(AdminServiceError::InternalError(
-            "IdC 登录模块尚未实现".to_string(),
-        ))
-    }
-
-    /// 轮询 IdC 登录状态
-    pub async fn poll_idc_login(
-        &self,
-        _session_id: &str,
-    ) -> Result<serde_json::Value, AdminServiceError> {
-        Err(AdminServiceError::InternalError(
-            "IdC 登录模块尚未实现".to_string(),
-        ))
-    }
-
-    /// 发起 Social 登录
     pub async fn start_social_login(
         &self,
-        _payload: super::types::StartSocialLoginRequest,
+        req: super::types::StartSocialLoginRequest,
     ) -> Result<serde_json::Value, AdminServiceError> {
-        Err(AdminServiceError::InternalError(
-            "Social 登录模块尚未实现".to_string(),
-        ))
+        let global_proxy = self.token_manager.proxy();
+        let proxy = req.proxy_url.as_deref().map(ProxyConfig::new).or(global_proxy);
+        let auth_endpoint = req.auth_endpoint.unwrap_or_else(|| social::KIRO_AUTH_ENDPOINT.to_string());
+
+        let (code_verifier, code_challenge) = social::generate_pkce();
+        let state = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = tokio::sync::oneshot::channel::<social::OAuthCallbackData>();
+
+        let (port, server_handle) = social::start_callback_server(tx)
+            .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+
+        let redirect_uri = format!("http://127.0.0.1:{}", port);
+        let portal_url = social::build_portal_url(&state, &code_challenge, &redirect_uri);
+        let expires_at = Utc::now() + Duration::minutes(10);
+        let session_id = uuid::Uuid::new_v4().to_string();
+
+        let cred_template = KiroCredentials {
+            auth_method: Some("social".to_string()),
+            priority: req.priority,
+            email: req.email,
+            proxy_url: req.proxy_url,
+            ..Default::default()
+        };
+
+        let session = SocialAuthSession {
+            auth_endpoint, state, code_verifier, redirect_uri, expires_at,
+            callback_rx: tokio::sync::Mutex::new(rx),
+            cred_template, proxy, _server_handle: server_handle,
+            relogin_target_id: None,
+        };
+        self.social_sessions.lock().insert(session_id.clone(), session);
+
+        let resp = StartSocialLoginResponse { session_id, portal_url, expires_at: expires_at.to_rfc3339() };
+        serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
     }
 
-    /// 轮询 Social 登录状态
     pub async fn poll_social_login(
         &self,
-        _session_id: &str,
+        session_id: &str,
     ) -> Result<serde_json::Value, AdminServiceError> {
-        Err(AdminServiceError::InternalError(
-            "Social 登录模块尚未实现".to_string(),
-        ))
+        use tokio::sync::oneshot::error::TryRecvError;
+
+        enum PollOutcome { Expired, Closed, Pending, Received(social::OAuthCallbackData) }
+
+        let outcome = {
+            let sessions = self.social_sessions.lock();
+            let Some(session) = sessions.get(session_id) else {
+                return Err(AdminServiceError::NotFound { id: 0 });
+            };
+            if Utc::now() >= session.expires_at {
+                PollOutcome::Expired
+            } else {
+                match session.callback_rx.try_lock() {
+                    Ok(mut rx) => match rx.try_recv() {
+                        Ok(data) => PollOutcome::Received(data),
+                        Err(TryRecvError::Empty) => PollOutcome::Pending,
+                        Err(TryRecvError::Closed) => PollOutcome::Closed,
+                    },
+                    Err(_) => PollOutcome::Pending,
+                }
+            }
+        };
+
+        match outcome {
+            PollOutcome::Pending => {
+                let resp = PollIdcLoginResponse::Pending;
+                serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
+            }
+            PollOutcome::Expired => {
+                self.social_sessions.lock().remove(session_id);
+                let resp = PollIdcLoginResponse::Expired;
+                serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
+            }
+            PollOutcome::Closed => {
+                self.social_sessions.lock().remove(session_id);
+                Err(AdminServiceError::InternalError("Social 登录回调服务器已关闭，请重新发起登录".to_string()))
+            }
+            PollOutcome::Received(callback) => {
+                self.do_complete_social_login(session_id, callback).await
+            }
+        }
     }
 
-    /// 完成 Social 登录
+    async fn do_complete_social_login(
+        &self,
+        session_id: &str,
+        callback: social::OAuthCallbackData,
+    ) -> Result<serde_json::Value, AdminServiceError> {
+        {
+            let sessions = self.social_sessions.lock();
+            let s = sessions.get(session_id).ok_or(AdminServiceError::NotFound { id: 0 })?;
+            if callback.state != s.state {
+                return Err(AdminServiceError::InternalError("OAuth state 不匹配，请重新发起登录".to_string()));
+            }
+        }
+
+        let session = self.social_sessions.lock().remove(session_id)
+            .ok_or(AdminServiceError::NotFound { id: 0 })?;
+
+        let config = self.token_manager.config();
+        let full_redirect_uri = if callback.login_option.is_empty() {
+            format!("{}{}", session.redirect_uri, callback.path)
+        } else {
+            format!("{}{}?login_option={}", session.redirect_uri, callback.path, urlencoding::encode(&callback.login_option))
+        };
+
+        let token = social::exchange_code_for_token(
+            &session.auth_endpoint, &callback.code, &session.code_verifier,
+            &full_redirect_uri, &config, session.proxy.as_ref(),
+        ).await.map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+
+        if let Some(target_id) = session.relogin_target_id {
+            let refresh_token = token.refresh_token.ok_or_else(|| {
+                AdminServiceError::InternalError("Social 登录未返回 refreshToken".to_string())
+            })?;
+            self.do_relogin_update(target_id, refresh_token)
+                .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+            tracing::info!("Social 重新登录成功，凭据 #{} Token 已更新", target_id);
+            let resp = PollIdcLoginResponse::Success { credential_id: target_id };
+            return serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()));
+        }
+
+        let mut new_cred = session.cred_template;
+        new_cred.access_token = Some(token.access_token);
+        new_cred.refresh_token = token.refresh_token;
+        new_cred.expires_at = token.expires_at.or_else(|| {
+            token.expires_in.map(|secs| (Utc::now() + Duration::seconds(secs)).to_rfc3339())
+        });
+        if let Some(arn) = token.profile_arn {
+            new_cred.profile_arn = Some(arn);
+        }
+
+        let credential_id = self.token_manager.add_credential(new_cred).await
+            .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+
+        if let Err(e) = self.get_balance(credential_id).await {
+            tracing::warn!("Social 登录后刷新余额失败: {}", e);
+        }
+
+        tracing::info!("Social 登录成功，已添加凭据 #{}", credential_id);
+        let resp = PollIdcLoginResponse::Success { credential_id };
+        serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
+    }
+
     pub async fn complete_social_login(
         &self,
-        _session_id: &str,
-        _code: String,
-        _state: String,
-        _login_option: String,
-        _path: String,
+        session_id: &str,
+        code: String,
+        state: String,
+        login_option: String,
+        path: String,
     ) -> Result<serde_json::Value, AdminServiceError> {
-        Err(AdminServiceError::InternalError(
-            "Social 登录模块尚未实现".to_string(),
-        ))
+        {
+            let sessions = self.social_sessions.lock();
+            let s = sessions.get(session_id).ok_or(AdminServiceError::NotFound { id: 0 })?;
+            if Utc::now() >= s.expires_at {
+                let resp = PollIdcLoginResponse::Expired;
+                return serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()));
+            }
+        }
+        let callback = social::OAuthCallbackData { code, login_option, path, state };
+        self.do_complete_social_login(session_id, callback).await
     }
 
-    /// 发起 Social 重新登录
     pub async fn start_social_relogin(
         &self,
-        _id: u64,
-        _payload: super::types::StartSocialLoginRequest,
+        target_id: u64,
+        req: super::types::StartSocialLoginRequest,
     ) -> Result<serde_json::Value, AdminServiceError> {
-        Err(AdminServiceError::InternalError(
-            "Social 登录模块尚未实现".to_string(),
-        ))
+        {
+            let snapshot = self.token_manager.snapshot();
+            if !snapshot.entries.iter().any(|e| e.id == target_id) {
+                return Err(AdminServiceError::NotFound { id: target_id });
+            }
+        }
+
+        let global_proxy = self.token_manager.proxy();
+        let proxy = req.proxy_url.as_deref().map(ProxyConfig::new).or(global_proxy);
+        let auth_endpoint = req.auth_endpoint.unwrap_or_else(|| social::KIRO_AUTH_ENDPOINT.to_string());
+        let (code_verifier, code_challenge) = social::generate_pkce();
+        let state = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = tokio::sync::oneshot::channel::<social::OAuthCallbackData>();
+        let (port, server_handle) = social::start_callback_server(tx)
+            .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+        let redirect_uri = format!("http://127.0.0.1:{}", port);
+        let portal_url = social::build_portal_url(&state, &code_challenge, &redirect_uri);
+        let expires_at = Utc::now() + Duration::minutes(10);
+        let session_id = uuid::Uuid::new_v4().to_string();
+
+        let session = SocialAuthSession {
+            auth_endpoint, state, code_verifier, redirect_uri, expires_at,
+            callback_rx: tokio::sync::Mutex::new(rx),
+            cred_template: KiroCredentials::default(),
+            proxy, _server_handle: server_handle,
+            relogin_target_id: Some(target_id),
+        };
+        self.social_sessions.lock().insert(session_id.clone(), session);
+
+        let resp = StartSocialLoginResponse { session_id, portal_url, expires_at: expires_at.to_rfc3339() };
+        serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
     }
 
-    /// 发起 IdC 重新登录
+    // ============ IdC 设备授权登录 ============
+
+    pub async fn start_idc_login(
+        &self,
+        req: super::types::StartIdcLoginRequest,
+    ) -> Result<serde_json::Value, AdminServiceError> {
+        let config = self.token_manager.config();
+        let global_proxy = self.token_manager.proxy();
+        let proxy = req.proxy_url.as_deref().map(ProxyConfig::new).or(global_proxy);
+        let start_url = req.start_url.as_deref().unwrap_or(BUILDER_ID_START_URL);
+
+        let reg = idc::register_client(&req.region, start_url, &config, proxy.as_ref())
+            .await.map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+        let device = idc::start_device_authorization(
+            &req.region, start_url, &reg.client_id, &reg.client_secret, &config, proxy.as_ref(),
+        ).await.map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+
+        let expires_at = Utc::now() + Duration::seconds(device.expires_in);
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let cred_template = KiroCredentials {
+            auth_method: Some("idc".to_string()),
+            client_id: Some(reg.client_id.clone()),
+            client_secret: Some(reg.client_secret.clone()),
+            region: Some(req.region.clone()),
+            priority: req.priority,
+            email: req.email,
+            proxy_url: req.proxy_url,
+            ..Default::default()
+        };
+        let poll_interval = device.interval.max(5);
+        let session = IdcAuthSession {
+            region: req.region, client_id: reg.client_id, client_secret: reg.client_secret,
+            device_code: device.device_code, expires_at, poll_interval,
+            cred_template, proxy, relogin_target_id: None,
+        };
+        self.idc_sessions.lock().insert(session_id.clone(), session);
+
+        let resp = StartIdcLoginResponse {
+            session_id, user_code: device.user_code, verification_uri: device.verification_uri,
+            verification_uri_complete: device.verification_uri_complete,
+            expires_at: expires_at.to_rfc3339(), poll_interval,
+        };
+        serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
+    }
+
+    pub async fn poll_idc_login(
+        &self,
+        session_id: &str,
+    ) -> Result<serde_json::Value, AdminServiceError> {
+        let (region, client_id, client_secret, device_code, _expires_at, proxy, cred_template, relogin_target_id) = {
+            let sessions = self.idc_sessions.lock();
+            let s = sessions.get(session_id).ok_or_else(|| AdminServiceError::NotFound { id: 0 })?;
+            if Utc::now() >= s.expires_at {
+                let resp = PollIdcLoginResponse::Expired;
+                return serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()));
+            }
+            (s.region.clone(), s.client_id.clone(), s.client_secret.clone(),
+             s.device_code.clone(), s.expires_at, s.proxy.clone(), s.cred_template.clone(), s.relogin_target_id)
+        };
+
+        let config = self.token_manager.config();
+        match idc::poll_token(&region, &client_id, &client_secret, &device_code, &config, proxy.as_ref()).await {
+            idc::PollResult::Pending => {
+                let resp = PollIdcLoginResponse::Pending;
+                serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
+            }
+            idc::PollResult::Expired => {
+                self.idc_sessions.lock().remove(session_id);
+                let resp = PollIdcLoginResponse::Expired;
+                serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
+            }
+            idc::PollResult::Error(e) => Err(AdminServiceError::InternalError(e.to_string())),
+            idc::PollResult::Success(token) => {
+                self.idc_sessions.lock().remove(session_id);
+                if let Some(target_id) = relogin_target_id {
+                    if let Some(refresh_token) = token.refresh_token {
+                        self.do_relogin_update(target_id, refresh_token)
+                            .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+                    }
+                    tracing::info!("IdC 重新登录成功，凭据 #{} Token 已更新", target_id);
+                    let resp = PollIdcLoginResponse::Success { credential_id: target_id };
+                    return serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()));
+                }
+                let mut new_cred = cred_template;
+                new_cred.access_token = Some(token.access_token);
+                new_cred.refresh_token = token.refresh_token;
+                if let Some(secs) = token.expires_in {
+                    new_cred.expires_at = Some((Utc::now() + Duration::seconds(secs)).to_rfc3339());
+                }
+                let credential_id = self.token_manager.add_credential(new_cred).await
+                    .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+                if let Err(e) = self.get_balance(credential_id).await {
+                    tracing::warn!("IdC 登录后刷新余额失败: {}", e);
+                }
+                tracing::info!("IdC 设备授权登录成功，已添加凭据 #{}", credential_id);
+                let resp = PollIdcLoginResponse::Success { credential_id };
+                serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
+            }
+        }
+    }
+
     pub async fn start_idc_relogin(
         &self,
-        _id: u64,
-        _payload: super::types::StartIdcLoginRequest,
+        target_id: u64,
+        req: super::types::StartIdcLoginRequest,
     ) -> Result<serde_json::Value, AdminServiceError> {
-        Err(AdminServiceError::InternalError(
-            "IdC 登录模块尚未实现".to_string(),
-        ))
+        {
+            let snapshot = self.token_manager.snapshot();
+            if !snapshot.entries.iter().any(|e| e.id == target_id) {
+                return Err(AdminServiceError::NotFound { id: target_id });
+            }
+        }
+        let config = self.token_manager.config();
+        let global_proxy = self.token_manager.proxy();
+        let proxy = req.proxy_url.as_deref().map(ProxyConfig::new).or(global_proxy);
+        let start_url = req.start_url.as_deref().unwrap_or(BUILDER_ID_START_URL);
+
+        let reg = idc::register_client(&req.region, start_url, &config, proxy.as_ref())
+            .await.map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+        let device = idc::start_device_authorization(
+            &req.region, start_url, &reg.client_id, &reg.client_secret, &config, proxy.as_ref(),
+        ).await.map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+
+        let expires_at = Utc::now() + Duration::seconds(device.expires_in);
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let poll_interval = device.interval.max(5);
+        let session = IdcAuthSession {
+            region: req.region, client_id: reg.client_id, client_secret: reg.client_secret,
+            device_code: device.device_code, expires_at, poll_interval,
+            cred_template: KiroCredentials::default(), proxy,
+            relogin_target_id: Some(target_id),
+        };
+        self.idc_sessions.lock().insert(session_id.clone(), session);
+
+        let resp = StartIdcLoginResponse {
+            session_id, user_code: device.user_code, verification_uri: device.verification_uri,
+            verification_uri_complete: device.verification_uri_complete,
+            expires_at: expires_at.to_rfc3339(), poll_interval,
+        };
+        serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
+    }
+
+    fn do_relogin_update(&self, target_id: u64, refresh_token: String) -> anyhow::Result<()> {
+        self.token_manager.set_disabled(target_id, true)?;
+        self.token_manager.update_refresh_token(target_id, refresh_token, None, None)?;
+        self.token_manager.reset_and_enable(target_id)?;
+        Ok(())
     }
 
     /// 获取 token_manager 引用（供 handler 层直接操作）

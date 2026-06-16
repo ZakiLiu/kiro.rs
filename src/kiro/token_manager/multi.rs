@@ -498,6 +498,10 @@ impl MultiTokenManager {
     }
 
     /// 获取配置的克隆
+    pub fn proxy(&self) -> Option<ProxyConfig> {
+        self.proxy.read().clone()
+    }
+
     pub fn config(&self) -> Config {
         self.config.read().clone()
     }
