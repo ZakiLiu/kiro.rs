@@ -2143,6 +2143,53 @@ impl MultiTokenManager {
     /// - 立即禁用该凭据（不等待连续失败阈值）
     /// - 切换到下一个可用凭据继续重试
     /// - 返回是否还有可用凭据
+    /// KIRO PRO 超额检查：订阅等级为 KIRO PRO 且已使用额度超过阈值时永久禁用
+    const PRO_USAGE_DISABLE_THRESHOLD: f64 = 11005.0;
+
+    pub fn check_pro_overuse_disable(
+        &self,
+        id: u64,
+        subscription_title: Option<&str>,
+        current_usage: f64,
+    ) {
+        let is_kiro_pro = subscription_title
+            .map(|t| {
+                let upper = t.to_uppercase();
+                upper.contains("PRO") && !upper.contains("PRO+") && !upper.contains("PRO_PLUS")
+            })
+            .unwrap_or(false);
+
+        if !is_kiro_pro || current_usage <= Self::PRO_USAGE_DISABLE_THRESHOLD {
+            return;
+        }
+
+        let already_disabled = {
+            let entries = self.entries.lock();
+            entries.iter().find(|e| e.id == id).map(|e| e.disabled).unwrap_or(true)
+        };
+        if already_disabled {
+            return;
+        }
+
+        tracing::warn!(
+            "凭据 #{} 订阅等级 KIRO PRO，已使用额度 {:.0} 超过阈值 {:.0}，永久禁用",
+            id, current_usage, Self::PRO_USAGE_DISABLE_THRESHOLD
+        );
+        {
+            let mut entries = self.entries.lock();
+            if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                entry.disabled = true;
+                entry.disabled_at = Some(Utc::now());
+                entry.disable_reason = Some(DisableReason::QuotaExceeded);
+                entry.failure_count = MAX_FAILURES_PER_CREDENTIAL;
+            }
+        }
+        self.affinity.remove_by_credential(id);
+        if let Err(e) = self.persist_credentials() {
+            tracing::warn!("KIRO PRO 超额禁用持久化失败: {}", e);
+        }
+    }
+
     pub fn report_quota_exhausted(&self, id: u64) -> bool {
         let result = {
             let mut entries = self.entries.lock();
@@ -2518,7 +2565,13 @@ impl MultiTokenManager {
 
                     self.update_balance_cache(id, remaining);
 
-                    // 上游允许超额使用，余额不足不禁用——等上游 402 再由 report_quota_exhausted 处理
+                    // KIRO PRO 超额检查
+                    self.check_pro_overuse_disable(
+                        id,
+                        limits.subscription_title(),
+                        used,
+                    );
+
                     if remaining < 1.0 {
                         tracing::info!(
                             "凭据 #{} 余额偏低 ({:.2})，保持可用（等待上游 402 判定）",

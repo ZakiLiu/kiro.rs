@@ -279,10 +279,17 @@ impl KiroProvider {
                     tm.mark_keepalive_probed(id);
                     match tm.get_usage_limits_for(id).await {
                         Ok(resp) => {
-                            let remaining = resp.usage_limit() - resp.current_usage();
+                            let used = resp.current_usage();
+                            let remaining = resp.usage_limit() - used;
                             tm.update_balance_cache(id, remaining);
-                            // 余额信息仅用于缓存和动态 TTL，不主动禁用
-                            // 上游允许超额使用，只有返回 402 时才由 report_quota_exhausted 禁用
+
+                            // KIRO PRO 超额检查
+                            tm.check_pro_overuse_disable(
+                                id,
+                                resp.subscription_title(),
+                                used,
+                            );
+
                             if remaining < 1.0 {
                                 tracing::info!(
                                     "凭据 #{} 余额偏低 ({:.2})，保持可用（等待上游 402 判定）",
