@@ -132,6 +132,131 @@ impl AdminService {
         }
     }
 
+    /// 导出凭据为 JSON 格式
+    pub fn export_credentials(
+        &self,
+        id_filter: Option<&HashSet<u64>>,
+    ) -> super::types::CredentialsExportResponse {
+        let mut credentials = self.token_manager.clone_all_credentials();
+        if let Some(filter) = id_filter {
+            credentials.retain(|c| c.id.map(|id| filter.contains(&id)).unwrap_or(false));
+        }
+        credentials.sort_by_key(|c| c.priority);
+
+        let accounts = credentials
+            .into_iter()
+            .filter_map(credential_to_export_account)
+            .collect();
+
+        super::types::CredentialsExportResponse {
+            version: "1.8.3".to_string(),
+            exported_at: Utc::now().timestamp_millis(),
+            accounts,
+            groups: Vec::new(),
+            tags: Vec::new(),
+        }
+    }
+
+    /// 一键禁用所有超额凭据
+    pub fn disable_quota_exceeded(&self) -> super::types::QuotaExceededResult {
+        let snapshot = self.token_manager.snapshot();
+        let cache_snapshot: HashMap<u64, CachedBalance> = {
+            let cache = self.balance_cache.lock();
+            cache.clone()
+        };
+        let now_ts = Utc::now().timestamp() as f64;
+
+        let mut disabled_ids: Vec<u64> = Vec::new();
+        let mut skipped_ids: Vec<u64> = Vec::new();
+
+        for entry in snapshot.entries.iter() {
+            if entry.disabled {
+                continue;
+            }
+            let cached = match cache_snapshot.get(&entry.id) {
+                Some(c) if (now_ts - c.cached_at) < BALANCE_CACHE_TTL_SECS as f64 => c,
+                _ => continue,
+            };
+            if cached.data.remaining > 0.0 {
+                continue;
+            }
+            match self.token_manager.disable_quota_exceeded(entry.id) {
+                Ok(()) => disabled_ids.push(entry.id),
+                Err(e) => {
+                    tracing::warn!("一键超额：禁用凭据 #{} 失败: {}", entry.id, e);
+                    skipped_ids.push(entry.id);
+                }
+            }
+        }
+
+        super::types::QuotaExceededResult {
+            disabled_ids,
+            skipped_ids,
+        }
+    }
+
+    /// 设置凭据超额开关
+    pub async fn set_overage(&self, id: u64, enabled: bool) -> Result<(), AdminServiceError> {
+        let status = if enabled { "ENABLED" } else { "DISABLED" };
+        self.token_manager
+            .set_user_preference_for(id, status)
+            .await
+            .map_err(|e| self.classify_balance_error(e, id))?;
+
+        {
+            let mut cache = self.balance_cache.lock();
+            cache.remove(&id);
+        }
+        self.save_balance_cache();
+        Ok(())
+    }
+
+    /// 一键开启所有凭据超额
+    pub async fn enable_overage_for_all_capable(&self) -> super::types::EnableOverageAllResult {
+        let snapshot = self.token_manager.snapshot();
+        let mut targets: Vec<u64> = Vec::new();
+        let mut skipped: Vec<u64> = Vec::new();
+
+        for entry in snapshot.entries.iter() {
+            if entry.disabled {
+                skipped.push(entry.id);
+            } else {
+                targets.push(entry.id);
+            }
+        }
+
+        let mut enabled_ids: Vec<u64> = Vec::new();
+        let mut failed_ids: Vec<u64> = Vec::new();
+        let mut failure_messages: Vec<String> = Vec::new();
+
+        for id in targets {
+            match self.token_manager.set_user_preference_for(id, "ENABLED").await {
+                Ok(()) => {
+                    enabled_ids.push(id);
+                    let mut cache = self.balance_cache.lock();
+                    cache.remove(&id);
+                }
+                Err(e) => {
+                    tracing::warn!("一键开启超额：凭据 #{} 失败: {}", id, e);
+                    failed_ids.push(id);
+                    failure_messages.push(e.to_string());
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+
+        if !enabled_ids.is_empty() {
+            self.save_balance_cache();
+        }
+
+        super::types::EnableOverageAllResult {
+            enabled_ids,
+            skipped_ids: skipped,
+            failed_ids,
+            failure_messages,
+        }
+    }
+
     /// 获取所有凭据状态
     pub fn get_all_credentials(&self) -> CredentialsStatusResponse {
         let snapshot = self.token_manager.snapshot();
@@ -1254,12 +1379,13 @@ impl AdminService {
 
     // ============ 风控冷却 ============
 
-    /// 手动解除凭据的账号级风控冷却
-    pub fn clear_throttle(&self, _id: u64) -> Result<(), AdminServiceError> {
-        // TODO: MultiTokenManager.clear_cooldown() 尚未在 CURRENT 项目实现
-        Err(AdminServiceError::InternalError(
-            "clear_throttle 尚未实现".to_string(),
-        ))
+    /// 手动解除凭据的冷却状态
+    pub fn clear_throttle(&self, id: u64) -> Result<(), AdminServiceError> {
+        if self.token_manager.clear_credential_cooldown(id) {
+            Ok(())
+        } else {
+            Err(AdminServiceError::NotFound { id })
+        }
     }
 
     // ============ 凭据更新 ============
@@ -1316,14 +1442,8 @@ impl AdminService {
     }
 
     /// 重置凭据的 success_count
-    pub fn reset_success_count(
-        &self,
-        _id: Option<u64>,
-    ) -> Result<usize, AdminServiceError> {
-        // TODO: MultiTokenManager.reset_success_count() 尚未在 CURRENT 项目实现
-        Err(AdminServiceError::InternalError(
-            "reset_success_count 尚未实现".to_string(),
-        ))
+    pub fn reset_success_count(&self, id: Option<u64>) -> Result<usize, AdminServiceError> {
+        Ok(self.token_manager.reset_success_count(id))
     }
 
     // ============ 代理池 ============
@@ -2041,6 +2161,92 @@ impl AdminService {
     pub fn token_manager(&self) -> &MultiTokenManager {
         &self.token_manager
     }
+}
+
+fn credential_to_export_account(
+    cred: KiroCredentials,
+) -> Option<super::types::ExportedAccount> {
+    let refresh_token = cred
+        .refresh_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)?;
+
+    fn non_empty(value: Option<String>) -> Option<String> {
+        value
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    let auth_method = non_empty(cred.auth_method.clone()).map(|m| {
+        if m.eq_ignore_ascii_case("idc")
+            || m.eq_ignore_ascii_case("builder-id")
+            || m.eq_ignore_ascii_case("iam")
+        {
+            "IdC".to_string()
+        } else {
+            "social".to_string()
+        }
+    });
+    let is_idc = auth_method.as_deref() == Some("IdC");
+    let idp = if is_idc { "BuilderId" } else { "Google" }.to_string();
+
+    let status = if cred.disabled { "unknown" } else { "active" }.to_string();
+
+    let expires_at_ms = cred
+        .expires_at
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(0);
+
+    let subscription_type = match cred.subscription_title.as_deref() {
+        Some(t) if t.to_uppercase().contains("FREE") => "Free",
+        Some(t) if t.to_uppercase().contains("PRO+") => "Pro_Plus",
+        Some(t) if t.to_uppercase().contains("PRO") => "Pro",
+        _ => "Free",
+    };
+    let subscription = serde_json::json!({
+        "type": subscription_type,
+        "title": cred.subscription_title,
+    });
+    let now_ms = Utc::now().timestamp_millis();
+    let usage = serde_json::json!({
+        "current": 0, "limit": 0, "percentUsed": 0, "lastUpdated": now_ms,
+    });
+
+    let profile_arn = cred
+        .profile_arn
+        .as_deref()
+        .filter(|arn| arn.contains(":profile/"))
+        .map(str::to_string);
+
+    let credentials = super::types::ExportedCredentials {
+        access_token: non_empty(cred.access_token).unwrap_or_default(),
+        csrf_token: String::new(),
+        refresh_token: Some(refresh_token),
+        client_id: non_empty(cred.client_id),
+        client_secret: non_empty(cred.client_secret),
+        region: non_empty(cred.region.clone()).or_else(|| non_empty(cred.api_region.clone())),
+        expires_at: expires_at_ms,
+        auth_method,
+    };
+
+    Some(super::types::ExportedAccount {
+        id: uuid::Uuid::new_v4().to_string(),
+        email: non_empty(cred.email).unwrap_or_default(),
+        idp,
+        machine_id: non_empty(cred.machine_id),
+        profile_arn,
+        credentials,
+        subscription,
+        usage,
+        tags: Vec::new(),
+        status,
+        created_at: now_ms,
+        last_used_at: now_ms,
+    })
 }
 
 #[cfg(test)]

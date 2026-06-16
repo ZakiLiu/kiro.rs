@@ -1924,6 +1924,129 @@ impl MultiTokenManager {
     ///
     /// # Arguments
     /// * `id` - 凭据 ID（来自 CallContext）
+    /// 克隆所有凭据（用于导出）
+    pub fn clone_all_credentials(&self) -> Vec<KiroCredentials> {
+        let entries = self.entries.lock();
+        entries
+            .iter()
+            .map(|e| {
+                let mut cred = e.credentials.clone();
+                cred.canonicalize_auth_method();
+                cred.disabled = e.disabled;
+                cred.id = Some(e.id);
+                cred
+            })
+            .collect()
+    }
+
+    /// 禁用超额凭据（Admin API 一键禁用）
+    pub fn disable_quota_exceeded(&self, id: u64) -> anyhow::Result<()> {
+        {
+            let mut entries = self.entries.lock();
+            let entry = entries
+                .iter_mut()
+                .find(|e| e.id == id)
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?;
+            entry.disabled = true;
+            entry.disable_reason = Some(DisableReason::QuotaExceeded);
+            entry.disabled_at = Some(Utc::now());
+            entry.auto_heal_reason = Some(AutoHealReason::QuotaExceeded);
+        }
+        self.affinity.remove_by_credential(id);
+        self.persist_credentials()?;
+        Ok(())
+    }
+
+    /// 设置用户偏好（开启/关闭超额）
+    pub async fn set_user_preference_for(
+        &self,
+        id: u64,
+        overage_status: &str,
+    ) -> anyhow::Result<()> {
+        if overage_status != "ENABLED" && overage_status != "DISABLED" {
+            anyhow::bail!("overageStatus 必须是 ENABLED 或 DISABLED");
+        }
+        // 复用 get_usage_limits_for 的 token 准备逻辑
+        let config = self.config.read().clone();
+        let credentials = {
+            let entries = self.entries.lock();
+            entries
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.credentials.clone())
+                .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
+        };
+        let token = if credentials.is_api_key_credential() {
+            credentials
+                .kiro_api_key
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("凭据无 kiroApiKey"))?
+        } else {
+            credentials
+                .access_token
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("凭据无 access_token"))?
+        };
+
+        let sso_region = credentials.effective_auth_region(&config);
+        let candidates: Vec<&str> = if sso_region.starts_with("eu-") {
+            vec!["eu-central-1", "us-east-1"]
+        } else {
+            vec!["us-east-1", "eu-central-1"]
+        };
+        let proxy = self.proxy.read().clone();
+        let client = crate::http_client::build_client(proxy.as_ref(), 60, config.tls_backend)?;
+
+        let profile_arn = credentials
+            .profile_arn
+            .as_deref()
+            .filter(|arn| arn.contains(":profile/"));
+        let body = if let Some(arn) = profile_arn {
+            serde_json::json!({
+                "overageConfiguration": { "overageStatus": overage_status },
+                "profileArn": arn,
+            })
+        } else {
+            serde_json::json!({
+                "overageConfiguration": { "overageStatus": overage_status },
+            })
+        };
+
+        let machine_id = crate::kiro::machine_id::generate_from_credentials(&credentials, &config)
+            .ok_or_else(|| anyhow::anyhow!("无法生成 machineId"))?;
+        let kiro_version = &config.kiro_version;
+        let user_agent = format!(
+            "aws-sdk-js/1.0.0 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererruntime#1.0.0 m/N,E KiroIDE-{}-{}",
+            config.system_version, config.node_version, kiro_version, machine_id
+        );
+
+        for (idx, region) in candidates.iter().enumerate() {
+            let host = format!("q.{}.amazonaws.com", region);
+            let url = format!("https://{}/setUserPreference", host);
+            let mut request = client
+                .post(&url)
+                .header("content-type", "application/json")
+                .header("user-agent", &user_agent)
+                .header("host", &host)
+                .header("Authorization", format!("Bearer {}", token))
+                .json(&body);
+            if credentials.is_api_key_credential() {
+                request = request.header("tokentype", "API_KEY");
+            }
+            let response = request.send().await?;
+            let status = response.status();
+            if status.is_success() {
+                return Ok(());
+            }
+            let body_text = response.text().await.unwrap_or_default();
+            if status.as_u16() == 403 && idx + 1 < candidates.len() {
+                continue;
+            }
+            anyhow::bail!("设置用户偏好失败 {}: {}", status, body_text);
+        }
+        anyhow::bail!("所有区域端点均失败")
+    }
+
     pub fn report_success(&self, id: u64) {
         // 重置 MODEL_TEMPORARILY_UNAVAILABLE 计数器
         self.model_unavailable_count.store(0, Ordering::SeqCst);
@@ -1944,6 +2067,24 @@ impl MultiTokenManager {
             }
         }
         self.save_stats_debounced();
+    }
+
+    /// 重置凭据的 success_count（Admin API）
+    ///
+    /// `id` 为 None 时重置所有凭据，返回受影响数量。
+    pub fn reset_success_count(&self, id: Option<u64>) -> usize {
+        let mut entries = self.entries.lock();
+        let mut count = 0;
+        for entry in entries.iter_mut() {
+            if id.is_some_and(|target| target != entry.id) {
+                continue;
+            }
+            if entry.success_count > 0 {
+                entry.success_count = 0;
+                count += 1;
+            }
+        }
+        count
     }
 
     /// 报告指定凭据 API 调用失败

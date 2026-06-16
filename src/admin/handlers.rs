@@ -104,6 +104,50 @@ pub async fn set_credential_endpoint(
     }
 }
 
+/// GET /api/admin/credentials/export
+pub async fn export_credentials(
+    State(state): State<AdminState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let id_filter: Option<std::collections::HashSet<u64>> = params
+        .get("ids")
+        .map(|raw| {
+            raw.split(',')
+                .filter_map(|s| s.trim().parse::<u64>().ok())
+                .collect::<std::collections::HashSet<u64>>()
+        })
+        .filter(|s| !s.is_empty());
+    let response = state.service.export_credentials(id_filter.as_ref());
+    Json(response)
+}
+
+/// POST /api/admin/credentials/disable-quota-exceeded
+pub async fn disable_quota_exceeded(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.disable_quota_exceeded()).into_response()
+}
+
+/// POST /api/admin/credentials/:id/overage
+pub async fn set_credential_overage(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+    Json(payload): Json<super::types::SetOverageRequest>,
+) -> impl IntoResponse {
+    match state.service.set_overage(id, payload.enabled).await {
+        Ok(_) => Json(SuccessResponse::new(format!(
+            "凭据 #{} 已{}超额",
+            id,
+            if payload.enabled { "开启" } else { "关闭" }
+        )))
+        .into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/credentials/overage/enable-all
+pub async fn enable_overage_all(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.enable_overage_for_all_capable().await).into_response()
+}
+
 /// POST /api/admin/credentials/:id/reset
 /// 重置失败计数并重新启用
 pub async fn reset_failure_count(

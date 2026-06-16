@@ -12,8 +12,9 @@ use super::{
         complete_social_login, complete_social_relogin, create_client_key, create_group,
         create_preset, delete_client_key, delete_credential, delete_group, delete_preset,
         delete_proxy, force_refresh_token, get_account_throttle_config, get_all_credentials,
+        disable_quota_exceeded, enable_overage_all, export_credentials,
         get_cached_balances, get_credential_balance, get_credential_models, get_global_config,
-        get_global_proxy,
+        get_global_proxy, set_credential_overage,
         get_load_balancing_mode, get_log_governance_config, get_metrics_by_credential,
         get_metrics_by_model, get_metrics_summary, get_presets, get_proxy_config, get_proxy_pool,
         import_token_json, list_client_keys, list_groups, list_traces, poll_idc_login,
@@ -46,8 +47,11 @@ pub fn create_admin_router(state: AdminState) -> Router {
             get(get_all_credentials).post(add_credential),
         )
         .route("/credentials/balances/cached", get(get_cached_balances))
+        .route("/credentials/export", get(export_credentials))
         .route("/credentials/import-token-json", post(import_token_json))
         .route("/credentials/reset-stats", post(reset_all_success_count))
+        .route("/credentials/disable-quota-exceeded", post(disable_quota_exceeded))
+        .route("/credentials/overage/enable-all", post(enable_overage_all))
         .route(
             "/credentials/{id}",
             delete(delete_credential).put(update_credential),
@@ -62,6 +66,7 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route("/credentials/{id}/refresh", post(force_refresh_token))
         .route("/credentials/{id}/refresh-token", put(update_refresh_token))
         .route("/credentials/{id}/balance", get(get_credential_balance))
+        .route("/credentials/{id}/overage", post(set_credential_overage))
         .route("/credentials/{id}/models", get(get_credential_models))
         .route("/credentials/{id}/proxy", post(assign_proxy_to_credential))
         // ---- 代理池 ----

@@ -952,6 +952,79 @@ fn default_oauth_path() -> String {
     "/oauth/callback".to_string()
 }
 
+// ============ 超额管理 ============
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaExceededResult {
+    pub disabled_ids: Vec<u64>,
+    pub skipped_ids: Vec<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetOverageRequest {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnableOverageAllResult {
+    pub enabled_ids: Vec<u64>,
+    pub skipped_ids: Vec<u64>,
+    pub failed_ids: Vec<u64>,
+    pub failure_messages: Vec<String>,
+}
+
+// ============ 凭据导出 ============
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedCredentials {
+    pub access_token: String,
+    pub csrf_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    pub expires_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_method: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedAccount {
+    pub id: String,
+    pub email: String,
+    pub idp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_arn: Option<String>,
+    pub credentials: ExportedCredentials,
+    pub subscription: serde_json::Value,
+    pub usage: serde_json::Value,
+    pub tags: Vec<String>,
+    pub status: String,
+    pub created_at: i64,
+    pub last_used_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialsExportResponse {
+    pub version: String,
+    pub exported_at: i64,
+    pub accounts: Vec<ExportedAccount>,
+    pub groups: Vec<serde_json::Value>,
+    pub tags: Vec<serde_json::Value>,
+}
+
 // ============ 可用模型 ============
 
 #[derive(Debug, Clone, Serialize)]
