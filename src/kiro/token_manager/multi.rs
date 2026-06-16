@@ -121,6 +121,8 @@ pub struct MultiTokenManager {
     model_unavailable_count: AtomicU32,
     /// 选择抖动计数器（用于同权重候选的轮询，避免总选第一个）
     selection_rr: AtomicU64,
+    /// 下一个待分配凭据 ID（单调递增，避免删除后复用旧 ID 继承 trace/stats）
+    next_id: AtomicU64,
     /// 全局禁用恢复时间（None 表示未被全局禁用）
     global_recovery_time: Mutex<Option<DateTime<Utc>>>,
     /// 用户亲和性管理器
@@ -470,6 +472,7 @@ impl MultiTokenManager {
             is_multiple_format,
             model_unavailable_count: AtomicU32::new(0),
             selection_rr: AtomicU64::new(0),
+            next_id: AtomicU64::new(next_id),
             global_recovery_time: Mutex::new(None),
             affinity: UserAffinityManager::new(),
             balance_cache: Mutex::new(initial_cache),
@@ -3301,11 +3304,8 @@ impl MultiTokenManager {
             refresh_token(&new_cred, &config, proxy.as_ref()).await?
         };
 
-        // 4. 分配新 ID
-        let new_id = {
-            let entries = self.entries.lock();
-            entries.iter().map(|e| e.id).max().unwrap_or(0) + 1
-        };
+        // 4. 分配新 ID（单调递增，不复用已删除的旧 ID）
+        let new_id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
         // 5. 设置 ID 并保留用户输入的元数据
         validated_cred.id = Some(new_id);
