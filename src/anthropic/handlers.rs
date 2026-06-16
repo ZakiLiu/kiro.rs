@@ -57,6 +57,7 @@ pub(crate) fn record_request_telemetry(
     duration_ms: u64,
     status: &str,
     attempts: Vec<crate::admin::trace_db::TraceAttempt>,
+    first_token_ms: Option<u64>,
 ) {
     let record = UsageRecord {
         ts: chrono::Utc::now().to_rfc3339(),
@@ -77,17 +78,15 @@ pub(crate) fn record_request_telemetry(
     if let Some(aggregator) = &state.usage_aggregator {
         aggregator.ingest(&record);
     }
-    if auth.key_id > 0 {
-        if let Some(mgr) = &state.client_keys {
-            mgr.record_usage(
-                auth.key_id,
-                record.input_tokens,
-                record.output_tokens,
-                record.cache_creation_tokens,
-                record.cache_read_tokens,
-                credits,
-            );
-        }
+    if let Some(mgr) = &state.client_keys {
+        mgr.record_usage(
+            auth.key_id,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_creation_tokens,
+            record.cache_read_tokens,
+            credits,
+        );
     }
     if let Some(store) = &state.trace_store {
         if store.is_enabled() {
@@ -110,7 +109,7 @@ pub(crate) fn record_request_telemetry(
                 cache_creation_tokens: record.cache_creation_tokens,
                 cache_read_tokens: record.cache_read_tokens,
                 credits,
-                first_token_ms: None,
+                first_token_ms,
                 attempts,
             };
             store.insert(&trace);
@@ -1429,24 +1428,12 @@ async fn handle_stream_request(
                 "请求失败（流式，含重试耗时）"
             );
             record_request_telemetry(
-                state,
-                auth,
-                context.model,
-                true,
-                0,
-                context.input_tokens,
-                0,
-                0,
-                0,
-                0.0,
-                elapsed_ms,
-                "error",
-                Vec::new(),
+                state, auth, context.model, true, 0,
+                context.input_tokens, 0, 0, 0, 0.0,
+                elapsed_ms, "error", Vec::new(), None,
             );
             return map_kiro_provider_error_to_response(
-                context.request_body,
-                e,
-                context.adaptive_outcome,
+                context.request_body, e, context.adaptive_outcome,
             );
         }
     };
@@ -1510,30 +1497,21 @@ async fn handle_stream_request(
         usage_snapshot_for_stream,
     );
 
+    // 记录到首字节的延迟（在流开始前捕获，传入 closure）
+    let ttfb_ms = context.request_start.elapsed().as_millis() as u64;
+
     // 在流结束后追加用量记录（从 snapshot 读取真实 token 计数）
     let stream = stream.chain(futures::stream::once(async move {
         let duration_ms = stream_start.elapsed().as_millis() as u64;
         let snap = usage_snapshot.lock().take().unwrap_or_default();
         record_request_telemetry(
-            &stream_state,
-            &stream_auth,
-            &stream_model,
-            true,
-            stream_credential_id,
-            stream_input_tokens,
-            snap.output_tokens,
-            snap.cache_creation,
-            snap.cache_read,
-            snap.credits,
-            duration_ms,
-            "success",
-            stream_attempts,
+            &stream_state, &stream_auth, &stream_model, true,
+            stream_credential_id, stream_input_tokens, snap.output_tokens,
+            snap.cache_creation, snap.cache_read, snap.credits,
+            duration_ms, "success", stream_attempts, Some(ttfb_ms),
         );
-        Ok(Bytes::new()) // 空 bytes，不影响流
+        Ok(Bytes::new())
     }));
-
-    // 记录 RequestCompleted 指标（流式：记录到首字节的延迟）
-    let ttfb_ms = context.request_start.elapsed().as_millis() as u64;
     tracing::info!(
         ttfb_ms = ttfb_ms,
         credential_id = api_result.credential_id,
@@ -1707,24 +1685,12 @@ async fn handle_non_stream_request(
                 "请求失败（非流式，含重试耗时）"
             );
             record_request_telemetry(
-                state,
-                auth,
-                context.model,
-                false,
-                0,
-                context.input_tokens,
-                0,
-                0,
-                0,
-                0.0,
-                elapsed_ms,
-                "error",
-                Vec::new(),
+                state, auth, context.model, false, 0,
+                context.input_tokens, 0, 0, 0, 0.0,
+                elapsed_ms, "error", Vec::new(), None,
             );
             return map_kiro_provider_error_to_response(
-                context.request_body,
-                e,
-                context.adaptive_outcome,
+                context.request_body, e, context.adaptive_outcome,
             );
         }
     };
@@ -2028,19 +1994,11 @@ async fn handle_non_stream_request(
 
     let credits = metering.as_ref().map(|m| m.usage).unwrap_or(0.0);
     record_request_telemetry(
-        state,
-        auth,
-        context.model,
-        false,
-        api_result.credential_id,
-        context.input_tokens,
-        output_tokens,
+        state, auth, context.model, false,
+        api_result.credential_id, context.input_tokens, output_tokens,
         final_cache_context.map(|c| c.cache_creation_input_tokens).unwrap_or(0),
         final_cache_context.map(|c| c.cache_read_input_tokens).unwrap_or(0),
-        credits,
-        total_ms,
-        "success",
-        api_result.attempts,
+        credits, total_ms, "success", api_result.attempts, None,
     );
 
     (

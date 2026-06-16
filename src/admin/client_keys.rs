@@ -453,9 +453,8 @@ impl ClientKeyManager {
     /// 用 `ConstantTimeEq` 对所有 active Key 做常量时间比对，防止时序攻击；
     /// 之前的 HashMap 直接 lookup 仅作快速短路（命中后还会再做一次常量时间比较）。
     pub fn verify_and_touch(&self, presented: &str) -> Option<u64> {
-        if !presented.starts_with(CLIENT_KEY_PREFIX) {
-            return None;
-        }
+        // 不做前缀检查：系统 Key 使用 sk-kiro-* 格式，非 csk_ 前缀
+        // 常量时间扫描会正确匹配所有格式的 Key
         let mut inner = self.inner.write();
         // 第一遍：扫描所有 entry 做常量时间比较，避免 HashMap 短路泄露
         let mut hit_id: Option<u64> = None;

@@ -197,7 +197,7 @@ fn create_openai_sse_stream(
         record_request_telemetry(
             &state, &auth, &model, true, credential_id,
             final_input, final_output, 0, final_cache_read,
-            0.0, duration_ms, "success", attempts,
+            0.0, duration_ms, "success", attempts, None,
         );
     }
 }
@@ -382,7 +382,7 @@ async fn handle_non_stream(
     record_request_telemetry(
         state, auth, model, false, credential_id,
         final_input_tokens, output_tokens, 0, cache_read_tokens,
-        0.0, duration_ms, "success", attempts,
+        0.0, duration_ms, "success", attempts, None,
     );
 
     (StatusCode::OK, Json(json!(response))).into_response()
