@@ -272,6 +272,7 @@ impl AdminService {
                     id: entry.id,
                     priority: entry.priority,
                     disabled: entry.disabled,
+                    is_current: false,
                     failure_count: entry.failure_count,
                     refresh_failure_count: entry.refresh_failure_count,
                     disabled_reason: entry.disable_reason.map(|reason| format!("{:?}", reason)),
@@ -309,6 +310,13 @@ impl AdminService {
             .map(|c| c.id)
             .or_else(|| credentials.iter().find(|c| !c.disabled).map(|c| c.id))
             .unwrap_or(0);
+
+        // 标记当前活跃凭据
+        for c in &mut credentials {
+            if c.id == current_id {
+                c.is_current = true;
+            }
+        }
 
         CredentialsStatusResponse {
             total: snapshot.total,

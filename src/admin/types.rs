@@ -33,6 +33,8 @@ pub struct CredentialStatusItem {
     pub priority: u32,
     /// 是否被禁用
     pub disabled: bool,
+    /// 是否为当前活跃凭据
+    pub is_current: bool,
     /// 连续失败次数
     pub failure_count: u32,
     /// Token 刷新连续失败次数
