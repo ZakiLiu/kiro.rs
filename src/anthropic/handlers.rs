@@ -1504,9 +1504,10 @@ async fn handle_stream_request(
     let stream = stream.chain(futures::stream::once(async move {
         let duration_ms = stream_start.elapsed().as_millis() as u64;
         let snap = usage_snapshot.lock().take().unwrap_or_default();
+        let total_output = snap.output_tokens + snap.thinking_tokens;
         record_request_telemetry(
             &stream_state, &stream_auth, &stream_model, true,
-            stream_credential_id, stream_input_tokens, snap.output_tokens,
+            stream_credential_id, stream_input_tokens, total_output,
             snap.cache_creation, snap.cache_read, snap.credits,
             duration_ms, "success", stream_attempts, Some(ttfb_ms),
         );
