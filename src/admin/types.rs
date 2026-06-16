@@ -164,6 +164,13 @@ pub struct AddCredentialRequest {
 
     /// 凭据级代理密码
     pub proxy_password: Option<String>,
+
+    /// 账号所属分组
+    #[serde(default)]
+    pub groups: Vec<String>,
+
+    /// 账号来源渠道
+    pub source_channel: Option<String>,
 }
 
 fn default_auth_method() -> String {

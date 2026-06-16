@@ -377,8 +377,8 @@ impl AdminService {
             proxy_url: req.proxy_url,
             proxy_username: req.proxy_username,
             proxy_password: req.proxy_password,
-            groups: Vec::new(),
-            source_channel: None,
+            groups: req.groups,
+            source_channel: req.source_channel,
             disabled: false,
             runtime_only: false,
         };
