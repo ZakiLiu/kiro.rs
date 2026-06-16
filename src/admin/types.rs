@@ -17,6 +17,8 @@ pub struct CredentialsStatusResponse {
     pub ready: usize,
     /// 当前处于 cooldown 的未禁用凭据数量
     pub cooling: usize,
+    /// 当前活跃凭据 ID（最近使用的非禁用凭据）
+    pub current_id: u64,
     /// 各凭据状态列表
     pub credentials: Vec<CredentialStatusItem>,
 }

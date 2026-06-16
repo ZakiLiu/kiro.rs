@@ -301,11 +301,21 @@ impl AdminService {
         // 按优先级排序（数字越小优先级越高）
         credentials.sort_by_key(|c| c.priority);
 
+        // 当前活跃 = 最近使用的非禁用凭据
+        let current_id = credentials
+            .iter()
+            .filter(|c| !c.disabled && c.last_used_at.is_some())
+            .max_by(|a, b| a.last_used_at.cmp(&b.last_used_at))
+            .map(|c| c.id)
+            .or_else(|| credentials.iter().find(|c| !c.disabled).map(|c| c.id))
+            .unwrap_or(0);
+
         CredentialsStatusResponse {
             total: snapshot.total,
             available: snapshot.available,
             ready: snapshot.ready,
             cooling: snapshot.cooling,
+            current_id,
             credentials,
         }
     }
