@@ -301,6 +301,23 @@ async fn main() {
                 admin::groups::GroupManager::new()
             }),
     );
+    // 从凭据和客户端 Key 中反向补注册分组（含自动分组 Free/Pro/Pro+）
+    {
+        let cred_groups: Vec<String> = token_manager
+            .clone_all_credentials()
+            .into_iter()
+            .flat_map(|c| c.groups)
+            .collect();
+        let key_groups: Vec<String> = client_key_manager
+            .used_group_names()
+            .into_iter()
+            .collect();
+        let all_groups: Vec<String> = cred_groups.into_iter().chain(key_groups).collect();
+        let added = group_manager.bootstrap_from_existing(all_groups);
+        if added > 0 {
+            tracing::info!("从凭据/Key 反向补注册了 {} 个分组", added);
+        }
+    }
     if !presets.read().is_empty() {
         tracing::info!(count = presets.read().len(), "已加载 Prompt 预设");
     }

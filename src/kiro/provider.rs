@@ -284,11 +284,9 @@ impl KiroProvider {
                             tm.update_balance_cache(id, remaining);
 
                             // KIRO PRO 超额检查
-                            tm.check_pro_overuse_disable(
-                                id,
-                                resp.subscription_title(),
-                                used,
-                            );
+                            tm.check_pro_overuse_disable(id, resp.subscription_title(), used);
+                            // 自动按订阅等级归类分组
+                            tm.auto_assign_subscription_group(id, resp.subscription_title());
 
                             if remaining < 1.0 {
                                 tracing::info!(

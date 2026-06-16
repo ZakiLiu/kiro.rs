@@ -477,11 +477,9 @@ impl AdminService {
         self.token_manager.update_balance_cache(id, remaining);
 
         // KIRO PRO 超额检查
-        self.token_manager.check_pro_overuse_disable(
-            id,
-            usage.subscription_title(),
-            current_usage,
-        );
+        self.token_manager.check_pro_overuse_disable(id, usage.subscription_title(), current_usage);
+        // 自动按订阅等级归类分组
+        self.token_manager.auto_assign_subscription_group(id, usage.subscription_title());
 
         Ok(BalanceResponse {
             id,

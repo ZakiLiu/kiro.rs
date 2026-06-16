@@ -2143,6 +2143,36 @@ impl MultiTokenManager {
     /// - 立即禁用该凭据（不等待连续失败阈值）
     /// - 切换到下一个可用凭据继续重试
     /// - 返回是否还有可用凭据
+    /// 根据订阅等级自动归类到对应分组
+    pub fn auto_assign_subscription_group(&self, id: u64, subscription_title: Option<&str>) {
+        let Some(title) = subscription_title else { return };
+        let upper = title.to_uppercase();
+        let group_name = if upper.contains("FREE") {
+            "Free"
+        } else if upper.contains("PRO+") || upper.contains("PRO_PLUS") || upper.contains("PRO PLUS") {
+            "Pro+"
+        } else if upper.contains("PRO") {
+            "Pro"
+        } else {
+            return;
+        };
+
+        let mut entries = self.entries.lock();
+        let Some(entry) = entries.iter_mut().find(|e| e.id == id) else { return };
+        if entry.credentials.groups.iter().any(|g| g == group_name) {
+            return;
+        }
+        // 移除旧的订阅分组（Free/Pro/Pro+），避免重复
+        entry.credentials.groups.retain(|g| g != "Free" && g != "Pro" && g != "Pro+");
+        entry.credentials.groups.push(group_name.to_string());
+        drop(entries);
+
+        if let Err(e) = self.persist_credentials() {
+            tracing::warn!("自动分组持久化失败: {}", e);
+        }
+        tracing::debug!("凭据 #{} 自动归类到 {} 分组", id, group_name);
+    }
+
     /// KIRO PRO 超额检查：订阅等级为 KIRO PRO 且已使用额度超过阈值时永久禁用
     const PRO_USAGE_DISABLE_THRESHOLD: f64 = 11005.0;
 
@@ -2566,17 +2596,14 @@ impl MultiTokenManager {
                     self.update_balance_cache(id, remaining);
 
                     // KIRO PRO 超额检查
-                    self.check_pro_overuse_disable(
-                        id,
-                        limits.subscription_title(),
-                        used,
-                    );
+                    self.check_pro_overuse_disable(id, limits.subscription_title(), used);
+                    // 自动按订阅等级归类分组
+                    self.auto_assign_subscription_group(id, limits.subscription_title());
 
                     if remaining < 1.0 {
                         tracing::info!(
                             "凭据 #{} 余额偏低 ({:.2})，保持可用（等待上游 402 判定）",
-                            id,
-                            remaining
+                            id, remaining
                         );
                     } else {
                         tracing::info!("凭据 #{} 余额初始化成功: {:.2}", id, remaining);
