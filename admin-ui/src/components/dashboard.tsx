@@ -1015,7 +1015,7 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuLabel>密钥管理</DropdownMenuLabel>
+                  <DropdownMenuLabel>管理</DropdownMenuLabel>
                   <DropdownMenuItem
                     onSelect={() => {
                       setNewAdminKey("");

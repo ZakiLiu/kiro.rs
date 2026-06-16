@@ -5,6 +5,10 @@ import type {
   BalanceResponse,
   AvailableModelsResponse,
   SuccessResponse,
+  ProxyConfigResponse,
+  UpdateProxyConfigRequest,
+  GlobalConfigResponse,
+  UpdateGlobalConfigRequest,
   SetDisabledRequest,
   SetPriorityRequest,
   AddCredentialRequest,
@@ -505,5 +509,27 @@ export async function pollIdcRelogin(
   const { data } = await api.post<PollIdcLoginResponse>(
     `/credentials/${credentialId}/relogin/idc/poll/${sessionId}`
   )
+  return data
+}
+
+// ============ 全局配置 ============
+
+export async function getProxyConfig(): Promise<ProxyConfigResponse> {
+  const { data } = await api.get<ProxyConfigResponse>('/proxy')
+  return data
+}
+
+export async function updateProxyConfig(req: UpdateProxyConfigRequest): Promise<SuccessResponse> {
+  const { data } = await api.post<SuccessResponse>('/proxy', req)
+  return data
+}
+
+export async function getGlobalConfig(): Promise<GlobalConfigResponse> {
+  const { data } = await api.get<GlobalConfigResponse>('/config/global')
+  return data
+}
+
+export async function updateGlobalConfig(req: UpdateGlobalConfigRequest): Promise<SuccessResponse> {
+  const { data } = await api.put<SuccessResponse>('/config/global', req)
   return data
 }

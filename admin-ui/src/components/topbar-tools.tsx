@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useState, type ComponentPropsWithoutRef } from 'react'
 import {
   Activity, RefreshCw, UploadCloud, Settings, Key, Wand2, Eye, EyeOff, Copy,
-  MoreHorizontal, ShieldAlert, ShieldCheck,
+  MoreHorizontal, ShieldAlert, ShieldCheck, SlidersHorizontal,
 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -24,6 +24,7 @@ import { useUpdateCheck } from '@/hooks/use-update-check'
 import { updateAdminKey } from '@/api/credentials'
 import { extractErrorMessage, generateApiKey } from '@/lib/utils'
 import { ImageUpdateDialog } from '@/components/image-update-dialog'
+import { GlobalConfigDialog } from '@/components/global-config-dialog'
 
 /**
  * 顶栏右侧通用工具栏：负载均衡切换、刷新、在线更新、设置（Key 管理）。
@@ -44,6 +45,7 @@ export function TopbarTools({ compact = false }: TopbarToolsProps) {
   const { data: updateCheck } = useUpdateCheck()
 
   const [imageUpdateOpen, setImageUpdateOpen] = useState(false)
+  const [globalConfigOpen, setGlobalConfigOpen] = useState(false)
   const [keyDialogOpen, setKeyDialogOpen] = useState(false)
   const [newKey, setNewKey] = useState('')
   const [showPlain, setShowPlain] = useState(false)
@@ -112,6 +114,7 @@ export function TopbarTools({ compact = false }: TopbarToolsProps) {
     loadBalancingMode: loadBalancingData?.mode,
     openImageUpdate: () => setImageUpdateOpen(true),
     openKeyDialog,
+    openGlobalConfig: () => setGlobalConfigOpen(true),
     throttleConfig,
     updateCheck,
     updateCooldown: (secs: number) =>
@@ -126,6 +129,7 @@ export function TopbarTools({ compact = false }: TopbarToolsProps) {
     <>
       {compact ? <CompactTools controls={controls} /> : <FullTools controls={controls} />}
       <ImageUpdateDialog open={imageUpdateOpen} onOpenChange={setImageUpdateOpen} />
+      <GlobalConfigDialog open={globalConfigOpen} onOpenChange={setGlobalConfigOpen} />
 
       <Dialog
         open={keyDialogOpen}
@@ -232,6 +236,7 @@ interface ToolControls {
   loadBalancingMode?: 'priority' | 'balanced'
   openImageUpdate: () => void
   openKeyDialog: () => void
+  openGlobalConfig: () => void
   throttleConfig?: { failover: boolean; cooldownSecs: number }
   updateCheck?: { hasUpdate: boolean; latestVersion: string; currentVersion: string }
   updateCooldown: (secs: number) => void
@@ -250,7 +255,7 @@ function FullTools({ controls }: { controls: ToolControls }) {
       />
       <RefreshButton onRefresh={controls.handleRefresh} />
       <ImageUpdateButton controls={controls} />
-      <KeySettingsMenu onOpenKeyDialog={controls.openKeyDialog} />
+      <KeySettingsMenu onOpenKeyDialog={controls.openKeyDialog} onOpenGlobalConfig={controls.openGlobalConfig} />
     </>
   )
 }
@@ -291,9 +296,12 @@ function CompactTools({ controls }: { controls: ToolControls }) {
           <UploadCloud />镜像在线更新
         </DropdownMenuItem>
         <ThrottleCompactItems {...throttleProps} />
-        <DropdownMenuLabel>密钥管理</DropdownMenuLabel>
+        <DropdownMenuLabel>管理</DropdownMenuLabel>
+        <DropdownMenuItem onSelect={controls.openGlobalConfig}>
+          <SlidersHorizontal />全局配置
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={controls.openKeyDialog}>
-          <Key />修改登录API密钥（管理面板登录）
+          <Key />修改登录API密钥
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -344,18 +352,21 @@ function ImageUpdateButton({ controls }: { controls: ToolControls }) {
   )
 }
 
-function KeySettingsMenu({ onOpenKeyDialog }: { onOpenKeyDialog: () => void }) {
+function KeySettingsMenu({ onOpenKeyDialog, onOpenGlobalConfig }: { onOpenKeyDialog: () => void; onOpenGlobalConfig: () => void }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" title="设置">
+        <Button variant="ghost" size="icon" title="管理">
           <Settings className="h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuLabel>密钥管理</DropdownMenuLabel>
+        <DropdownMenuLabel>管理</DropdownMenuLabel>
+        <DropdownMenuItem onSelect={onOpenGlobalConfig}>
+          <SlidersHorizontal />全局配置
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={onOpenKeyDialog}>
-          <Key />修改登录API密钥（管理面板登录）
+          <Key />修改登录API密钥
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

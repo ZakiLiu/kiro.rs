@@ -570,3 +570,66 @@ export interface UpdateGroupRequest {
   /** 新备注；空字符串清除；undefined 保留原值 */
   description?: string
 }
+
+// ============ 全局代理配置 ============
+
+export interface ProxyConfigResponse {
+  proxyUrl: string | null
+  hasCredentials: boolean
+}
+
+export interface UpdateProxyConfigRequest {
+  proxyUrl?: string | null
+  proxyUsername?: string | null
+  proxyPassword?: string | null
+}
+
+// ============ 全局配置 ============
+
+export interface CompressionConfigResponse {
+  enabled: boolean
+  whitespaceCompression: boolean
+  thinkingStrategy: string
+  toolResultMaxChars: number
+  toolResultHeadLines: number
+  toolResultTailLines: number
+  toolUseInputMaxChars: number
+  toolDescriptionMaxChars: number
+  maxHistoryTurns: number
+  maxHistoryChars: number
+  maxRequestBodyBytes: number
+}
+
+export interface GlobalConfigResponse {
+  region: string
+  credentialRpm: number | null
+  credentialDailyMaxRequests: number | null
+  promptCacheTtlSeconds: number
+  promptCacheAccountingEnabled: boolean
+  defaultEndpoint: string
+  compression: CompressionConfigResponse
+}
+
+export interface UpdateCompressionConfigRequest {
+  enabled?: boolean
+  whitespaceCompression?: boolean
+  thinkingStrategy?: string
+  toolResultMaxChars?: number
+  toolResultHeadLines?: number
+  toolResultTailLines?: number
+  toolUseInputMaxChars?: number
+  toolDescriptionMaxChars?: number
+  maxHistoryTurns?: number
+  maxHistoryChars?: number
+  maxRequestBodyBytes?: number
+}
+
+export interface UpdateGlobalConfigRequest {
+  region?: string
+  credentialRpm?: number | null
+  credentialDailyMaxRequests?: number | null
+  promptCacheTtlSeconds?: number
+  promptCacheAccountingEnabled?: boolean
+  defaultEndpoint?: string
+  compression?: UpdateCompressionConfigRequest
+}

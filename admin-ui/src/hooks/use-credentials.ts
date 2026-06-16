@@ -8,6 +8,10 @@ import {
   clearThrottle,
   getCredentialBalance,
   getCredentialModels,
+  getProxyConfig,
+  updateProxyConfig,
+  getGlobalConfig,
+  updateGlobalConfig,
   addCredential,
   deleteCredential,
   updateCredential,
@@ -230,6 +234,41 @@ export function useSetLogGovernanceConfig() {
     mutationFn: setLogGovernanceConfig,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['logGovernanceConfig'] })
+    },
+  })
+}
+
+export function useProxyConfig() {
+  return useQuery({
+    queryKey: ['proxyConfig'],
+    queryFn: getProxyConfig,
+  })
+}
+
+export function useUpdateProxyConfig() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: updateProxyConfig,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['proxyConfig'] })
+    },
+  })
+}
+
+export function useGlobalConfig() {
+  return useQuery({
+    queryKey: ['globalConfig'],
+    queryFn: getGlobalConfig,
+  })
+}
+
+export function useUpdateGlobalConfig() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (req: import('@/types/api').UpdateGlobalConfigRequest) => updateGlobalConfig(req),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['globalConfig'] })
+      queryClient.invalidateQueries({ queryKey: ['proxyConfig'] })
     },
   })
 }
