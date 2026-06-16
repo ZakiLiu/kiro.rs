@@ -129,6 +129,77 @@ impl CacheTracker {
             }
         }
 
+        // 自动注入 breakpoint：客户端没发 cache_control 时，在关键位置插入默认 5min breakpoint
+        // 策略：最后一个 tool → 最后一个 system → 倒数第二条消息结尾
+        if breakpoints.is_empty() && !blocks.is_empty() {
+            let auto_ttl = DEFAULT_CACHE_TTL;
+            let mut auto_injected = false;
+
+            // 1. 最后一个 tool block
+            if let Some(idx) = blocks.iter().rposition(|_| true).and_then(|_| {
+                (0..blocks.len()).rev().find(|&i| {
+                    let b = &blocks[i];
+                    // tool blocks are the first ones, before system and messages
+                    b.cumulative_tokens > 0 && i < blocks.len()
+                })
+            }) {
+                // Find the last tool block by checking kind in original flattened data
+                // Simpler: just use indices from the flatten order
+                let _ = idx; // will use targeted approach below
+            }
+
+            // Find boundaries: count tool blocks, system blocks, then messages
+            let tool_count = payload.tools.as_ref().map(|t| t.len()).unwrap_or(0);
+            let system_count = payload.system.as_ref().map(|s| s.len()).unwrap_or(0);
+
+            // Inject at last tool (if tools exist)
+            if tool_count > 0 {
+                let last_tool_idx = tool_count - 1;
+                if seen_breakpoints.insert(last_tool_idx) {
+                    breakpoints.push(CacheBreakpoint {
+                        block_index: last_tool_idx,
+                        ttl: auto_ttl,
+                    });
+                    auto_injected = true;
+                }
+            }
+
+            // Inject at last system block (if system exists)
+            if system_count > 0 {
+                let last_system_idx = tool_count + system_count - 1;
+                if last_system_idx < blocks.len() && seen_breakpoints.insert(last_system_idx) {
+                    breakpoints.push(CacheBreakpoint {
+                        block_index: last_system_idx,
+                        ttl: auto_ttl,
+                    });
+                    auto_injected = true;
+                }
+            }
+
+            // Inject at second-to-last message end (captures history prefix)
+            let message_block_indices: Vec<usize> = (0..blocks.len())
+                .filter(|&i| i >= tool_count + system_count)
+                .collect();
+            if message_block_indices.len() >= 2 {
+                // Find the last block of the second-to-last message
+                let target_idx = message_block_indices[message_block_indices.len() - 2];
+                if seen_breakpoints.insert(target_idx) {
+                    breakpoints.push(CacheBreakpoint {
+                        block_index: target_idx,
+                        ttl: auto_ttl,
+                    });
+                    auto_injected = true;
+                }
+            }
+
+            if auto_injected {
+                tracing::debug!(
+                    breakpoint_count = breakpoints.len(),
+                    "客户端未发送 cache_control，已自动注入缓存 breakpoint"
+                );
+            }
+        }
+
         CacheProfile {
             total_input_tokens: total_input_tokens.max(0),
             min_cacheable_tokens: minimum_cacheable_tokens_for_model(&payload.model),
