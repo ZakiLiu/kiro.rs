@@ -278,6 +278,23 @@ async fn main() {
     usage_aggregator.rebuild_from_logs(&usage_dir);
     tracing::info!("用量统计已启用 (保留 {} 天)", config.read().usage_log_retention_days);
 
+    // 启动定期清理任务（每 24 小时清理过期 usage_log 和 trace 记录）
+    {
+        let recorder = usage_recorder.clone();
+        let ts = trace_store.clone();
+        tokio::spawn(async move {
+            let day = std::time::Duration::from_secs(24 * 3600);
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            loop {
+                recorder.cleanup_old_logs();
+                if let Some(store) = &ts {
+                    store.cleanup();
+                }
+                tokio::time::sleep(day).await;
+            }
+        });
+    }
+
     // Client Key 管理器
     let client_keys_path = std::path::Path::new(&credentials_path)
         .parent()
