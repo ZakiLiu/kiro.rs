@@ -17,6 +17,7 @@ use rusqlite::{Connection, types::Type};
 use serde::{Deserialize, Serialize};
 
 /// trace 记录默认保留天数
+#[allow(dead_code)]
 const DEFAULT_RETENTION_DAYS: u64 = 7;
 /// 上游错误体片段最大长度（字节）
 const ERROR_SNIPPET_MAX: usize = 2048;
@@ -130,6 +131,7 @@ pub struct TraceRecord {
 }
 
 /// 失败分类（attempt.outcome / record.error_type 取值）
+#[allow(dead_code)]
 pub mod outcome {
     pub const SUCCESS: &str = "success";
     pub const QUOTA_EXHAUSTED: &str = "quota_exhausted";
@@ -160,6 +162,7 @@ pub fn truncate_snippet(body: &str) -> Option<String> {
 }
 
 /// 链路上报接收端：provider 在重试循环里每跳调用 [`Self::on_attempt`]
+#[allow(dead_code)]
 pub trait TraceSink: Send + Sync {
     fn on_attempt(&self, attempt: TraceAttempt);
 }
@@ -208,13 +211,11 @@ impl TraceStore {
         } else {
             path
         };
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() && !parent.exists() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty() && !parent.exists()
+                && let Err(e) = std::fs::create_dir_all(parent) {
                     tracing::warn!("创建 traces.db 目录失败 {}: {}", parent.display(), e);
                 }
-            }
-        }
         let conn = Connection::open(&path)?;
         // WAL：并发读不阻塞写；synchronous=NORMAL：写吞吐与崩溃安全的平衡
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -229,6 +230,7 @@ impl TraceStore {
     }
 
     /// 内存数据库（traces.db 打开失败时的兜底；进程退出即丢，但保证 Admin 查询不崩）
+    #[allow(dead_code)]
     pub fn open_in_memory() -> rusqlite::Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
@@ -288,6 +290,7 @@ impl TraceStore {
     }
 
     /// 设置启用开关
+    #[allow(dead_code)]
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Relaxed);
     }
@@ -298,6 +301,7 @@ impl TraceStore {
     }
 
     /// 设置保留天数（>=1）
+    #[allow(dead_code)]
     pub fn set_retention_days(&self, days: u32) {
         self.retention_days
             .store(days.max(1) as u64, Ordering::Relaxed);

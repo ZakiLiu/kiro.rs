@@ -236,6 +236,7 @@ impl Default for GroupManager {
 }
 
 /// 默认管理器路径（相对凭据目录）
+#[allow(dead_code)]
 pub fn default_path_in(dir: &Path) -> PathBuf {
     dir.join("groups.json")
 }

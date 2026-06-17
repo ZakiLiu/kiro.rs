@@ -5,6 +5,7 @@
 use serde::Deserialize;
 
 /// 使用额度查询响应
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageLimitsResponse {
@@ -31,6 +32,7 @@ pub struct UsageLimitsResponse {
 }
 
 /// 用户信息
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserInfo {

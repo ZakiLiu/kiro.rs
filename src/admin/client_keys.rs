@@ -206,18 +206,17 @@ impl ClientKeyManager {
     /// - 若该明文已在 id=0：确保 is_system=true（no-op）。
     /// - 若该明文在其它 id（旧版 bootstrap 误建）：迁移到 id=0。
     /// - 明文不存在：在 id=0 新建（id=0 被占用时回退 next_id，极罕见）。
-    /// 系统 Key 不可删除；可轮换（轮换时同步 config.apiKey）。
+    ///   系统 Key 不可删除；可轮换（轮换时同步 config.apiKey）。
     pub fn ensure_system_key(&self, name: String, description: Option<String>, plaintext: String) {
         let mut inner = self.inner.write();
         match inner.by_key.get(&plaintext).copied() {
             Some(0) => {
                 // 已在 id=0：确保 is_system
-                if let Some(e) = inner.entries.get_mut(&0) {
-                    if !e.is_system {
+                if let Some(e) = inner.entries.get_mut(&0)
+                    && !e.is_system {
                         e.is_system = true;
                         self.save_locked(&inner);
                     }
-                }
             }
             Some(other) => {
                 // 明文在非 0 id 上：尽量迁移到 id=0（对齐历史 keyId=0 用量）
@@ -539,6 +538,7 @@ pub fn mask_client_key(key: &str) -> String {
 }
 
 /// 默认管理器路径（相对凭据目录）
+#[allow(dead_code)]
 pub fn default_path_in(dir: &Path) -> PathBuf {
     dir.join("client_api_keys.json")
 }

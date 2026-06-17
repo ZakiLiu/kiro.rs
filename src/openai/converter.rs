@@ -18,6 +18,7 @@ use crate::kiro::model::requests::conversation::KiroImage;
 
 use super::types::{ChatCompletionRequest, ChatMessage, MessageContent};
 
+#[allow(dead_code)]
 pub struct ConversionResult {
     pub kiro_request: KiroRequest,
     pub model: String,
@@ -138,13 +139,11 @@ pub fn convert_openai_to_kiro(
     }
 
     // 如果最后一条是 assistant，自动续
-    if !history.is_empty() {
-        if let Some(Message::Assistant(_)) = history.last() {
-            if current_content.is_empty() {
+    if !history.is_empty()
+        && let Some(Message::Assistant(_)) = history.last()
+            && current_content.is_empty() {
                 current_content = "Continue.".to_string();
             }
-        }
-    }
 
     // 如果没有 current_content 但有 tool_results
     if current_content.is_empty() && !tool_results.is_empty() {
@@ -238,8 +237,8 @@ fn build_openai_thinking_fields(req: &ChatCompletionRequest, model_id: &str) -> 
     }
 
     // 从 thinking 对象构建
-    if let Some(thinking_val) = &req.thinking {
-        if let Some(obj) = thinking_val.as_object() {
+    if let Some(thinking_val) = &req.thinking
+        && let Some(obj) = thinking_val.as_object() {
             let t_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("disabled");
             if t_type == "disabled" {
                 return None;
@@ -264,7 +263,6 @@ fn build_openai_thinking_fields(req: &ChatCompletionRequest, model_id: &str) -> 
             };
             return build_additional_model_request_fields(&fake_req, thinking_config.as_ref());
         }
-    }
 
     None
 }
@@ -301,11 +299,10 @@ fn extract_user_content(msg: &ChatMessage) -> (String, Vec<KiroImage>) {
                         }
                     }
                     "image_url" => {
-                        if let Some(img_url) = &part.image_url {
-                            if let Some(kiro_img) = parse_data_url_image(&img_url.url) {
+                        if let Some(img_url) = &part.image_url
+                            && let Some(kiro_img) = parse_data_url_image(&img_url.url) {
                                 images.push(kiro_img);
                             }
-                        }
                     }
                     _ => {}
                 }

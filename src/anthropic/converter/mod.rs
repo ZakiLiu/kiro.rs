@@ -43,9 +43,14 @@ pub fn convert_request(
     compression_config: &CompressionConfig,
     forced_conversation_id: Option<&str>,
 ) -> Result<ConversionResult, ConversionError> {
-    // 1. 映射模型
-    let model_id = map_model(&req.model)
-        .ok_or_else(|| ConversionError::UnsupportedModel(req.model.clone()))?;
+    // 1. 映射模型（已知模型走映射表，未知模型直接透传给 Kiro 后端）
+    let model_id = match map_model(&req.model) {
+        Some(id) => id,
+        None => {
+            tracing::info!(model = %req.model, "未知模型，直接透传给上游");
+            req.model.clone()
+        }
+    };
 
     // 2. 检查消息列表
     if req.messages.is_empty() {
@@ -383,8 +388,14 @@ mod tests {
     }
 
     #[test]
-    fn test_map_model_unsupported() {
-        assert!(map_model("gpt-4").is_none());
+    fn test_map_model_gpt4_maps_to_sonnet() {
+        assert_eq!(map_model("gpt-4").unwrap(), KIRO_MODEL_SONNET_4_5);
+    }
+
+    #[test]
+    fn test_map_model_unknown_returns_none() {
+        assert!(map_model("deepseek-v3.2").is_none());
+        assert!(map_model("qwen3-coder-next").is_none());
     }
 
     #[test]

@@ -423,16 +423,20 @@ impl KiroProvider {
         &self,
         request_body: &str,
         user_id: Option<&str>,
+        group: Option<&str>,
     ) -> anyhow::Result<ApiCallResult> {
-        self.call_api_with_retry(request_body, false, user_id).await
+        self.call_api_with_retry(request_body, false, user_id, group)
+            .await
     }
 
     pub async fn call_api_stream(
         &self,
         request_body: &str,
         user_id: Option<&str>,
+        group: Option<&str>,
     ) -> anyhow::Result<ApiCallResult> {
-        self.call_api_with_retry(request_body, true, user_id).await
+        self.call_api_with_retry(request_body, true, user_id, group)
+            .await
     }
 
     /// 发送 MCP API 请求
@@ -441,15 +445,24 @@ impl KiroProvider {
     ///
     /// # Arguments
     /// * `request_body` - JSON 格式的 MCP 请求体字符串
+    /// * `group` - 分组过滤（可选）
     ///
     /// # Returns
     /// 返回原始的 HTTP Response 以及实际使用的 credential_id
-    pub async fn call_mcp(&self, request_body: &str) -> anyhow::Result<McpCallResult> {
-        self.call_mcp_with_retry(request_body).await
+    pub async fn call_mcp(
+        &self,
+        request_body: &str,
+        group: Option<&str>,
+    ) -> anyhow::Result<McpCallResult> {
+        self.call_mcp_with_retry(request_body, group).await
     }
 
     /// 内部方法：带重试逻辑的 MCP API 调用
-    async fn call_mcp_with_retry(&self, request_body: &str) -> anyhow::Result<McpCallResult> {
+    async fn call_mcp_with_retry(
+        &self,
+        request_body: &str,
+        group: Option<&str>,
+    ) -> anyhow::Result<McpCallResult> {
         let total_credentials = self.token_manager.total_count();
         let available = self.token_manager.available_count();
         if available == 0 {
@@ -473,7 +486,7 @@ impl KiroProvider {
             // 获取调用上下文（支持排除已失败凭据）
             let ctx = match self
                 .token_manager
-                .acquire_context_excluding(&failed_ids)
+                .acquire_context_with_group(&failed_ids, group)
                 .await
             {
                 Ok(c) => c,
@@ -802,6 +815,7 @@ impl KiroProvider {
         request_body: &str,
         is_stream: bool,
         user_id: Option<&str>,
+        group: Option<&str>,
     ) -> anyhow::Result<ApiCallResult> {
         let total_credentials = self.token_manager.total_count();
         let available = self.token_manager.available_count();
@@ -828,7 +842,7 @@ impl KiroProvider {
             // 获取调用上下文（绑定 index、credentials、token），支持用户亲和性
             let ctx = match self
                 .token_manager
-                .acquire_context_for_user_excluding(user_id, &failed_ids)
+                .acquire_context_for_user_with_group(user_id, &failed_ids, group)
                 .await
             {
                 Ok(c) => c,

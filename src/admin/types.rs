@@ -702,6 +702,7 @@ pub struct ProxyPoolEntry {
 }
 
 /// 代理池列表响应
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyPoolResponse {
@@ -724,6 +725,7 @@ pub struct ProxyCheckResponse {
 }
 
 /// 全量健康检查响应
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyCheckAllResponse {
@@ -742,6 +744,7 @@ pub struct AssignRoundRobinRequest {
 }
 
 /// 轮询批量分配响应
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssignRoundRobinResponse {

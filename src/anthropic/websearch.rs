@@ -649,6 +649,7 @@ pub async fn handle_websearch_request(
     cache_tracker: Option<&std::sync::Arc<crate::anthropic::cache_tracker::CacheTracker>>,
     cache_profile: Option<&crate::anthropic::cache_tracker::CacheProfile>,
     input_tokens: i32,
+    group: Option<&str>,
 ) -> Response {
     // 1. 提取搜索查询
     let query = match extract_search_query(payload) {
@@ -671,7 +672,9 @@ pub async fn handle_websearch_request(
     let (tool_use_id, mcp_request) = create_mcp_request(&query);
 
     // 3. 调用 Kiro MCP API
-    let (search_results, final_cache_context) = match call_mcp_api(&provider, &mcp_request).await {
+    let (search_results, final_cache_context) = match call_mcp_api(&provider, &mcp_request, group)
+        .await
+    {
         Ok(api_result) => {
             let resolved_cache_context = match (cache_tracker, cache_profile) {
                 (Some(cache_tracker), Some(cache_profile)) => {
@@ -805,12 +808,13 @@ struct ParsedMcpCallResult {
 async fn call_mcp_api(
     provider: &crate::kiro::provider::KiroProvider,
     request: &McpRequest,
+    group: Option<&str>,
 ) -> anyhow::Result<ParsedMcpCallResult> {
     let request_body = serde_json::to_string(request)?;
 
     tracing::debug!("MCP request: {}", request_body);
 
-    let api_result = provider.call_mcp(&request_body).await?;
+    let api_result = provider.call_mcp(&request_body, group).await?;
 
     let body = api_result.response.text().await?;
     tracing::debug!("MCP response: {}", body);

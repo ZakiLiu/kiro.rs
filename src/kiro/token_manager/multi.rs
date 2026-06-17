@@ -271,6 +271,18 @@ fn duration_secs_ceil(duration: StdDuration) -> u64 {
     (duration.as_millis().div_ceil(1000) as u64).max(1)
 }
 
+/// 凭据分组是否匹配请求的分组过滤条件。
+/// `group` 为 None 时不做过滤（所有凭据均匹配）。
+fn credential_matches_group(
+    credentials: &crate::kiro::model::credentials::KiroCredentials,
+    group: Option<&str>,
+) -> bool {
+    match group {
+        None => true,
+        Some(g) => credentials.groups.iter().any(|cg| cg == g),
+    }
+}
+
 fn cooldown_wait_source(reason: CooldownReason) -> &'static str {
     match reason {
         CooldownReason::RateLimitExceeded => "cooldown:rate_limit_exceeded",
@@ -353,6 +365,17 @@ fn parse_disable_reason(s: Option<&str>) -> DisableReason {
         Some("InsufficientBalance") => DisableReason::InsufficientBalance,
         _ => DisableReason::Manual,
     }
+}
+
+/// Admin API 凭据字段更新包
+#[derive(Default)]
+pub struct CredentialFieldUpdate {
+    pub email: Option<Option<String>>,
+    pub proxy_url: Option<Option<String>>,
+    pub proxy_username: Option<Option<String>>,
+    pub proxy_password: Option<Option<String>>,
+    pub groups: Option<Vec<String>>,
+    pub source_channel: Option<Option<String>>,
 }
 
 impl MultiTokenManager {
@@ -878,14 +901,33 @@ impl MultiTokenManager {
     /// 如果 Token 过期或即将过期，会自动刷新
     /// Token 刷新失败时会尝试下一个可用凭据（不计入失败次数）
     pub async fn acquire_context(&self) -> anyhow::Result<CallContext> {
-        self.acquire_context_excluding(&[]).await
+        self.acquire_context_inner(&[], None).await
     }
 
     /// 与 `acquire_context` 相同，但额外把 `exclude_ids` 在第一轮就视作"已尝试"，
     /// 避免 retry 链路重新选回上一次失败的同一个凭据。
+    #[allow(dead_code)]
     pub async fn acquire_context_excluding(
         &self,
         exclude_ids: &[u64],
+    ) -> anyhow::Result<CallContext> {
+        self.acquire_context_inner(exclude_ids, None).await
+    }
+
+    /// 带分组过滤的凭据获取：仅选择 `groups` 包含 `group` 的凭据。
+    /// `group` 为 None 时不做分组过滤（等价于 `acquire_context_excluding`）。
+    pub async fn acquire_context_with_group(
+        &self,
+        exclude_ids: &[u64],
+        group: Option<&str>,
+    ) -> anyhow::Result<CallContext> {
+        self.acquire_context_inner(exclude_ids, group).await
+    }
+
+    async fn acquire_context_inner(
+        &self,
+        exclude_ids: &[u64],
+        group: Option<&str>,
     ) -> anyhow::Result<CallContext> {
         // 检查是否需要自动恢复（全局 ModelUnavailable 恢复）
         self.check_and_recover();
@@ -919,7 +961,10 @@ impl MultiTokenManager {
                 let entries = self.entries.lock();
                 let mut enabled_total = 0usize;
                 let mut enabled_tried = 0usize;
-                for entry in entries.iter().filter(|entry| !entry.disabled) {
+                for entry in entries
+                    .iter()
+                    .filter(|entry| !entry.disabled && credential_matches_group(&entry.credentials, group))
+                {
                     enabled_total += 1;
                     if tried_ids.contains(&entry.id) {
                         enabled_tried += 1;
@@ -1015,7 +1060,11 @@ impl MultiTokenManager {
 
                 let mut candidates: Vec<(u64, u32, bool)> = entries
                     .iter()
-                    .filter(|e| !e.disabled && !tried_ids.contains(&e.id))
+                    .filter(|e| {
+                        !e.disabled
+                            && !tried_ids.contains(&e.id)
+                            && credential_matches_group(&e.credentials, group)
+                    })
                     .map(|e| (e.id, e.credentials.priority, e.credentials.runtime_only))
                     .collect();
 
@@ -1041,7 +1090,11 @@ impl MultiTokenManager {
 
                     candidates = entries
                         .iter()
-                        .filter(|e| !e.disabled && !tried_ids.contains(&e.id))
+                        .filter(|e| {
+                            !e.disabled
+                                && !tried_ids.contains(&e.id)
+                                && credential_matches_group(&e.credentials, group)
+                        })
                         .map(|e| (e.id, e.credentials.priority, e.credentials.runtime_only))
                         .collect();
                 }
@@ -1147,21 +1200,43 @@ impl MultiTokenManager {
         &self,
         user_id: Option<&str>,
     ) -> anyhow::Result<CallContext> {
-        self.acquire_context_for_user_excluding(user_id, &[]).await
+        self.acquire_context_for_user_inner(user_id, &[], None).await
     }
 
     /// 与 `acquire_context_for_user` 相同，但 `exclude_ids` 内的凭据会被强制跳过：
     /// 即使 affinity 命中了被排除的凭据，也会落入 LB 重新选号。
     /// 用于 retry 链路避免反复选回同一个失败凭据（实测 0% 切换率的关键修复）。
+    #[allow(dead_code)]
     pub async fn acquire_context_for_user_excluding(
         &self,
         user_id: Option<&str>,
         exclude_ids: &[u64],
     ) -> anyhow::Result<CallContext> {
+        self.acquire_context_for_user_inner(user_id, exclude_ids, None)
+            .await
+    }
+
+    /// 带分组过滤的用户感知凭据获取。
+    pub async fn acquire_context_for_user_with_group(
+        &self,
+        user_id: Option<&str>,
+        exclude_ids: &[u64],
+        group: Option<&str>,
+    ) -> anyhow::Result<CallContext> {
+        self.acquire_context_for_user_inner(user_id, exclude_ids, group)
+            .await
+    }
+
+    async fn acquire_context_for_user_inner(
+        &self,
+        user_id: Option<&str>,
+        exclude_ids: &[u64],
+        group: Option<&str>,
+    ) -> anyhow::Result<CallContext> {
         // 无 user_id 时走默认逻辑
         let user_id = match user_id {
             Some(id) if !id.is_empty() => id,
-            _ => return self.acquire_context_excluding(exclude_ids).await,
+            _ => return self.acquire_context_inner(exclude_ids, group).await,
         };
 
         // 默认保持用户绑定（用于连续对话）。当绑定凭据“临时不可用”（速率限制/短冷却）时，
@@ -1174,7 +1249,11 @@ impl MultiTokenManager {
             let bound_excluded = exclude_ids.contains(&bound_id);
             let is_enabled = !bound_excluded && {
                 let entries = self.entries.lock();
-                entries.iter().any(|e| e.id == bound_id && !e.disabled)
+                entries.iter().any(|e| {
+                    e.id == bound_id
+                        && !e.disabled
+                        && credential_matches_group(&e.credentials, group)
+                })
             };
 
             if is_enabled {
@@ -1252,7 +1331,7 @@ impl MultiTokenManager {
             }
         }
 
-        let ctx = self.acquire_context_excluding(exclude_ids).await?;
+        let ctx = self.acquire_context_inner(exclude_ids, group).await?;
         if !keep_affinity_binding {
             self.affinity.set(user_id, ctx.id);
         }
@@ -1940,12 +2019,6 @@ impl MultiTokenManager {
         }
     }
 
-    /// 报告指定凭据 API 调用成功
-    ///
-    /// 重置该凭据的失败计数
-    ///
-    /// # Arguments
-    /// * `id` - 凭据 ID（来自 CallContext）
     /// 克隆所有凭据（用于导出）
     pub fn clone_all_credentials(&self) -> Vec<KiroCredentials> {
         let entries = self.entries.lock();
@@ -2159,12 +2232,6 @@ impl MultiTokenManager {
         result
     }
 
-    /// 报告指定凭据额度已用尽
-    ///
-    /// 用于处理 402 Payment Required 且 reason 为 `MONTHLY_REQUEST_COUNT` 的场景：
-    /// - 立即禁用该凭据（不等待连续失败阈值）
-    /// - 切换到下一个可用凭据继续重试
-    /// - 返回是否还有可用凭据
     /// 根据订阅等级自动归类到对应分组
     pub fn auto_assign_subscription_group(&self, id: u64, subscription_title: Option<&str>) {
         let Some(title) = subscription_title else { return };
@@ -2862,12 +2929,7 @@ impl MultiTokenManager {
     pub fn update_credential_fields(
         &self,
         id: u64,
-        email: Option<Option<String>>,
-        proxy_url: Option<Option<String>>,
-        proxy_username: Option<Option<String>>,
-        proxy_password: Option<Option<String>>,
-        groups: Option<Vec<String>>,
-        source_channel: Option<Option<String>>,
+        fields: CredentialFieldUpdate,
     ) -> anyhow::Result<()> {
         {
             let mut entries = self.entries.lock();
@@ -2875,22 +2937,22 @@ impl MultiTokenManager {
                 .iter_mut()
                 .find(|e| e.id == id)
                 .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?;
-            if let Some(v) = email {
+            if let Some(v) = fields.email {
                 entry.credentials.email = v;
             }
-            if let Some(v) = proxy_url {
+            if let Some(v) = fields.proxy_url {
                 entry.credentials.proxy_url = v;
             }
-            if let Some(v) = proxy_username {
+            if let Some(v) = fields.proxy_username {
                 entry.credentials.proxy_username = v;
             }
-            if let Some(v) = proxy_password {
+            if let Some(v) = fields.proxy_password {
                 entry.credentials.proxy_password = v;
             }
-            if let Some(v) = groups {
+            if let Some(v) = fields.groups {
                 entry.credentials.groups = v;
             }
-            if let Some(v) = source_channel {
+            if let Some(v) = fields.source_channel {
                 entry.credentials.source_channel = v;
             }
         }

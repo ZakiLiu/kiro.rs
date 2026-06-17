@@ -13,8 +13,8 @@ pub(crate) fn inject_system_prompt(payload: &mut MessagesRequest, shared: &Share
         )
     };
 
-    if strip_restrictions {
-        if let Some(ref mut system) = payload.system {
+    if strip_restrictions
+        && let Some(ref mut system) = payload.system {
             for msg in system.iter_mut() {
                 let stripped = super::prompt_filter::strip_restrictions(&msg.text);
                 if stripped.len() != msg.text.len() {
@@ -27,7 +27,6 @@ pub(crate) fn inject_system_prompt(payload: &mut MessagesRequest, shared: &Share
                 }
             }
         }
-    }
 
     let Some(text) = injection else {
         return;

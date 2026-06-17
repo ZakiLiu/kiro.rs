@@ -18,7 +18,7 @@ pub(crate) mod single;
 pub(crate) mod types;
 
 // Re-export public API
-pub use multi::{CallContext, MultiTokenManager};
+pub use multi::{CallContext, CredentialFieldUpdate, MultiTokenManager};
 pub use types::{CachedBalanceInfo, DisableReason};
 
 #[cfg(test)]

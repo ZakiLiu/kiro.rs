@@ -850,13 +850,13 @@ fn key_to_item(k: &super::client_keys::ClientKey) -> ClientKeyItem {
 }
 
 /// 获取 client_keys 管理器，若未初始化返回 501
-fn require_client_keys(state: &AdminState) -> Result<&super::client_keys::SharedClientKeyManager, axum::response::Response> {
+fn require_client_keys(state: &AdminState) -> Result<&super::client_keys::SharedClientKeyManager, Box<axum::response::Response>> {
     state.client_keys.as_ref().ok_or_else(|| {
-        (
+        Box::new((
             StatusCode::NOT_IMPLEMENTED,
             Json(super::types::AdminErrorResponse::internal_error("Client Key 管理器未初始化")),
         )
-            .into_response()
+            .into_response())
     })
 }
 
@@ -864,7 +864,7 @@ fn require_client_keys(state: &AdminState) -> Result<&super::client_keys::Shared
 pub async fn list_client_keys(State(state): State<AdminState>) -> impl IntoResponse {
     let client_keys = match require_client_keys(&state) {
         Ok(ck) => ck,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let keys = client_keys.list();
     let items: Vec<ClientKeyItem> = keys.iter().map(key_to_item).collect();
@@ -882,7 +882,7 @@ pub async fn create_client_key(
 ) -> impl IntoResponse {
     let client_keys = match require_client_keys(&state) {
         Ok(ck) => ck,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let name = payload.name.trim();
     if name.is_empty() {
@@ -921,7 +921,7 @@ pub async fn delete_client_key(
 ) -> impl IntoResponse {
     let client_keys = match require_client_keys(&state) {
         Ok(ck) => ck,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     if client_keys.is_system(id) {
         return (
@@ -954,7 +954,7 @@ pub async fn update_client_key(
 ) -> impl IntoResponse {
     let client_keys = match require_client_keys(&state) {
         Ok(ck) => ck,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let description = payload
         .description
@@ -987,7 +987,7 @@ pub async fn set_client_key_disabled(
 ) -> impl IntoResponse {
     let client_keys = match require_client_keys(&state) {
         Ok(ck) => ck,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     if client_keys.set_disabled(id, payload.disabled) {
         let action = if payload.disabled { "禁用" } else { "启用" };
@@ -1011,7 +1011,7 @@ pub async fn reset_client_key_stats(
 ) -> impl IntoResponse {
     let client_keys = match require_client_keys(&state) {
         Ok(ck) => ck,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     if client_keys.reset_stats(id) {
         Json(SuccessResponse::new(format!("Key #{} 统计已重置", id))).into_response()
@@ -1036,7 +1036,7 @@ pub async fn rotate_client_key(
 ) -> impl IntoResponse {
     let client_keys = match require_client_keys(&state) {
         Ok(ck) => ck,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     match client_keys.rotate(id) {
         Some(entry) => {
@@ -1165,35 +1165,35 @@ fn stats_bad_request(message: String) -> axum::response::Response {
 }
 
 /// 获取 usage_aggregator，若未初始化返回 501
-fn require_usage_aggregator(state: &AdminState) -> Result<&super::usage_stats::SharedAggregator, axum::response::Response> {
+fn require_usage_aggregator(state: &AdminState) -> Result<&super::usage_stats::SharedAggregator, Box<axum::response::Response>> {
     state.usage_aggregator.as_ref().ok_or_else(|| {
-        (
+        Box::new((
             StatusCode::NOT_IMPLEMENTED,
             Json(super::types::AdminErrorResponse::internal_error("用量聚合器未初始化")),
         )
-            .into_response()
+            .into_response())
     })
 }
 
 /// 获取 trace_store，若未初始化返回 501
-fn require_trace_store(state: &AdminState) -> Result<&super::trace_db::SharedTraceStore, axum::response::Response> {
+fn require_trace_store(state: &AdminState) -> Result<&super::trace_db::SharedTraceStore, Box<axum::response::Response>> {
     state.trace_store.as_ref().ok_or_else(|| {
-        (
+        Box::new((
             StatusCode::NOT_IMPLEMENTED,
             Json(super::types::AdminErrorResponse::internal_error("链路追踪存储未初始化")),
         )
-            .into_response()
+            .into_response())
     })
 }
 
 /// 获取 groups 管理器，若未初始化返回 501
-fn require_groups(state: &AdminState) -> Result<&super::groups::SharedGroupManager, axum::response::Response> {
+fn require_groups(state: &AdminState) -> Result<&super::groups::SharedGroupManager, Box<axum::response::Response>> {
     state.groups.as_ref().ok_or_else(|| {
-        (
+        Box::new((
             StatusCode::NOT_IMPLEMENTED,
             Json(super::types::AdminErrorResponse::internal_error("分组管理器未初始化")),
         )
-            .into_response()
+            .into_response())
     })
 }
 
@@ -1201,7 +1201,7 @@ fn require_groups(state: &AdminState) -> Result<&super::groups::SharedGroupManag
 pub async fn stats_overview(State(state): State<AdminState>) -> impl IntoResponse {
     let usage_aggregator = match require_usage_aggregator(&state) {
         Ok(ua) => ua,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let overview = usage_aggregator.overview();
     let active_keys = state.client_keys.as_ref().map(|ck| ck.active_count() as u64).unwrap_or(0);
@@ -1230,7 +1230,7 @@ pub async fn stats_timeseries(
 ) -> axum::response::Response {
     let usage_aggregator = match require_usage_aggregator(&state) {
         Ok(ua) => ua,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let (window, key_id) = match stats_query_parts(&params) {
         Ok(parts) => parts,
@@ -1249,7 +1249,7 @@ pub async fn stats_by_model(
 ) -> axum::response::Response {
     let usage_aggregator = match require_usage_aggregator(&state) {
         Ok(ua) => ua,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let (window, key_id) = match stats_query_parts(&params) {
         Ok(parts) => parts,
@@ -1266,7 +1266,7 @@ pub async fn stats_by_credential(
 ) -> axum::response::Response {
     let usage_aggregator = match require_usage_aggregator(&state) {
         Ok(ua) => ua,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let (window, key_id) = match stats_query_parts(&params) {
         Ok(parts) => parts,
@@ -1311,7 +1311,7 @@ pub async fn list_traces(
 ) -> impl IntoResponse {
     let trace_store = match require_trace_store(&state) {
         Ok(ts) => ts,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
 
     // group 过滤暂时不支持（CredentialStatusItem 尚无 groups 字段）
@@ -1425,7 +1425,7 @@ pub async fn list_traces(
 pub async fn trace_failure_stats(State(state): State<AdminState>) -> impl IntoResponse {
     let trace_store = match require_trace_store(&state) {
         Ok(ts) => ts,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let stats = trace_store.failure_stats();
     let map: std::collections::HashMap<String, serde_json::Value> = stats
@@ -1472,7 +1472,7 @@ fn group_to_item(
 pub async fn list_groups(State(state): State<AdminState>) -> impl IntoResponse {
     let groups = match require_groups(&state) {
         Ok(g) => g,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     let group_list = groups.list();
     let items: Vec<super::types::GroupItem> =
@@ -1491,7 +1491,7 @@ pub async fn create_group(
 ) -> impl IntoResponse {
     let groups = match require_groups(&state) {
         Ok(g) => g,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     match groups.create(payload.name, payload.description) {
         Ok(g) => Json(group_to_item(&g, &state)).into_response(),
@@ -1522,7 +1522,7 @@ pub async fn update_group(
 ) -> impl IntoResponse {
     let groups = match require_groups(&state) {
         Ok(g) => g,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
 
     if !groups.exists(&name) {
@@ -1620,7 +1620,7 @@ pub async fn delete_group(
 ) -> impl IntoResponse {
     let groups = match require_groups(&state) {
         Ok(g) => g,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
 
     if !groups.exists(&name) {

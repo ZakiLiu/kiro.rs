@@ -66,19 +66,17 @@ impl OpenAIStreamContext {
         let mut chunks = Vec::new();
 
         match event {
-            Event::AssistantResponse(ev) => {
-                if !ev.content.is_empty() {
+            Event::AssistantResponse(ev)
+                if !ev.content.is_empty() => {
                     self.output_tokens += token::count_tokens(&ev.content) as i32;
                     chunks.push(self.make_content_chunk(&ev.content));
                 }
-            }
-            Event::ReasoningContent(ev) => {
-                if !ev.text.is_empty() {
+            Event::ReasoningContent(ev)
+                if !ev.text.is_empty() => {
                     self.thinking_tokens += token::count_tokens(&ev.text) as i32;
                     self.reasoning_buffer.push_str(&ev.text);
                     chunks.push(self.make_reasoning_chunk(&ev.text));
                 }
-            }
             Event::ToolUse(ev) => {
                 self.has_tool_use = true;
                 if ev.stop {

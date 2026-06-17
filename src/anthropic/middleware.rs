@@ -31,6 +31,8 @@ use super::types::ErrorResponse;
 pub struct AuthIdentity {
     pub key_id: u64,
     pub key_source: TraceKeySource,
+    /// 客户端 Key 绑定的分组名（用于路由到对应分组的上游凭据）
+    pub group: Option<String>,
 }
 
 #[derive(Clone)]
@@ -219,21 +221,23 @@ pub async fn auth_middleware(
     };
 
     // 所有 Key 统一走客户端 Key 管理器校验（master apiKey 已通过 ensure_system_key 注册为系统 Key）
-    if let Some(ref mgr) = state.client_keys {
-        if let Some(id) = mgr.verify_and_touch(&key) {
+    if let Some(ref mgr) = state.client_keys
+        && let Some(id) = mgr.verify_and_touch(&key) {
+            let group = mgr.group_of(id);
             request.extensions_mut().insert(AuthIdentity {
                 key_id: id,
                 key_source: TraceKeySource::ClientKey,
+                group,
             });
             return next.run(request).await;
         }
-    }
 
     // 兜底：ClientKeyManager 未初始化时回退 master apiKey 直接比对
     if auth::constant_time_eq(&key, &state.api_key) {
         request.extensions_mut().insert(AuthIdentity {
             key_id: 0,
             key_source: TraceKeySource::MasterApiKey,
+            group: None,
         });
         return next.run(request).await;
     }

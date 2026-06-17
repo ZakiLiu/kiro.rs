@@ -15,8 +15,7 @@ use serde_json::json;
 use tokio::time::{Instant, interval_at};
 use std::time::Duration;
 
-use crate::admin::trace_db::TraceAttempt;
-use crate::anthropic::handlers::record_request_telemetry;
+use crate::anthropic::handlers::{record_request_telemetry, TelemetryData};
 use crate::anthropic::middleware::{AppState, AuthIdentity};
 use crate::kiro::model::events::Event;
 use crate::kiro::parser::decoder::EventStreamDecoder;
@@ -91,7 +90,7 @@ async fn handle_stream(
     auth: &AuthIdentity,
 ) -> Response {
     let start = Instant::now();
-    let result = match provider.call_api_stream(request_body, None).await {
+    let result = match provider.call_api_stream(request_body, None, auth.group.as_deref()).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Gemini upstream stream error: {}", e);
@@ -103,12 +102,9 @@ async fn handle_stream(
         }
     };
 
-    let credential_id = result.credential_id;
-    let attempts = result.attempts;
-    let response = result.response;
     let stream = create_gemini_sse_stream(
-        response, model.to_string(), input_tokens,
-        state.clone(), auth.clone(), credential_id, attempts, start,
+        result, model.to_string(), input_tokens,
+        state.clone(), auth.clone(), start,
     );
 
     Response::builder()
@@ -123,15 +119,16 @@ async fn handle_stream(
 }
 
 fn create_gemini_sse_stream(
-    response: reqwest::Response,
+    api_result: crate::kiro::provider::ApiCallResult,
     model: String,
     input_tokens: i32,
     state: AppState,
     auth: AuthIdentity,
-    credential_id: u64,
-    attempts: Vec<TraceAttempt>,
     start: Instant,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
+    let credential_id = api_result.credential_id;
+    let attempts = api_result.attempts;
+    let response = api_result.response;
     let _model = model.clone();
 
     async_stream::stream! {
@@ -222,9 +219,20 @@ fn create_gemini_sse_stream(
 
         let duration_ms = start.elapsed().as_millis() as u64;
         record_request_telemetry(
-            &state, &auth, &model, true, credential_id,
-            final_input_tokens, output_tokens, 0, 0,
-            0.0, duration_ms, "success", attempts, None,
+            &state, &auth, TelemetryData {
+                model: &model,
+                is_stream: true,
+                credential_id,
+                input_tokens: final_input_tokens,
+                output_tokens,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                credits: 0.0,
+                duration_ms,
+                status: "success",
+                attempts,
+                first_token_ms: None,
+            },
         );
     }
 }
@@ -238,7 +246,7 @@ async fn handle_non_stream(
     auth: &AuthIdentity,
 ) -> Response {
     let start = Instant::now();
-    let result = match provider.call_api(request_body, None).await {
+    let result = match provider.call_api(request_body, None, auth.group.as_deref()).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Gemini upstream error: {}", e);
@@ -319,9 +327,20 @@ async fn handle_non_stream(
 
     let duration_ms = start.elapsed().as_millis() as u64;
     record_request_telemetry(
-        state, auth, model, false, credential_id,
-        final_input_tokens, output_tokens, 0, 0,
-        0.0, duration_ms, "success", attempts, None,
+        state, auth, TelemetryData {
+            model,
+            is_stream: false,
+            credential_id,
+            input_tokens: final_input_tokens,
+            output_tokens,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            credits: 0.0,
+            duration_ms,
+            status: "success",
+            attempts,
+            first_token_ms: None,
+        },
     );
 
     (StatusCode::OK, Json(json!(response))).into_response()

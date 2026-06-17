@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
@@ -18,6 +19,7 @@ pub struct ChatCompletionRequest {
     pub metadata: Option<serde_json::Value>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
@@ -43,12 +45,14 @@ pub struct ContentPart {
     pub image_url: Option<ImageUrl>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImageUrl {
     pub url: String,
     pub detail: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatTool {
     #[serde(rename = "type")]

@@ -65,6 +65,7 @@ fn default_true() -> bool {
 }
 
 /// 代理分配结果
+#[allow(dead_code)]
 pub enum GetUrlResult {
     /// 代理存在且已启用，返回 URL
     Ok(String),
@@ -213,11 +214,10 @@ impl ProxyPoolManager {
         }
         drop(entries);
 
-        if !added.is_empty() {
-            if let Err(e) = self.persist() {
+        if !added.is_empty()
+            && let Err(e) = self.persist() {
                 tracing::warn!("批量添加代理后持久化失败: {}", e);
             }
-        }
 
         (added, errors)
     }
@@ -255,6 +255,7 @@ impl ProxyPoolManager {
     }
 
     /// 获取代理 URL，区分"不存在"和"已禁用"两种情况
+    #[allow(dead_code)]
     pub fn get_url(&self, id: u64) -> GetUrlResult {
         match self.entries.lock().iter().find(|e| e.id == id) {
             None => GetUrlResult::NotFound,

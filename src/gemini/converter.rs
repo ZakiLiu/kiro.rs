@@ -12,6 +12,7 @@ use crate::kiro::model::requests::kiro::KiroRequest;
 
 use super::types::GenerateContentRequest;
 
+#[allow(dead_code)]
 pub struct ConversionResult {
     pub kiro_request: KiroRequest,
     pub model: String,

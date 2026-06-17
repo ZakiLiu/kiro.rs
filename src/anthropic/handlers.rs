@@ -2,7 +2,7 @@
 
 use std::convert::Infallible;
 
-use crate::admin::trace_db::{TraceKeySource, TraceRecord};
+use crate::admin::trace_db::TraceRecord;
 use crate::admin::usage_stats::UsageRecord;
 use crate::kiro::model::events::{Event, MeteringEvent};
 use crate::kiro::model::requests::kiro::KiroRequest;
@@ -43,34 +43,38 @@ use super::error_map::{self, ErrorRequestContext};
 use super::middleware::AppState;
 
 /// 记录请求用量（usage + trace + client key 回写）
+pub(crate) struct TelemetryData<'a> {
+    pub model: &'a str,
+    pub is_stream: bool,
+    pub credential_id: u64,
+    pub input_tokens: i32,
+    pub output_tokens: i32,
+    pub cache_creation_tokens: i32,
+    pub cache_read_tokens: i32,
+    pub credits: f64,
+    pub duration_ms: u64,
+    pub status: &'a str,
+    pub attempts: Vec<crate::admin::trace_db::TraceAttempt>,
+    pub first_token_ms: Option<u64>,
+}
+
 pub(crate) fn record_request_telemetry(
     state: &AppState,
     auth: &AuthIdentity,
-    model: &str,
-    is_stream: bool,
-    credential_id: u64,
-    input_tokens: i32,
-    output_tokens: i32,
-    cache_creation_tokens: i32,
-    cache_read_tokens: i32,
-    credits: f64,
-    duration_ms: u64,
-    status: &str,
-    attempts: Vec<crate::admin::trace_db::TraceAttempt>,
-    first_token_ms: Option<u64>,
+    data: TelemetryData<'_>,
 ) {
     let record = UsageRecord {
         ts: chrono::Utc::now().to_rfc3339(),
         key_id: auth.key_id,
-        credential_id,
-        model: model.to_string(),
-        input_tokens: input_tokens.max(0) as u64,
-        output_tokens: output_tokens.max(0) as u64,
-        cache_creation_tokens: cache_creation_tokens.max(0) as u64,
-        cache_read_tokens: cache_read_tokens.max(0) as u64,
-        credits,
-        duration_ms,
-        status: status.to_string(),
+        credential_id: data.credential_id,
+        model: data.model.to_string(),
+        input_tokens: data.input_tokens.max(0) as u64,
+        output_tokens: data.output_tokens.max(0) as u64,
+        cache_creation_tokens: data.cache_creation_tokens.max(0) as u64,
+        cache_read_tokens: data.cache_read_tokens.max(0) as u64,
+        credits: data.credits,
+        duration_ms: data.duration_ms,
+        status: data.status.to_string(),
     };
     if let Some(recorder) = &state.usage_recorder {
         recorder.record(&record);
@@ -85,39 +89,39 @@ pub(crate) fn record_request_telemetry(
             record.output_tokens,
             record.cache_creation_tokens,
             record.cache_read_tokens,
-            credits,
+            data.credits,
         );
     }
-    if let Some(store) = &state.trace_store {
-        if store.is_enabled() {
+    if let Some(store) = &state.trace_store
+        && store.is_enabled() {
             let trace = TraceRecord {
                 trace_id: Uuid::new_v4().to_string(),
                 ts: record.ts.clone(),
                 key_id: auth.key_id,
                 key_source: auth.key_source,
-                model: model.to_string(),
-                is_stream,
-                final_status: status.to_string(),
-                final_credential_id: credential_id,
-                error_type: if status != "success" { Some(status.to_string()) } else { None },
+                model: data.model.to_string(),
+                is_stream: data.is_stream,
+                final_status: data.status.to_string(),
+                final_credential_id: data.credential_id,
+                error_type: if data.status != "success" { Some(data.status.to_string()) } else { None },
                 error_message: None,
-                total_attempts: attempts.len().max(1) as u32,
-                duration_ms,
+                total_attempts: data.attempts.len().max(1) as u32,
+                duration_ms: data.duration_ms,
                 interrupted_after_bytes: None,
                 input_tokens: record.input_tokens,
                 output_tokens: record.output_tokens,
                 cache_creation_tokens: record.cache_creation_tokens,
                 cache_read_tokens: record.cache_read_tokens,
-                credits,
-                first_token_ms,
-                attempts,
+                credits: data.credits,
+                first_token_ms: data.first_token_ms,
+                attempts: data.attempts,
             };
             store.insert(&trace);
         }
-    }
 }
 /// 流式路径的 token 用量快照，由 unfold closure 在流结束时写入，
 /// 供 handler 层读取后传给 record_request_telemetry。
+#[allow(dead_code)]
 #[derive(Default)]
 struct StreamUsageSnapshot {
     input_tokens: i32,
@@ -1160,6 +1164,7 @@ pub async fn post_messages(
             },
             websearch_cache_profile.as_ref(),
             estimated_input_tokens,
+            auth.group.as_deref(),
         )
         .await;
     }
@@ -1419,7 +1424,7 @@ async fn handle_stream_request(
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let api_result = match provider
-        .call_api_stream(context.request_body, context.user_id)
+        .call_api_stream(context.request_body, context.user_id, auth.group.as_deref())
         .await
     {
         Ok(resp) => resp,
@@ -1437,19 +1442,28 @@ async fn handle_stream_request(
                 error_snippet.clone()
             };
             record_request_telemetry(
-                state, auth, context.model, true, 0,
-                context.input_tokens, 0, 0, 0, 0.0,
-                elapsed_ms, "error",
-                vec![crate::admin::trace_db::TraceAttempt {
-                    attempt: 0,
+                state, auth, TelemetryData {
+                    model: context.model,
+                    is_stream: true,
                     credential_id: 0,
-                    endpoint: String::new(),
-                    http_status: None,
-                    outcome: "ERROR".to_string(),
-                    error_snippet: Some(error_snippet_short),
+                    input_tokens: context.input_tokens,
+                    output_tokens: 0,
+                    cache_creation_tokens: 0,
+                    cache_read_tokens: 0,
+                    credits: 0.0,
                     duration_ms: elapsed_ms,
-                }],
-                None,
+                    status: "error",
+                    attempts: vec![crate::admin::trace_db::TraceAttempt {
+                        attempt: 0,
+                        credential_id: 0,
+                        endpoint: String::new(),
+                        http_status: None,
+                        outcome: "ERROR".to_string(),
+                        error_snippet: Some(error_snippet_short),
+                        duration_ms: elapsed_ms,
+                    }],
+                    first_token_ms: None,
+                },
             );
             return map_kiro_provider_error_to_response(
                 context.request_body, e, context.adaptive_outcome,
@@ -1525,10 +1539,20 @@ async fn handle_stream_request(
         let snap = usage_snapshot.lock().take().unwrap_or_default();
         let total_output = snap.output_tokens + snap.thinking_tokens;
         record_request_telemetry(
-            &stream_state, &stream_auth, &stream_model, true,
-            stream_credential_id, stream_input_tokens, total_output,
-            snap.cache_creation, snap.cache_read, snap.credits,
-            duration_ms, "success", stream_attempts, Some(ttfb_ms),
+            &stream_state, &stream_auth, TelemetryData {
+                model: &stream_model,
+                is_stream: true,
+                credential_id: stream_credential_id,
+                input_tokens: stream_input_tokens,
+                output_tokens: total_output,
+                cache_creation_tokens: snap.cache_creation,
+                cache_read_tokens: snap.cache_read,
+                credits: snap.credits,
+                duration_ms,
+                status: "success",
+                attempts: stream_attempts,
+                first_token_ms: Some(ttfb_ms),
+            },
         );
         Ok(Bytes::new())
     }));
@@ -1693,7 +1717,7 @@ async fn handle_non_stream_request(
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
     let api_result = match provider
-        .call_api(context.request_body, context.user_id)
+        .call_api(context.request_body, context.user_id, auth.group.as_deref())
         .await
     {
         Ok(resp) => resp,
@@ -1711,19 +1735,28 @@ async fn handle_non_stream_request(
                 error_snippet.clone()
             };
             record_request_telemetry(
-                state, auth, context.model, false, 0,
-                context.input_tokens, 0, 0, 0, 0.0,
-                elapsed_ms, "error",
-                vec![crate::admin::trace_db::TraceAttempt {
-                    attempt: 0,
+                state, auth, TelemetryData {
+                    model: context.model,
+                    is_stream: false,
                     credential_id: 0,
-                    endpoint: String::new(),
-                    http_status: None,
-                    outcome: "ERROR".to_string(),
-                    error_snippet: Some(error_snippet_short),
+                    input_tokens: context.input_tokens,
+                    output_tokens: 0,
+                    cache_creation_tokens: 0,
+                    cache_read_tokens: 0,
+                    credits: 0.0,
                     duration_ms: elapsed_ms,
-                }],
-                None,
+                    status: "error",
+                    attempts: vec![crate::admin::trace_db::TraceAttempt {
+                        attempt: 0,
+                        credential_id: 0,
+                        endpoint: String::new(),
+                        http_status: None,
+                        outcome: "ERROR".to_string(),
+                        error_snippet: Some(error_snippet_short),
+                        duration_ms: elapsed_ms,
+                    }],
+                    first_token_ms: None,
+                },
             );
             return map_kiro_provider_error_to_response(
                 context.request_body, e, context.adaptive_outcome,
@@ -2030,11 +2063,20 @@ async fn handle_non_stream_request(
 
     let credits = metering.as_ref().map(|m| m.usage).unwrap_or(0.0);
     record_request_telemetry(
-        state, auth, context.model, false,
-        api_result.credential_id, context.input_tokens, output_tokens,
-        final_cache_context.map(|c| c.cache_creation_input_tokens).unwrap_or(0),
-        final_cache_context.map(|c| c.cache_read_input_tokens).unwrap_or(0),
-        credits, total_ms, "success", api_result.attempts, None,
+        state, auth, TelemetryData {
+            model: context.model,
+            is_stream: false,
+            credential_id: api_result.credential_id,
+            input_tokens: context.input_tokens,
+            output_tokens,
+            cache_creation_tokens: final_cache_context.map(|c| c.cache_creation_input_tokens).unwrap_or(0),
+            cache_read_tokens: final_cache_context.map(|c| c.cache_read_input_tokens).unwrap_or(0),
+            credits,
+            duration_ms: total_ms,
+            status: "success",
+            attempts: api_result.attempts,
+            first_token_ms: None,
+        },
     );
 
     (

@@ -10,6 +10,7 @@
 //!    `content` 用 `include_str!("presets/<id>.md")` 内嵌
 
 /// 单个预设的元数据 + 内容
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PromptPreset {
     /// 稳定唯一标识（用于配置文件持久化、前端勾选）
@@ -57,11 +58,13 @@ pub const PRESETS: &[PromptPreset] = &[
 ];
 
 /// 按 id 查找预设
+#[allow(dead_code)]
 pub fn find(id: &str) -> Option<&'static PromptPreset> {
     PRESETS.iter().find(|p| p.id == id)
 }
 
 /// 判断 id 是否属于内置预设
+#[allow(dead_code)]
 pub fn is_builtin(id: &str) -> bool {
     find(id).is_some()
 }

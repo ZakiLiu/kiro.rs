@@ -107,7 +107,7 @@ fn compare_semver(current: &str, latest: &str) -> std::cmp::Ordering {
 fn parse_semver_core(value: &str) -> [u32; 3] {
     let core = value
         .trim_start_matches('v')
-        .split(|c: char| c == '-' || c == '+')
+        .split(['-', '+'])
         .next()
         .unwrap_or("");
     let mut out = [0u32; 3];
@@ -216,6 +216,7 @@ struct SocialAuthSession {
 }
 
 /// IdC 设备授权登录会话
+#[allow(dead_code)]
 struct IdcAuthSession {
     region: String,
     client_id: String,
@@ -1602,15 +1603,18 @@ impl AdminService {
             if s.trim().is_empty() { None } else { Some(s) }
         });
 
+        use crate::kiro::token_manager::CredentialFieldUpdate;
         self.token_manager
             .update_credential_fields(
                 id,
-                email,
-                proxy_url,
-                proxy_username,
-                proxy_password,
-                payload.groups,
-                source_channel,
+                CredentialFieldUpdate {
+                    email,
+                    proxy_url,
+                    proxy_username,
+                    proxy_password,
+                    groups: payload.groups,
+                    source_channel,
+                },
             )
             .map_err(|e| self.classify_proxy_error(e))
     }
@@ -1740,7 +1744,7 @@ impl AdminService {
                 let entry = entries
                     .iter()
                     .find(|e| e.id == proxy_id)
-                    .ok_or_else(|| AdminServiceError::NotFound { id: proxy_id })?;
+                    .ok_or(AdminServiceError::NotFound { id: proxy_id })?;
                 if !entry.enabled {
                     return Err(AdminServiceError::InvalidCredential(
                         format!("代理 #{} 已禁用，无法分配", proxy_id),
@@ -2249,7 +2253,7 @@ impl AdminService {
     ) -> Result<serde_json::Value, AdminServiceError> {
         let (region, client_id, client_secret, device_code, _expires_at, proxy, cred_template, relogin_target_id) = {
             let sessions = self.idc_sessions.lock();
-            let s = sessions.get(session_id).ok_or_else(|| AdminServiceError::NotFound { id: 0 })?;
+            let s = sessions.get(session_id).ok_or(AdminServiceError::NotFound { id: 0 })?;
             if Utc::now() >= s.expires_at {
                 let resp = PollIdcLoginResponse::Expired;
                 return serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()));
@@ -2497,8 +2501,8 @@ impl AdminService {
     }
 
     pub async fn check_update(&self, force: bool) -> UpdateCheckInfo {
-        if !force {
-            if let Some(cached) = self.update_check_cache.lock().clone() {
+        if !force
+            && let Some(cached) = self.update_check_cache.lock().clone() {
                 let age = Utc::now()
                     .signed_duration_since(cached.cached_at)
                     .num_seconds();
@@ -2508,7 +2512,6 @@ impl AdminService {
                     return info;
                 }
             }
-        }
 
         match self.fetch_latest_release().await {
             Ok(info) => {

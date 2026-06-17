@@ -187,6 +187,7 @@ pub struct ConversionResult {
 /// 转换错误
 #[derive(Debug)]
 pub enum ConversionError {
+    #[allow(dead_code)]
     UnsupportedModel(String),
     EmptyMessages,
     EmptyMessageContent,
