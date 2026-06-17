@@ -8,6 +8,7 @@ use axum::{
     routing::get,
 };
 use rust_embed::Embed;
+use tower_http::compression::CompressionLayer;
 
 /// 嵌入前端构建产物
 #[derive(Embed)]
@@ -19,6 +20,7 @@ pub fn create_admin_ui_router() -> Router {
     Router::new()
         .route("/", get(index_handler))
         .route("/{*file}", get(static_handler))
+        .layer(CompressionLayer::new())
 }
 
 /// 处理首页请求
