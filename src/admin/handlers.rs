@@ -1682,3 +1682,58 @@ pub async fn delete_group(
     )))
     .into_response()
 }
+
+// ============ 在线更新 ============
+
+pub async fn get_update_config(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.get_update_config())
+}
+
+pub async fn set_update_config(
+    State(state): State<AdminState>,
+    Json(payload): Json<super::types::SetUpdateConfigRequest>,
+) -> impl IntoResponse {
+    match state.service.set_update_config(payload) {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+pub async fn check_update(
+    State(state): State<AdminState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let force = matches!(params.get("force").map(String::as_str), Some("true" | "1"));
+    let info = state.service.check_update(force).await;
+    Json(info).into_response()
+}
+
+pub async fn pull_update_image(State(state): State<AdminState>) -> impl IntoResponse {
+    match state.service.pull_update_image().await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+pub async fn apply_image_update(State(state): State<AdminState>) -> impl IntoResponse {
+    match state.service.apply_image_update().await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+pub async fn rollback_image_update(State(state): State<AdminState>) -> impl IntoResponse {
+    match state.service.rollback_image_update().await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+pub async fn check_rate_limit(
+    State(state): State<AdminState>,
+    payload: Option<Json<super::types::CheckRateLimitRequest>>,
+) -> impl IntoResponse {
+    let req = payload.map(|Json(p)| p).unwrap_or_default();
+    let info = state.service.check_rate_limit(req).await;
+    Json(info).into_response()
+}

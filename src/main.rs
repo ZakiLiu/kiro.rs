@@ -386,6 +386,8 @@ async fn main() {
                 if let Some(ts) = &trace_store {
                     admin_state = admin_state.with_trace_store(ts.clone());
                 }
+                admin_state.service.start_auto_update_scheduler();
+
                 let admin_app = admin::create_admin_router(admin_state);
 
                 // 创建 Admin UI 路由

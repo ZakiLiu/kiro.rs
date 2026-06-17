@@ -7,27 +7,28 @@ use axum::{
 
 use super::{
     handlers::{
-        add_credential, add_proxy, assign_proxies_round_robin, assign_proxy_to_credential,
-        batch_add_proxies, check_all_proxies, check_proxy, clear_throttle,
-        complete_social_login, complete_social_relogin, create_client_key, create_group,
-        create_preset, delete_client_key, delete_credential, delete_group, delete_preset,
-        delete_proxy, force_refresh_token, get_account_throttle_config, get_all_credentials,
-        disable_quota_exceeded, enable_overage_all, export_credentials,
-        get_cached_balances, get_credential_balance, get_credential_models, get_global_config,
-        get_global_proxy, set_credential_overage,
+        add_credential, add_proxy, apply_image_update, assign_proxies_round_robin,
+        assign_proxy_to_credential, batch_add_proxies, check_all_proxies, check_proxy,
+        check_rate_limit, check_update, clear_throttle, complete_social_login,
+        complete_social_relogin, create_client_key, create_group, create_preset,
+        delete_client_key, delete_credential, delete_group, delete_preset, delete_proxy,
+        disable_quota_exceeded, enable_overage_all, export_credentials, force_refresh_token,
+        get_account_throttle_config, get_all_credentials, get_cached_balances,
+        get_credential_balance, get_credential_models, get_global_config, get_global_proxy,
         get_load_balancing_mode, get_log_governance_config, get_metrics_by_credential,
         get_metrics_by_model, get_metrics_summary, get_presets, get_proxy_config, get_proxy_pool,
-        import_token_json, list_client_keys, list_groups, list_traces, poll_idc_login,
-        poll_idc_relogin, poll_social_login, poll_social_relogin, reset_all_success_count,
-        reset_client_key_stats, reset_failure_count, reset_success_count, rotate_client_key,
+        get_update_config, import_token_json, list_client_keys, list_groups, list_traces,
+        poll_idc_login, poll_idc_relogin, poll_social_login, poll_social_relogin,
+        pull_update_image, reset_all_success_count, reset_client_key_stats, reset_failure_count,
+        reset_success_count, rollback_image_update, rotate_client_key,
         set_account_throttle_config, set_client_key_disabled, set_credential_disabled,
-        set_credential_endpoint, set_credential_priority, set_credential_region,
-        set_load_balancing_mode, set_log_governance_config, set_proxy_enabled,
-        start_idc_login, start_idc_relogin, start_social_login, start_social_relogin,
-        stats_by_credential, stats_by_model, stats_overview, stats_timeseries,
-        trace_failure_stats, update_admin_key, update_client_key, update_credential,
-        update_global_config, update_group, update_preset, update_proxy_config,
-        update_refresh_token, set_global_proxy,
+        set_credential_endpoint, set_credential_overage, set_credential_priority,
+        set_credential_region, set_global_proxy, set_load_balancing_mode,
+        set_log_governance_config, set_proxy_enabled, set_update_config, start_idc_login,
+        start_idc_relogin, start_social_login, start_social_relogin, stats_by_credential,
+        stats_by_model, stats_overview, stats_timeseries, trace_failure_stats, update_admin_key,
+        update_client_key, update_credential, update_global_config, update_group, update_preset,
+        update_proxy_config, update_refresh_token,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -101,6 +102,17 @@ pub fn create_admin_router(state: AdminState) -> Router {
             get(get_global_config).put(update_global_config),
         )
         .route("/config/admin-key", put(update_admin_key))
+        // ---- 更新配置 ----
+        .route(
+            "/config/update",
+            get(get_update_config).put(set_update_config),
+        )
+        // ---- 系统更新 ----
+        .route("/system/update/check", get(check_update))
+        .route("/system/update/pull", post(pull_update_image))
+        .route("/system/update/apply", post(apply_image_update))
+        .route("/system/update/rollback", post(rollback_image_update))
+        .route("/system/update/rate-limit", post(check_rate_limit))
         // ---- Auth Flows ----
         .route("/auth/idc/start", post(start_idc_login))
         .route("/auth/idc/poll/{session_id}", post(poll_idc_login))

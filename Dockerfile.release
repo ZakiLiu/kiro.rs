@@ -1,0 +1,15 @@
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates
+
+WORKDIR /app
+
+ARG TARGETARCH
+COPY artifacts/linux/${TARGETARCH}/kiro-rs /app/kiro-rs
+RUN chmod +x /app/kiro-rs
+
+VOLUME ["/app/config"]
+
+EXPOSE 8990
+
+CMD ["./kiro-rs", "-c", "/app/config/config.json", "--credentials", "/app/config/credentials.json"]

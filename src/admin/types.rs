@@ -1149,6 +1149,82 @@ pub struct DeleteGroupQuery {
     pub force: bool,
 }
 
+// ============ 在线更新 ============
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCheckInfo {
+    pub current_version: String,
+    pub latest_version: String,
+    pub has_update: bool,
+    pub build_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_notes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
+    pub checked_at: String,
+    pub cached: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageUpdateResponse {
+    pub success: bool,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    pub applied: bool,
+    pub need_restart: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateConfigResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_applied_at: Option<String>,
+    pub github_token_set: bool,
+    pub auto_apply: bool,
+    pub auto_apply_time: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetUpdateConfigRequest {
+    pub github_token: Option<String>,
+    pub auto_apply: Option<bool>,
+    pub auto_apply_time: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubRateLimitInfo {
+    pub valid: bool,
+    pub authenticated: bool,
+    pub limit: u64,
+    pub remaining: u64,
+    pub used: u64,
+    pub reset: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckRateLimitRequest {
+    #[serde(default)]
+    pub github_token: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

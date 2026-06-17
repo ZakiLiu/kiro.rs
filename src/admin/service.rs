@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Timelike, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +23,9 @@ use crate::kiro::auth::social;
 use super::error::AdminServiceError;
 use super::proxy_pool::ProxyPoolManager;
 use super::types::{
-    PollIdcLoginResponse, StartIdcLoginResponse, StartSocialLoginResponse,
+    CheckRateLimitRequest, GitHubRateLimitInfo, ImageUpdateResponse, PollIdcLoginResponse,
+    SetUpdateConfigRequest, StartIdcLoginResponse, StartSocialLoginResponse, UpdateCheckInfo,
+    UpdateConfigResponse,
 };
 use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, CachedBalanceItem,
@@ -35,6 +37,160 @@ use super::types::{
 
 /// 余额缓存过期时间（秒），5 分钟
 const BALANCE_CACHE_TTL_SECS: i64 = 300;
+
+/// 在线检查更新结果缓存时间（秒），30 分钟
+const UPDATE_CHECK_TTL_SECS: i64 = 1800;
+
+const BUILD_TYPE: &str = "binary";
+
+const GITHUB_RELEASES_REPO: &str = "ZakiLiu/kiro.rs";
+
+#[derive(Debug, Clone)]
+struct CachedUpdateCheck {
+    cached_at: DateTime<Utc>,
+    info: UpdateCheckInfo,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeUpdateConfig {
+    previous_version: Option<String>,
+    last_applied_at: Option<String>,
+    github_token: Option<String>,
+    auto_apply: bool,
+    auto_apply_time: String,
+}
+
+impl RuntimeUpdateConfig {
+    fn from_config(config: &Config) -> Self {
+        Self {
+            previous_version: config.update_previous_version.clone(),
+            last_applied_at: config.update_last_applied_at.clone(),
+            github_token: config.github_token.clone(),
+            auto_apply: config.update_auto_apply,
+            auto_apply_time: config.update_auto_apply_time.clone(),
+        }
+    }
+
+    fn response(&self) -> UpdateConfigResponse {
+        UpdateConfigResponse {
+            previous_version: self.previous_version.clone(),
+            last_applied_at: self.last_applied_at.clone(),
+            github_token_set: self
+                .github_token
+                .as_deref()
+                .map(|t| !t.trim().is_empty())
+                .unwrap_or(false),
+            auto_apply: self.auto_apply,
+            auto_apply_time: self.auto_apply_time.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubRelease {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    html_url: String,
+    #[serde(default)]
+    published_at: String,
+    #[serde(default)]
+    tag_name: String,
+}
+
+fn compare_semver(current: &str, latest: &str) -> std::cmp::Ordering {
+    parse_semver_core(current).cmp(&parse_semver_core(latest))
+}
+
+fn parse_semver_core(value: &str) -> [u32; 3] {
+    let core = value
+        .trim_start_matches('v')
+        .split(|c: char| c == '-' || c == '+')
+        .next()
+        .unwrap_or("");
+    let mut out = [0u32; 3];
+    for (i, part) in core.splitn(3, '.').enumerate() {
+        if i >= 3 {
+            break;
+        }
+        out[i] = part.parse::<u32>().unwrap_or(0);
+    }
+    out
+}
+
+fn staged_binary_path(exe: &std::path::Path, version: &str) -> std::path::PathBuf {
+    let mut s = exe.as_os_str().to_os_string();
+    s.push(format!(".staged-{}", version.trim().trim_start_matches('v')));
+    std::path::PathBuf::from(s)
+}
+
+fn cleanup_other_staged(exe: &std::path::Path, keep_version: &str) {
+    let dir = match exe.parent() {
+        Some(d) => d,
+        None => return,
+    };
+    let exe_name = match exe.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
+        None => return,
+    };
+    let keep = format!(
+        "{}.staged-{}",
+        exe_name,
+        keep_version.trim().trim_start_matches('v')
+    );
+    let prefix = format!("{}.staged-", exe_name);
+    let entries = match std::fs::read_dir(dir) {
+        Ok(it) => it,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        if name.starts_with(&prefix) && name != keep {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+fn parse_auto_apply_time(value: &str) -> Result<(u32, u32), AdminServiceError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(AdminServiceError::InvalidRequest(
+            "自动更新时间不能为空".to_string(),
+        ));
+    }
+    let mut parts = trimmed.splitn(2, ':');
+    let hour_str = parts.next().unwrap_or("");
+    let minute_str = parts.next().unwrap_or("");
+    let hour: u32 = hour_str.parse().map_err(|_| {
+        AdminServiceError::InvalidRequest(format!(
+            "自动更新时间格式无效：{}（应为 HH:MM）",
+            value
+        ))
+    })?;
+    let minute: u32 = minute_str.parse().map_err(|_| {
+        AdminServiceError::InvalidRequest(format!(
+            "自动更新时间格式无效：{}（应为 HH:MM）",
+            value
+        ))
+    })?;
+    if hour > 23 || minute > 59 {
+        return Err(AdminServiceError::InvalidRequest(format!(
+            "自动更新时间超出范围：{}（HH 0-23，MM 0-59）",
+            value
+        )));
+    }
+    Ok((hour, minute))
+}
+
+fn normalize_auto_apply_time(value: &str) -> Result<String, AdminServiceError> {
+    let (h, m) = parse_auto_apply_time(value)?;
+    Ok(format!("{:02}:{:02}", h, m))
+}
 
 /// 缓存的余额条目（含时间戳）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +244,8 @@ pub struct AdminService {
     proxy_pool: ProxyPoolManager,
     social_sessions: Arc<Mutex<HashMap<String, SocialAuthSession>>>,
     idc_sessions: Arc<Mutex<HashMap<String, IdcAuthSession>>>,
+    update_config: Mutex<RuntimeUpdateConfig>,
+    update_check_cache: Mutex<Option<CachedUpdateCheck>>,
 }
 
 impl AdminService {
@@ -116,6 +274,8 @@ impl AdminService {
         let tls_backend = config.read().tls_backend;
         let proxy_pool = ProxyPoolManager::new(proxy_pool_path, tls_backend);
 
+        let update_config = RuntimeUpdateConfig::from_config(&config.read());
+
         Self {
             token_manager,
             kiro_provider,
@@ -129,6 +289,8 @@ impl AdminService {
             proxy_pool,
             social_sessions: Arc::new(Mutex::new(HashMap::new())),
             idc_sessions: Arc::new(Mutex::new(HashMap::new())),
+            update_config: Mutex::new(update_config),
+            update_check_cache: Mutex::new(None),
         }
     }
 
@@ -2275,6 +2437,530 @@ fn credential_to_export_account(
         created_at: now_ms,
         last_used_at: now_ms,
     })
+}
+
+// ============ 在线更新 ============
+
+impl AdminService {
+    pub fn get_update_config(&self) -> UpdateConfigResponse {
+        self.update_config.lock().response()
+    }
+
+    pub fn set_update_config(
+        &self,
+        req: SetUpdateConfigRequest,
+    ) -> Result<UpdateConfigResponse, AdminServiceError> {
+        let normalized_time = match req.auto_apply_time.as_deref() {
+            Some(value) => Some(normalize_auto_apply_time(value)?),
+            None => None,
+        };
+
+        let token_update: Option<Option<String>> = req.github_token.as_ref().map(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+        {
+            let mut runtime = self.update_config.lock();
+            if let Some(auto_apply) = req.auto_apply {
+                runtime.auto_apply = auto_apply;
+            }
+            if let Some(time) = &normalized_time {
+                runtime.auto_apply_time = time.clone();
+            }
+            if let Some(token) = &token_update {
+                runtime.github_token = token.clone();
+            }
+        }
+
+        {
+            let mut config = self.config.write();
+            if let Some(auto_apply) = req.auto_apply {
+                config.update_auto_apply = auto_apply;
+            }
+            if let Some(time) = normalized_time {
+                config.update_auto_apply_time = time;
+            }
+            if let Some(token) = token_update {
+                config.github_token = token;
+            }
+            if let Err(e) = config.save() {
+                tracing::warn!("持久化更新配置失败: {}", e);
+            }
+        }
+
+        Ok(self.get_update_config())
+    }
+
+    pub async fn check_update(&self, force: bool) -> UpdateCheckInfo {
+        if !force {
+            if let Some(cached) = self.update_check_cache.lock().clone() {
+                let age = Utc::now()
+                    .signed_duration_since(cached.cached_at)
+                    .num_seconds();
+                if age < UPDATE_CHECK_TTL_SECS {
+                    let mut info = cached.info.clone();
+                    info.cached = true;
+                    return info;
+                }
+            }
+        }
+
+        match self.fetch_latest_release().await {
+            Ok(info) => {
+                self.update_check_cache.lock().replace(CachedUpdateCheck {
+                    cached_at: Utc::now(),
+                    info: info.clone(),
+                });
+                info
+            }
+            Err(err) => {
+                let warning = format!("检查更新失败：{}", err);
+                if let Some(cached) = self.update_check_cache.lock().clone() {
+                    let mut info = cached.info.clone();
+                    info.cached = true;
+                    info.warning = Some(warning);
+                    return info;
+                }
+                UpdateCheckInfo {
+                    current_version: env!("CARGO_PKG_VERSION").to_string(),
+                    latest_version: String::new(),
+                    has_update: false,
+                    build_type: BUILD_TYPE.to_string(),
+                    release_name: None,
+                    release_notes: None,
+                    release_url: None,
+                    published_at: None,
+                    checked_at: Utc::now().to_rfc3339(),
+                    cached: false,
+                    warning: Some(warning),
+                }
+            }
+        }
+    }
+
+    async fn fetch_latest_release(&self) -> Result<UpdateCheckInfo, AdminServiceError> {
+        let url = format!(
+            "https://api.github.com/repos/{}/releases/latest",
+            GITHUB_RELEASES_REPO
+        );
+        let token = self.update_config.lock().github_token.clone();
+        let proxy = self.token_manager.proxy().map(|p| p.url.clone());
+        let client = super::binary_update::build_http_client(proxy.as_deref())?;
+
+        let mut req = client
+            .get(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "kiro-rs-update-checker")
+            .timeout(std::time::Duration::from_secs(15));
+        if let Some(t) = token.as_deref() {
+            let trimmed = t.trim();
+            if !trimmed.is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", trimmed));
+            }
+        }
+        let resp = req.send().await.map_err(|e| {
+            AdminServiceError::InternalError(format!("请求 GitHub API 失败: {}", e))
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AdminServiceError::InternalError(format!(
+                "GitHub API 返回 {}: {}",
+                status,
+                body.chars().take(200).collect::<String>()
+            )));
+        }
+
+        let release: GitHubRelease = resp.json().await.map_err(|e| {
+            AdminServiceError::InternalError(format!("解析 GitHub release 失败: {}", e))
+        })?;
+
+        let current = env!("CARGO_PKG_VERSION").to_string();
+        let latest_version = release.tag_name.trim().trim_start_matches('v').to_string();
+        let has_update =
+            !latest_version.is_empty() && compare_semver(&current, &latest_version).is_lt();
+
+        Ok(UpdateCheckInfo {
+            current_version: current,
+            latest_version,
+            has_update,
+            build_type: BUILD_TYPE.to_string(),
+            release_name: Some(release.name).filter(|v| !v.is_empty()),
+            release_notes: Some(release.body).filter(|v| !v.is_empty()),
+            release_url: Some(release.html_url).filter(|v| !v.is_empty()),
+            published_at: Some(release.published_at).filter(|v| !v.is_empty()),
+            checked_at: Utc::now().to_rfc3339(),
+            cached: false,
+            warning: None,
+        })
+    }
+
+    async fn resolve_target_version(
+        &self,
+        require_update: bool,
+    ) -> Result<String, AdminServiceError> {
+        let info = self.check_update(true).await;
+        if let Some(warn) = info.warning {
+            return Err(AdminServiceError::InternalError(warn));
+        }
+        if info.latest_version.is_empty() {
+            return Err(AdminServiceError::InternalError(
+                "无法解析最新版本号（GitHub Releases 返回空）".to_string(),
+            ));
+        }
+        if require_update && !info.has_update {
+            return Err(AdminServiceError::InvalidRequest(format!(
+                "当前已是最新版本 v{}，无需更新",
+                info.current_version
+            )));
+        }
+        Ok(info.latest_version)
+    }
+
+    pub async fn pull_update_image(&self) -> Result<ImageUpdateResponse, AdminServiceError> {
+        let (proxy, token) = {
+            let runtime = self.update_config.lock();
+            (
+                self.token_manager.proxy().map(|p| p.url.clone()),
+                runtime.github_token.clone(),
+            )
+        };
+        let exe = super::binary_update::current_executable()?;
+        let version = self.resolve_target_version(false).await?;
+        let staged = staged_binary_path(&exe, &version);
+
+        let reused = staged.exists();
+        if !reused {
+            super::binary_update::download_release_binary(
+                &version,
+                proxy.as_deref(),
+                token.as_deref(),
+                &staged,
+            )
+            .await?;
+        }
+        cleanup_other_staged(&exe, &version);
+
+        Ok(ImageUpdateResponse {
+            success: true,
+            message: if reused {
+                format!("v{} 已下载并校验，可直接执行「更新并重启」", version)
+            } else {
+                format!(
+                    "已下载并校验 v{} 二进制，可直接执行「更新并重启」",
+                    version
+                )
+            },
+            output: Some(format!(
+                "{}: v{}\nstaged: {}",
+                if reused { "reused" } else { "downloaded" },
+                version,
+                staged.display()
+            )),
+            applied: false,
+            need_restart: false,
+        })
+    }
+
+    pub async fn apply_image_update(&self) -> Result<ImageUpdateResponse, AdminServiceError> {
+        let (proxy, token) = {
+            let runtime = self.update_config.lock();
+            (
+                self.token_manager.proxy().map(|p| p.url.clone()),
+                runtime.github_token.clone(),
+            )
+        };
+        let exe = super::binary_update::current_executable()?;
+        let version = self.resolve_target_version(true).await?;
+        let staged = staged_binary_path(&exe, &version);
+
+        let reused = staged.exists();
+        if !reused {
+            super::binary_update::download_release_binary(
+                &version,
+                proxy.as_deref(),
+                token.as_deref(),
+                &staged,
+            )
+            .await?;
+        }
+        cleanup_other_staged(&exe, &version);
+
+        let previous_version = env!("CARGO_PKG_VERSION").to_string();
+        super::binary_update::install_binary(&exe, &staged)?;
+
+        let prev_label = format!("v{}", previous_version);
+        let applied_at = Utc::now().to_rfc3339();
+        {
+            let mut runtime = self.update_config.lock();
+            runtime.previous_version = Some(prev_label.clone());
+            runtime.last_applied_at = Some(applied_at.clone());
+        }
+        {
+            let mut config = self.config.write();
+            config.update_previous_version = Some(prev_label.clone());
+            config.update_last_applied_at = Some(applied_at);
+            if let Err(e) = config.save() {
+                tracing::warn!("持久化更新状态失败: {}", e);
+            }
+        }
+
+        super::binary_update::schedule_self_exit(std::time::Duration::from_secs(2));
+
+        Ok(ImageUpdateResponse {
+            success: true,
+            message: format!(
+                "已替换为 v{}，进程将在 2 秒后退出，由容器重启策略接管",
+                version
+            ),
+            output: Some(format!(
+                "previous: v{}\n{}: v{}",
+                previous_version,
+                if reused { "reused-staged" } else { "installed" },
+                version
+            )),
+            applied: true,
+            need_restart: true,
+        })
+    }
+
+    pub async fn rollback_image_update(&self) -> Result<ImageUpdateResponse, AdminServiceError> {
+        let previous_label = self
+            .update_config
+            .lock()
+            .previous_version
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| {
+                AdminServiceError::InvalidRequest(
+                    "尚未记录可回退的版本，请先执行一次在线更新".to_string(),
+                )
+            })?
+            .to_string();
+
+        let exe = super::binary_update::current_executable()?;
+        super::binary_update::restore_backup(&exe)?;
+        cleanup_other_staged(&exe, "");
+
+        {
+            let mut runtime = self.update_config.lock();
+            runtime.previous_version = None;
+            runtime.last_applied_at = None;
+        }
+        {
+            let mut config = self.config.write();
+            config.update_previous_version = None;
+            config.update_last_applied_at = None;
+            if let Err(e) = config.save() {
+                tracing::warn!("持久化回退状态失败: {}", e);
+            }
+        }
+
+        super::binary_update::schedule_self_exit(std::time::Duration::from_secs(2));
+
+        Ok(ImageUpdateResponse {
+            success: true,
+            message: format!(
+                "已回退到 {}，进程将在 2 秒后退出，由容器重启策略接管",
+                previous_label
+            ),
+            output: Some(format!("rolled back to: {}", previous_label)),
+            applied: true,
+            need_restart: true,
+        })
+    }
+
+    pub async fn check_rate_limit(&self, req: CheckRateLimitRequest) -> GitHubRateLimitInfo {
+        let token = req
+            .github_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .or_else(|| {
+                self.update_config
+                    .lock()
+                    .github_token
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+            });
+        let authenticated = token.is_some();
+
+        let proxy = self.token_manager.proxy().map(|p| p.url.clone());
+        let client = match super::binary_update::build_http_client(proxy.as_deref()) {
+            Ok(c) => c,
+            Err(e) => {
+                return GitHubRateLimitInfo {
+                    valid: false, authenticated, limit: 0, remaining: 0, used: 0, reset: 0,
+                    login: None, warning: Some(format!("构造 HTTP 客户端失败: {}", e)),
+                };
+            }
+        };
+
+        let mut req_builder = client
+            .get("https://api.github.com/rate_limit")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "kiro-rs-update-checker")
+            .timeout(std::time::Duration::from_secs(10));
+        if let Some(t) = token.as_deref() {
+            req_builder = req_builder.header("Authorization", format!("Bearer {}", t));
+        }
+
+        let resp = match req_builder.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                return GitHubRateLimitInfo {
+                    valid: false, authenticated, limit: 0, remaining: 0, used: 0, reset: 0,
+                    login: None, warning: Some(format!("请求 GitHub API 失败: {}", e)),
+                };
+            }
+        };
+
+        let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return GitHubRateLimitInfo {
+                valid: false, authenticated, limit: 0, remaining: 0, used: 0, reset: 0,
+                login: None, warning: Some("GitHub Token 无效或已过期".to_string()),
+            };
+        }
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return GitHubRateLimitInfo {
+                valid: false, authenticated, limit: 0, remaining: 0, used: 0, reset: 0,
+                login: None,
+                warning: Some(format!(
+                    "GitHub API 返回 {}: {}",
+                    status,
+                    body.chars().take(200).collect::<String>()
+                )),
+            };
+        }
+
+        let payload: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                return GitHubRateLimitInfo {
+                    valid: false, authenticated, limit: 0, remaining: 0, used: 0, reset: 0,
+                    login: None, warning: Some(format!("解析 GitHub 响应失败: {}", e)),
+                };
+            }
+        };
+
+        let core = payload
+            .get("resources")
+            .and_then(|r| r.get("core"))
+            .or_else(|| payload.get("rate"));
+        let limit = core.and_then(|c| c.get("limit")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let remaining = core.and_then(|c| c.get("remaining")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let used = core.and_then(|c| c.get("used")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let reset = core.and_then(|c| c.get("reset")).and_then(|v| v.as_u64()).unwrap_or(0);
+
+        let login = if authenticated {
+            self.fetch_github_login(&client, token.as_deref()).await
+        } else {
+            None
+        };
+
+        GitHubRateLimitInfo {
+            valid: true, authenticated, limit, remaining, used, reset, login, warning: None,
+        }
+    }
+
+    async fn fetch_github_login(
+        &self,
+        client: &reqwest::Client,
+        token: Option<&str>,
+    ) -> Option<String> {
+        let mut req = client
+            .get("https://api.github.com/user")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "kiro-rs-update-checker")
+            .timeout(std::time::Duration::from_secs(10));
+        if let Some(t) = token {
+            req = req.header("Authorization", format!("Bearer {}", t));
+        }
+        let resp = req.send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let payload: serde_json::Value = resp.json().await.ok()?;
+        payload.get("login").and_then(|v| v.as_str()).map(|s| s.to_string())
+    }
+
+    pub fn start_auto_update_scheduler(self: &Arc<Self>) {
+        let svc = Arc::clone(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+
+            let mut last_run_marker: Option<String> = None;
+            let mut last_applied_version: Option<String> = None;
+
+            loop {
+                let runtime = svc.update_config.lock().clone();
+                if runtime.auto_apply {
+                    let target = parse_auto_apply_time(&runtime.auto_apply_time).ok();
+                    if let Some((target_hour, target_minute)) = target {
+                        let now = chrono::Local::now();
+                        let date_minute_marker = format!(
+                            "{}-{:02}:{:02}",
+                            now.format("%Y-%m-%d"),
+                            now.hour(),
+                            now.minute()
+                        );
+
+                        let hit = now.hour() == target_hour && now.minute() == target_minute;
+                        let already_ran_this_minute =
+                            last_run_marker.as_deref() == Some(date_minute_marker.as_str());
+
+                        if hit && !already_ran_this_minute {
+                            last_run_marker = Some(date_minute_marker);
+                            let info = svc.check_update(true).await;
+                            if info.has_update
+                                && !info.latest_version.is_empty()
+                                && last_applied_version.as_deref()
+                                    != Some(info.latest_version.as_str())
+                            {
+                                tracing::info!(
+                                    "自动更新：到达计划时间 {}，发现新版本 {}（当前 {}），开始应用",
+                                    runtime.auto_apply_time,
+                                    info.latest_version,
+                                    info.current_version
+                                );
+                                match svc.apply_image_update().await {
+                                    Ok(res) => {
+                                        tracing::info!("自动更新完成：{}", res.message);
+                                        last_applied_version = Some(info.latest_version);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("自动更新失败：{}", e);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            "自动更新时间配置无效：{}，跳过本轮检查",
+                            runtime.auto_apply_time
+                        );
+                    }
+                }
+
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+    }
 }
 
 #[cfg(test)]

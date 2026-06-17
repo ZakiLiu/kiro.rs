@@ -9,6 +9,7 @@
 //! - 重置失败计数
 //! - 查询凭据余额
 
+pub(crate) mod binary_update;
 mod error;
 mod handlers;
 mod middleware;

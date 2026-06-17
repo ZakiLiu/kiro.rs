@@ -1,0 +1,421 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, matching Cargo.toml (e.g. 0.1.0 or v0.1.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark the GitHub Release as a prerelease'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      image: ${{ steps.meta.outputs.image }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      target: ${{ steps.meta.outputs.target }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate version
+        id: meta
+        shell: bash
+        env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW_VERSION="${{ github.event.inputs.version }}"
+            PRERELEASE="${{ github.event.inputs.prerelease }}"
+          else
+            RAW_VERSION="${GITHUB_REF_NAME}"
+            PRERELEASE="false"
+          fi
+
+          VERSION="${RAW_VERSION#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::Version must look like 0.1.0, optionally prefixed with v"
+            exit 1
+          fi
+          if [[ "$VERSION" =~ ^20[0-9]{2}\. ]]; then
+            echo "::error::Date-based versions are not allowed; use semantic versions like 0.1.0"
+            exit 1
+          fi
+
+          CARGO_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          if [ "$CARGO_VERSION" != "$VERSION" ]; then
+            echo "::error::Cargo.toml version ($CARGO_VERSION) does not match requested release version ($VERSION)"
+            exit 1
+          fi
+
+          TAG="v${VERSION}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists"
+            exit 1
+          fi
+
+          TARGET="$(git rev-list -n 1 "${TAG}" 2>/dev/null || echo "${GITHUB_SHA}")"
+
+          NAMESPACE="${DOCKERHUB_NAMESPACE:-$(echo "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')}"
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "image=${NAMESPACE}/kiro-rs" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
+          echo "target=${TARGET}" >> "$GITHUB_OUTPUT"
+
+  build-frontend:
+    name: Build admin-ui
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: admin-ui/pnpm-lock.yaml
+
+      - name: Install admin-ui dependencies
+        working-directory: admin-ui
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build admin-ui
+        working-directory: admin-ui
+        run: pnpm build
+
+      - name: Upload admin-ui dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-ui-dist
+          path: admin-ui/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  build-artifacts:
+    name: Build ${{ matrix.name }}
+    needs:
+      - prepare
+      - build-frontend
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            name: macOS-arm64
+            archive: tar
+            binary: kiro-rs
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            name: macOS-x64
+            archive: tar
+            binary: kiro-rs
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: Windows-x64
+            archive: zip
+            binary: kiro-rs.exe
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            name: Linux-x64
+            archive: tar
+            binary: kiro-rs
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: Linux-arm64
+            archive: tar
+            binary: kiro-rs
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            name: Linux-musl-x64
+            archive: tar
+            binary: kiro-rs
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-musl
+            name: Linux-musl-arm64
+            archive: tar
+            binary: kiro-rs
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download admin-ui dist
+        uses: actions/download-artifact@v4
+        with:
+          name: admin-ui-dist
+          path: admin-ui/dist
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-rust-cache-${{ matrix.target }}
+          cache-on-failure: true
+
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Setup mold linker
+        if: contains(matrix.target, 'linux-gnu')
+        uses: rui314/setup-mold@v1
+
+      - name: Build app
+        env:
+          RUSTFLAGS: ${{ contains(matrix.target, 'linux-gnu') && '-C link-arg=-fuse-ld=mold' || '' }}
+        run: cargo build --release --locked --target ${{ matrix.target }} ${{ contains(matrix.target, 'musl') && '--no-default-features' || '' }}
+
+      - name: Create package directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE="kiro-rs-${{ needs.prepare.outputs.version }}-${{ matrix.name }}"
+          mkdir -p "dist/${PACKAGE}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${PACKAGE}/"
+          cp README.md LICENSE "dist/${PACKAGE}/"
+
+      - name: Archive package
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE="kiro-rs-${{ needs.prepare.outputs.version }}-${{ matrix.name }}"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a "dist/${PACKAGE}.zip" "./dist/${PACKAGE}/*"
+          else
+            tar -czf "dist/${PACKAGE}.tar.gz" -C dist "${PACKAGE}"
+          fi
+
+      - name: Upload release asset artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-asset-${{ matrix.name }}
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  build-images:
+    name: Build and push Docker Hub images
+    needs:
+      - prepare
+      - build-artifacts
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+            asset: Linux-musl-x64
+          - platform: linux/arm64
+            runner: ubuntu-22.04-arm
+            arch: arm64
+            asset: Linux-musl-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release asset
+        uses: actions/download-artifact@v4
+        with:
+          name: release-asset-${{ matrix.asset }}
+          path: dist
+
+      - name: Stage binary for docker build
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE="kiro-rs-${{ needs.prepare.outputs.version }}-${{ matrix.asset }}"
+          mkdir -p "artifacts/linux/${{ matrix.arch }}"
+          tar -xzf "dist/${PACKAGE}.tar.gz" -C dist
+          cp "dist/${PACKAGE}/kiro-rs" "artifacts/linux/${{ matrix.arch }}/kiro-rs"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.release
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            TARGETARCH=${{ matrix.arch }}
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
+          push: true
+          provenance: false
+          tags: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.description=Kiro.rs Docker Image
+
+  publish-image-manifest:
+    name: Publish Docker Hub manifest
+    needs:
+      - prepare
+      - build-images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create and push multi-arch manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="${{ needs.prepare.outputs.image }}"
+          VERSION="${{ needs.prepare.outputs.version }}"
+
+          docker manifest create "${IMAGE}:${VERSION}" \
+            "${IMAGE}:${VERSION}-amd64" \
+            "${IMAGE}:${VERSION}-arm64"
+          docker manifest push "${IMAGE}:${VERSION}"
+
+          docker manifest create "${IMAGE}:latest" \
+            "${IMAGE}:${VERSION}-amd64" \
+            "${IMAGE}:${VERSION}-arm64"
+          docker manifest push "${IMAGE}:latest"
+
+  publish-release:
+    name: Publish GitHub Release
+    needs:
+      - prepare
+      - build-artifacts
+      - publish-image-manifest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-asset-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.prepare.outputs.version }}"
+          IMAGE="${{ needs.prepare.outputs.image }}"
+
+          if [ -f CHANGELOG.md ]; then
+            awk -v ver="$VERSION" '
+              BEGIN { found = 0 }
+              /^## \[/ {
+                if (found) exit
+                if (index($0, "[" ver "]") > 0) { found = 1; next }
+              }
+              found { print }
+            ' CHANGELOG.md > RELEASE_NOTES.md
+          fi
+
+          if [ ! -s RELEASE_NOTES.md ]; then
+            cat > RELEASE_NOTES.md <<EOF
+          Docker image:
+
+          \`\`\`text
+          ${IMAGE}:${VERSION}
+          ${IMAGE}:latest
+          \`\`\`
+
+          Release assets include \`SHA256SUMS.txt\` for checksum verification.
+          EOF
+          else
+            {
+              echo
+              echo "---"
+              echo
+              echo "Docker image:"
+              echo
+              echo '```text'
+              echo "${IMAGE}:${VERSION}"
+              echo "${IMAGE}:latest"
+              echo '```'
+              echo
+              echo "Release assets include \`SHA256SUMS.txt\` for checksum verification."
+            } >> RELEASE_NOTES.md
+          fi
+
+      - name: Write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd release-assets
+            sha256sum *.tar.gz *.zip > SHA256SUMS.txt
+          )
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRERELEASE_ARGS=()
+          if [ "${{ needs.prepare.outputs.prerelease }}" = "true" ]; then
+            PRERELEASE_ARGS+=(--prerelease)
+          fi
+          gh release create "${{ needs.prepare.outputs.tag }}" release-assets/* \
+            --repo "${{ github.repository }}" \
+            --target "${{ needs.prepare.outputs.target }}" \
+            --title "Kiro.rs ${{ needs.prepare.outputs.version }}" \
+            --notes-file RELEASE_NOTES.md \
+            "${PRERELEASE_ARGS[@]}"

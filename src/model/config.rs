@@ -212,6 +212,28 @@ pub struct Config {
     #[serde(default)]
     pub system_prompt_position: SystemPromptPosition,
 
+    // ── 在线更新 ──
+
+    /// 上一次更新前运行的版本号（带 v 前缀）
+    #[serde(default)]
+    pub update_previous_version: Option<String>,
+
+    /// GitHub Personal Access Token（提升 API 限流配额）
+    #[serde(default)]
+    pub github_token: Option<String>,
+
+    /// 上一次成功更新的时间（RFC 3339）
+    #[serde(default)]
+    pub update_last_applied_at: Option<String>,
+
+    /// 是否开启无人值守自动更新
+    #[serde(default)]
+    pub update_auto_apply: bool,
+
+    /// 自动更新触发时间（HH:MM，本地 24 小时制），默认 03:00
+    #[serde(default = "default_auto_apply_time")]
+    pub update_auto_apply_time: String,
+
     /// 配置文件路径（运行时元数据，不写入 JSON）
     #[serde(skip)]
     config_path: Option<PathBuf>,
@@ -273,6 +295,10 @@ fn default_usage_log_retention_days() -> u32 {
 
 fn default_account_throttle_cooldown_secs() -> u64 {
     300
+}
+
+fn default_auto_apply_time() -> String {
+    "03:00".to_string()
 }
 
 fn default_prompt_cache_ttl_seconds() -> u64 {
@@ -476,6 +502,11 @@ impl Default for Config {
             enabled_presets: Vec::new(),
             system_prompt: None,
             system_prompt_position: SystemPromptPosition::Append,
+            update_previous_version: None,
+            github_token: None,
+            update_last_applied_at: None,
+            update_auto_apply: false,
+            update_auto_apply_time: default_auto_apply_time(),
             config_path: None,
         }
     }
