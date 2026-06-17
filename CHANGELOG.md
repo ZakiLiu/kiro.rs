@@ -1,5 +1,23 @@
 # Changelog
 
+## [v2.0.0] - 2026-06-17
+
+### Added
+- **在线更新系统** — 通过 GitHub Releases 自动检查/下载/校验(SHA256)/安装二进制，支持一键回滚和定时无人值守更新
+  - `GET /api/admin/system/update/check` — 检查新版本（30 分钟缓存）
+  - `POST /api/admin/system/update/pull` — 下载并校验新版本
+  - `POST /api/admin/system/update/apply` — 下载 + 安装 + 自动重启
+  - `POST /api/admin/system/update/rollback` — 回滚到上一版本
+  - `GET/PUT /api/admin/config/update` — 更新配置（GitHub Token、自动更新开关/时间）
+  - `POST /api/admin/system/update/rate-limit` — GitHub API 限额查询
+- **Release CI 工作流** — 7 平台交叉编译（Linux musl/GNU x64/arm64 + macOS x64/arm64 + Windows x64）+ Docker 多架构镜像 + GitHub Release 自动发布
+- **Dockerfile.release** — 使用预编译二进制的轻量 Alpine 镜像
+
+### Changed
+- **CI 策略** — `docker-build.yml` 替换为统一的 `release.yaml`（binary + Docker 一条流水线）
+- **仓库地址** — `Cargo.toml` repository 更新为 `ZakiLiu/kiro.rs`
+- **docker-compose.yml** — 默认镜像源从 `hank9999` 更新为当前仓库
+
 ## [v1.1.30] - 2026-05-08
 
 ### Fixed
