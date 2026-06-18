@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use super::{KiroEndpoint, RequestContext, UsageRequestParts};
 use crate::kiro::model::credentials::KiroCredentials;
+use crate::kiro::token_manager::types::USAGE_API_KIRO_VERSION;
 
 pub const IDE_ENDPOINT_NAME: &str = "ide";
 
@@ -162,7 +163,7 @@ impl KiroEndpoint for IdeEndpoint {
                 "x-amz-user-agent",
                 format!(
                     "aws-sdk-js/1.0.0 KiroIDE-{}-{}",
-                    ctx.config.kiro_version, ctx.machine_id
+                    USAGE_API_KIRO_VERSION, ctx.machine_id
                 ),
             ),
             (
@@ -171,7 +172,7 @@ impl KiroEndpoint for IdeEndpoint {
                     "aws-sdk-js/1.0.0 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererruntime#1.0.0 m/N,E KiroIDE-{}-{}",
                     ctx.config.system_version,
                     ctx.config.node_version,
-                    ctx.config.kiro_version,
+                    USAGE_API_KIRO_VERSION,
                     ctx.machine_id
                 ),
             ),

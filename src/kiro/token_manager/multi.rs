@@ -37,8 +37,8 @@ use super::single::{
     is_token_expired, is_token_expiring_soon, is_token_expiring_within, validate_credential_secret,
 };
 use super::types::{
-    CachedBalanceInfo, CredentialEntrySnapshot, DisableReason, ManagerSnapshot, get_usage_limits,
-    mask_user_id,
+    CachedBalanceInfo, CredentialEntrySnapshot, DisableReason, ManagerSnapshot,
+    USAGE_API_KIRO_VERSION, get_usage_limits, mask_user_id,
 };
 
 struct CredentialEntry {
@@ -281,6 +281,26 @@ fn credential_matches_group(
         None => true,
         Some(g) => credentials.groups.iter().any(|cg| cg == g),
     }
+}
+
+/// 凭据是否匹配本次请求的模型能力与分组约束。
+///
+/// Free 凭据不支持 Opus；如果只按 group / priority / affinity 选号，
+/// Free 账号会被错误派发到 Opus 请求上，最终由上游返回 400/403。
+fn credential_matches_request(
+    credentials: &crate::kiro::model::credentials::KiroCredentials,
+    model: Option<&str>,
+    group: Option<&str>,
+) -> bool {
+    let is_opus = model
+        .map(|m| m.to_ascii_lowercase().contains("opus"))
+        .unwrap_or(false);
+
+    if is_opus && !credentials.supports_opus() {
+        return false;
+    }
+
+    credential_matches_group(credentials, group)
 }
 
 fn cooldown_wait_source(reason: CooldownReason) -> &'static str {
@@ -901,7 +921,7 @@ impl MultiTokenManager {
     /// 如果 Token 过期或即将过期，会自动刷新
     /// Token 刷新失败时会尝试下一个可用凭据（不计入失败次数）
     pub async fn acquire_context(&self) -> anyhow::Result<CallContext> {
-        self.acquire_context_inner(&[], None).await
+        self.acquire_context_inner(&[], None, None).await
     }
 
     /// 与 `acquire_context` 相同，但额外把 `exclude_ids` 在第一轮就视作"已尝试"，
@@ -911,7 +931,7 @@ impl MultiTokenManager {
         &self,
         exclude_ids: &[u64],
     ) -> anyhow::Result<CallContext> {
-        self.acquire_context_inner(exclude_ids, None).await
+        self.acquire_context_inner(exclude_ids, None, None).await
     }
 
     /// 带分组过滤的凭据获取：仅选择 `groups` 包含 `group` 的凭据。
@@ -921,12 +941,26 @@ impl MultiTokenManager {
         exclude_ids: &[u64],
         group: Option<&str>,
     ) -> anyhow::Result<CallContext> {
-        self.acquire_context_inner(exclude_ids, group).await
+        self.acquire_context_inner(exclude_ids, None, group).await
+    }
+
+    /// 带模型能力和分组过滤的凭据获取。
+    ///
+    /// `model` 用于在选号阶段排除不支持该模型的凭据，例如 Free 账号不能承接 Opus。
+    #[allow(dead_code)]
+    pub async fn acquire_context_with_model_and_group(
+        &self,
+        exclude_ids: &[u64],
+        model: Option<&str>,
+        group: Option<&str>,
+    ) -> anyhow::Result<CallContext> {
+        self.acquire_context_inner(exclude_ids, model, group).await
     }
 
     async fn acquire_context_inner(
         &self,
         exclude_ids: &[u64],
+        model: Option<&str>,
         group: Option<&str>,
     ) -> anyhow::Result<CallContext> {
         // 检查是否需要自动恢复（全局 ModelUnavailable 恢复）
@@ -962,7 +996,7 @@ impl MultiTokenManager {
                 let mut enabled_total = 0usize;
                 let mut enabled_tried = 0usize;
                 for entry in entries.iter().filter(|entry| {
-                    !entry.disabled && credential_matches_group(&entry.credentials, group)
+                    !entry.disabled && credential_matches_request(&entry.credentials, model, group)
                 }) {
                     enabled_total += 1;
                     if tried_ids.contains(&entry.id) {
@@ -1062,7 +1096,7 @@ impl MultiTokenManager {
                     .filter(|e| {
                         !e.disabled
                             && !tried_ids.contains(&e.id)
-                            && credential_matches_group(&e.credentials, group)
+                            && credential_matches_request(&e.credentials, model, group)
                     })
                     .map(|e| (e.id, e.credentials.priority, e.credentials.runtime_only))
                     .collect();
@@ -1092,7 +1126,7 @@ impl MultiTokenManager {
                         .filter(|e| {
                             !e.disabled
                                 && !tried_ids.contains(&e.id)
-                                && credential_matches_group(&e.credentials, group)
+                                && credential_matches_request(&e.credentials, model, group)
                         })
                         .map(|e| (e.id, e.credentials.priority, e.credentials.runtime_only))
                         .collect();
@@ -1199,7 +1233,7 @@ impl MultiTokenManager {
         &self,
         user_id: Option<&str>,
     ) -> anyhow::Result<CallContext> {
-        self.acquire_context_for_user_inner(user_id, &[], None)
+        self.acquire_context_for_user_inner(user_id, &[], None, None)
             .await
     }
 
@@ -1212,18 +1246,33 @@ impl MultiTokenManager {
         user_id: Option<&str>,
         exclude_ids: &[u64],
     ) -> anyhow::Result<CallContext> {
-        self.acquire_context_for_user_inner(user_id, exclude_ids, None)
+        self.acquire_context_for_user_inner(user_id, exclude_ids, None, None)
             .await
     }
 
     /// 带分组过滤的用户感知凭据获取。
+    #[allow(dead_code)]
     pub async fn acquire_context_for_user_with_group(
         &self,
         user_id: Option<&str>,
         exclude_ids: &[u64],
         group: Option<&str>,
     ) -> anyhow::Result<CallContext> {
-        self.acquire_context_for_user_inner(user_id, exclude_ids, group)
+        self.acquire_context_for_user_inner(user_id, exclude_ids, None, group)
+            .await
+    }
+
+    /// 带模型能力和分组过滤的用户感知凭据获取。
+    ///
+    /// affinity 命中也必须满足 `model` 能力约束，避免已绑定的 Free 凭据承接 Opus 请求。
+    pub async fn acquire_context_for_user_with_model_and_group(
+        &self,
+        user_id: Option<&str>,
+        exclude_ids: &[u64],
+        model: Option<&str>,
+        group: Option<&str>,
+    ) -> anyhow::Result<CallContext> {
+        self.acquire_context_for_user_inner(user_id, exclude_ids, model, group)
             .await
     }
 
@@ -1231,12 +1280,13 @@ impl MultiTokenManager {
         &self,
         user_id: Option<&str>,
         exclude_ids: &[u64],
+        model: Option<&str>,
         group: Option<&str>,
     ) -> anyhow::Result<CallContext> {
         // 无 user_id 时走默认逻辑
         let user_id = match user_id {
             Some(id) if !id.is_empty() => id,
-            _ => return self.acquire_context_inner(exclude_ids, group).await,
+            _ => return self.acquire_context_inner(exclude_ids, model, group).await,
         };
 
         // 默认保持用户绑定（用于连续对话）。当绑定凭据“临时不可用”（速率限制/短冷却）时，
@@ -1252,7 +1302,7 @@ impl MultiTokenManager {
                 entries.iter().any(|e| {
                     e.id == bound_id
                         && !e.disabled
-                        && credential_matches_group(&e.credentials, group)
+                        && credential_matches_request(&e.credentials, model, group)
                 })
             };
 
@@ -1331,7 +1381,9 @@ impl MultiTokenManager {
             }
         }
 
-        let ctx = self.acquire_context_inner(exclude_ids, group).await?;
+        let ctx = self
+            .acquire_context_inner(exclude_ids, model, group)
+            .await?;
         if !keep_affinity_binding {
             self.affinity.set(user_id, ctx.id);
         }
@@ -2109,7 +2161,7 @@ impl MultiTokenManager {
 
         let machine_id = crate::kiro::machine_id::generate_from_credentials(&credentials, &config)
             .ok_or_else(|| anyhow::anyhow!("无法生成 machineId"))?;
-        let kiro_version = &config.kiro_version;
+        let kiro_version = USAGE_API_KIRO_VERSION;
         let user_agent = format!(
             "aws-sdk-js/1.0.0 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererruntime#1.0.0 m/N,E KiroIDE-{}-{}",
             config.system_version, config.node_version, kiro_version, machine_id

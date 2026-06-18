@@ -176,6 +176,21 @@ impl KiroProvider {
         serde_json::to_string(&parsed).ok()
     }
 
+    /// 从 Kiro 请求体中提取本次请求的模型 ID，用于凭据能力过滤。
+    fn extract_model_id(request_body: &str) -> Option<String> {
+        serde_json::from_str::<serde_json::Value>(request_body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .pointer("/conversationState/currentMessage/userInputMessage/modelId")
+                    .or_else(|| value.get("model"))
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+    }
+
     /// 获取凭据对应的 HTTP Client
     ///
     /// 优先使用凭据级代理，否则使用默认 client
@@ -836,12 +851,18 @@ impl KiroProvider {
         let mut global_rate_limit_waits: usize = 0;
         const MAX_GLOBAL_RATE_LIMIT_WAITS: usize = 2;
         let mut attempts: Vec<TraceAttempt> = Vec::new();
+        let requested_model = Self::extract_model_id(request_body);
 
         for attempt in 0..max_retries {
             // 获取调用上下文（绑定 index、credentials、token），支持用户亲和性
             let ctx = match self
                 .token_manager
-                .acquire_context_for_user_with_group(user_id, &failed_ids, group)
+                .acquire_context_for_user_with_model_and_group(
+                    user_id,
+                    &failed_ids,
+                    requested_model.as_deref(),
+                    group,
+                )
                 .await
             {
                 Ok(c) => c,
@@ -1770,6 +1791,26 @@ mod tests {
         assert_eq!(
             parsed["additionalModelRequestFields"]["thinking"]["type"],
             "adaptive"
+        );
+    }
+
+    #[test]
+    fn test_extract_model_id_from_kiro_request_body() {
+        let body = serde_json::json!({
+            "conversationState": {
+                "currentMessage": {
+                    "userInputMessage": {
+                        "content": "hello",
+                        "modelId": "claude-opus-4.6"
+                    }
+                }
+            }
+        })
+        .to_string();
+
+        assert_eq!(
+            KiroProvider::extract_model_id(&body).as_deref(),
+            Some("claude-opus-4.6")
         );
     }
 

@@ -48,6 +48,7 @@ impl Default for ThinkingConfig {
                 "medium".to_string(),
                 "high".to_string(),
                 "xhigh".to_string(),
+                "max".to_string(),
             ],
             default_effort: Some("high".to_string()),
         }
@@ -69,7 +70,7 @@ pub fn output_config_thinking_schema() -> Value {
             "output_config": {
                 "type": "object",
                 "properties": {
-                    "effort": { "enum": ["low", "medium", "high", "xhigh"] }
+                    "effort": { "enum": ["low", "medium", "high", "xhigh", "max"] }
                 }
             }
         }
@@ -190,25 +191,136 @@ fn budget_to_effort(budget_tokens: i32) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EffortTier {
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
+impl EffortTier {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" | "x-high" | "x_high" => Some(Self::XHigh),
+            "max" => Some(Self::Max),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
 fn normalize_requested_effort(raw: &str) -> String {
     raw.trim().to_ascii_lowercase()
 }
 
-fn clamp_effort(raw: String, config: &ThinkingConfig) -> String {
-    if config.efforts.iter().any(|item| item == &raw) {
-        return raw;
+fn model_supports_xhigh_effort(model: &str) -> bool {
+    let model = model.to_ascii_lowercase().replace('.', "-");
+    let model = model.strip_suffix("-thinking").unwrap_or(&model);
+    let model = model.strip_suffix("-agentic").unwrap_or(model);
+
+    if model.contains("opus-4-7")
+        || model.contains("opus-4-8")
+        || model.contains("fable-5")
+        || model.contains("mythos-5")
+        || model.contains("claude-5")
+    {
+        return true;
+    }
+
+    !matches!(
+        model,
+        "claude-opus-4-6"
+            | "claude-sonnet-4-6"
+            | "claude-opus-4-5"
+            | "claude-sonnet-4-5"
+            | "claude-haiku-4-5"
+    )
+}
+
+fn normalize_effort_for_model(model: &str, raw_effort: &str) -> Option<String> {
+    let trimmed = raw_effort.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let requested = match EffortTier::parse(trimmed) {
+        Some(tier) => tier,
+        None => {
+            tracing::debug!(
+                model = %model,
+                effort = %trimmed,
+                fallback_effort = EffortTier::High.as_str(),
+                "unsupported effort value, falling back"
+            );
+            return Some(EffortTier::High.as_str().to_string());
+        }
+    };
+
+    // `xhigh` 是较新的 effort tier；已知 4.5/4.6 模型会上游校验失败，
+    // 因此降级到最近的安全档位 high，避免 `Improperly formed request`。
+    let normalized = if requested == EffortTier::XHigh && !model_supports_xhigh_effort(model) {
+        EffortTier::High
+    } else {
+        requested
+    };
+
+    if normalized != requested || normalized.as_str() != trimmed {
+        tracing::debug!(
+            model = %model,
+            effort = %trimmed,
+            normalized_effort = normalized.as_str(),
+            "normalized effort for model"
+        );
+    }
+
+    Some(normalized.as_str().to_string())
+}
+
+fn clamp_effort_for_model(raw: String, config: &ThinkingConfig, model: &str) -> String {
+    let Some(normalized) = normalize_effort_for_model(model, &raw) else {
+        return config
+            .default_effort
+            .clone()
+            .unwrap_or_else(|| "high".to_string());
+    };
+
+    if normalized == EffortTier::Max.as_str()
+        || config.efforts.iter().any(|item| item == &normalized)
+    {
+        return normalized;
     }
 
     let fallback = config
-        .efforts
-        .last()
-        .cloned()
-        .or_else(|| config.default_effort.clone())
+        .default_effort
+        .clone()
+        .filter(|default| config.efforts.iter().any(|item| item == default))
+        .or_else(|| {
+            config
+                .efforts
+                .iter()
+                .find(|item| item.as_str() == "high")
+                .cloned()
+        })
+        .or_else(|| config.efforts.last().cloned())
         .unwrap_or_else(|| "high".to_string());
 
     tracing::warn!(
         "未知的 thinking/reasoning effort 值 '{}', 回退为 '{}'",
-        raw,
+        normalized,
         fallback
     );
     fallback
@@ -279,7 +391,7 @@ pub fn build_additional_model_request_fields(
             .unwrap_or_else(|| "high".to_string())
     };
 
-    let effort = clamp_effort(raw_effort, config);
+    let effort = clamp_effort_for_model(raw_effort, config, &req.model);
 
     match config.schema_path {
         ThinkingSchemaPath::OutputConfig => Some(json!({

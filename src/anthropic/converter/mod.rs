@@ -1769,7 +1769,48 @@ mod tests {
             effort: "ultra".to_string(),
         });
         let fields = build_additional_model_request_fields(&req, None).unwrap();
+        assert_eq!(fields["output_config"]["effort"], "high");
+    }
+
+    #[test]
+    fn test_effort_normalization_respects_model_capabilities() {
+        use crate::anthropic::types::{Message as AnthropicMessage, OutputConfig, Thinking};
+
+        let mut req = MessagesRequest {
+            model: "claude-opus-4-6".to_string(),
+            max_tokens: 1024,
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: serde_json::json!("hello"),
+            }],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: Some(Thinking {
+                thinking_type: "adaptive".to_string(),
+                budget_tokens: 0,
+            }),
+            output_config: Some(OutputConfig {
+                effort: "xhigh".to_string(),
+            }),
+            reasoning_effort: None,
+            metadata: None,
+        };
+
+        let fields = build_additional_model_request_fields(&req, None).unwrap();
+        assert_eq!(fields["output_config"]["effort"], "high");
+
+        req.model = "claude-opus-4-7".to_string();
+        let fields = build_additional_model_request_fields(&req, None).unwrap();
         assert_eq!(fields["output_config"]["effort"], "xhigh");
+
+        req.model = "claude-opus-4-6".to_string();
+        req.output_config = Some(OutputConfig {
+            effort: "  MAX  ".to_string(),
+        });
+        let fields = build_additional_model_request_fields(&req, None).unwrap();
+        assert_eq!(fields["output_config"]["effort"], "max");
     }
 
     #[test]
@@ -1845,7 +1886,7 @@ mod tests {
         let mut req = base();
         req.reasoning_effort = Some("max".to_string());
         let fields = build_additional_model_request_fields(&req, Some(&reasoning_config)).unwrap();
-        assert_eq!(fields["reasoning"]["effort"], "xhigh");
+        assert_eq!(fields["reasoning"]["effort"], "max");
         assert!(fields.get("output_config").is_none());
     }
 
@@ -1854,7 +1895,7 @@ mod tests {
         let schema = output_config_thinking_schema();
         let config = extract_thinking_config_from_schema(&schema).unwrap();
         assert_eq!(config.schema_path, ThinkingSchemaPath::OutputConfig);
-        assert_eq!(config.efforts, ["low", "medium", "high", "xhigh"]);
+        assert_eq!(config.efforts, ["low", "medium", "high", "xhigh", "max"]);
 
         let reasoning_schema = serde_json::json!({
             "type": "object",

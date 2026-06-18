@@ -12,6 +12,13 @@ use crate::model::config::Config;
 use anyhow::bail;
 use serde::Serialize;
 
+/// 用量类 REST 接口（getUsageLimits / ListAvailableModels）固定使用的 Kiro IDE 版本。
+///
+/// 参考项目已验证：新版 IDE 版本在这些接口上会触发更严格的请求形态校验；
+/// `ListAvailableModels` 继续使用运行时 `config.kiro_version` 时，Free 凭据可能返回
+/// `400 Improperly formed request`。
+pub(crate) const USAGE_API_KIRO_VERSION: &str = "0.9.2";
+
 /// 对 user_id 进行掩码处理，保护隐私
 pub(super) fn mask_user_id(user_id: Option<&str>) -> String {
     match user_id {
@@ -108,7 +115,7 @@ pub(crate) async fn get_available_models(
     let candidates = rest_api_region_candidates(sso_region);
     let machine_id = machine_id::generate_from_credentials(credentials, config)
         .ok_or_else(|| anyhow::anyhow!("无法生成 machineId"))?;
-    let kiro_version = &config.kiro_version;
+    let kiro_version = USAGE_API_KIRO_VERSION;
     let os_name = &config.system_version;
     let node_version = &config.node_version;
 
@@ -186,6 +193,16 @@ fn rest_api_region_candidates(sso_region: &str) -> Vec<&str> {
         vec!["eu-central-1", "us-east-1"]
     } else {
         vec!["us-east-1", "eu-central-1"]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_usage_api_kiro_version_is_pinned_for_rest_usage_apis() {
+        assert_eq!(USAGE_API_KIRO_VERSION, "0.9.2");
     }
 }
 

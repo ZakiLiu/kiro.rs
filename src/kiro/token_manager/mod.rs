@@ -1070,6 +1070,49 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_acquire_context_for_user_respects_model_support() {
+        let mut config = Config::default();
+        config.credential_rpm = Some(60_000);
+
+        let mut free_cred = KiroCredentials::default();
+        free_cred.access_token = Some("free-token".to_string());
+        free_cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        free_cred.subscription_title = Some("KIRO FREE".to_string());
+        free_cred.priority = 0;
+
+        let mut pro_cred = KiroCredentials::default();
+        pro_cred.access_token = Some("pro-token".to_string());
+        pro_cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        pro_cred.subscription_title = Some("KIRO PRO".to_string());
+        pro_cred.priority = 10;
+
+        let manager =
+            MultiTokenManager::new(config, vec![free_cred, pro_cred], None, None, false).unwrap();
+
+        // 先用 Free 凭据建立用户亲和绑定。
+        let current = manager
+            .acquire_context_for_user(Some("user-free"))
+            .await
+            .unwrap();
+        assert_eq!(current.id, 1);
+
+        // Opus 请求必须绕过已绑定的 Free 凭据，改选支持 Opus 的 Pro 凭据。
+        let opus = manager
+            .acquire_context_for_user_with_model_and_group(
+                Some("user-free"),
+                &[],
+                Some("claude-opus-4.6"),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            opus.id, 2,
+            "Free affinity must not bypass Opus subscription filtering"
+        );
+    }
+
     // ============ 凭据级 Region 优先级测试 ============
 
     /// 辅助函数：获取 OIDC 刷新使用的 region（用于测试）
@@ -1123,13 +1166,10 @@ mod tests {
             .map(|(_, value)| value.clone())
             .unwrap();
 
-        assert_eq!(
-            amz_user_agent,
-            "aws-sdk-js/1.0.0 KiroIDE-0.11.107-machine123"
-        );
+        assert_eq!(amz_user_agent, "aws-sdk-js/1.0.0 KiroIDE-0.9.2-machine123");
         assert!(user_agent.contains("os/win32#10.0.22631"));
         assert!(user_agent.contains("md/nodejs#22.22.0"));
-        assert!(user_agent.contains("KiroIDE-0.11.107-machine123"));
+        assert!(user_agent.contains("KiroIDE-0.9.2-machine123"));
     }
 
     #[test]
