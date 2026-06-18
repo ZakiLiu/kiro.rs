@@ -268,15 +268,16 @@ async fn main() {
         .parent()
         .unwrap_or(std::path::Path::new("."))
         .join("usage_logs");
-    let usage_recorder = Arc::new(
-        admin::usage_stats::UsageRecorder::with_retention(
-            usage_dir.clone(),
-            config.read().usage_log_retention_days as i64,
-        ),
-    );
+    let usage_recorder = Arc::new(admin::usage_stats::UsageRecorder::with_retention(
+        usage_dir.clone(),
+        config.read().usage_log_retention_days as i64,
+    ));
     let usage_aggregator = Arc::new(admin::usage_stats::UsageAggregator::new());
     usage_aggregator.rebuild_from_logs(&usage_dir);
-    tracing::info!("用量统计已启用 (保留 {} 天)", config.read().usage_log_retention_days);
+    tracing::info!(
+        "用量统计已启用 (保留 {} 天)",
+        config.read().usage_log_retention_days
+    );
 
     // 启动定期清理任务（每 24 小时清理过期 usage_log 和 trace 记录）
     {
@@ -302,9 +303,7 @@ async fn main() {
         .join("client_keys.json");
     let client_key_manager = Arc::new(
         admin::client_keys::ClientKeyManager::load(&client_keys_path)
-            .unwrap_or_else(|_| {
-                admin::client_keys::ClientKeyManager::new()
-            }),
+            .unwrap_or_else(|_| admin::client_keys::ClientKeyManager::new()),
     );
 
     // 分组管理器
@@ -314,9 +313,7 @@ async fn main() {
         .join("groups.json");
     let group_manager = Arc::new(
         admin::groups::GroupManager::load(&groups_path)
-            .unwrap_or_else(|_| {
-                admin::groups::GroupManager::new()
-            }),
+            .unwrap_or_else(|_| admin::groups::GroupManager::new()),
     );
     // 从凭据和客户端 Key 中反向补注册分组（含自动分组 Free/Pro/Pro+）
     {
@@ -325,10 +322,7 @@ async fn main() {
             .into_iter()
             .flat_map(|c| c.groups)
             .collect();
-        let key_groups: Vec<String> = client_key_manager
-            .used_group_names()
-            .into_iter()
-            .collect();
+        let key_groups: Vec<String> = client_key_manager.used_group_names().into_iter().collect();
         let all_groups: Vec<String> = cred_groups.into_iter().chain(key_groups).collect();
         let added = group_manager.bootstrap_from_existing(all_groups);
         if added > 0 {
@@ -341,14 +335,15 @@ async fn main() {
 
     // 构建 Anthropic API 路由（从第一个凭据获取 profile_arn）
     let prompt_config = model::runtime::shared_from_config(&config.read());
-    let mut app_state = anthropic::middleware::AppState::new(&api_key, prompt_cache_runtime.clone())
-        .with_kiro_provider(kiro_provider.clone())
-        .with_compression_config(compression_config.clone())
-        .with_presets(presets.clone())
-        .with_client_keys(client_key_manager.clone())
-        .with_usage_recorder(usage_recorder.clone())
-        .with_usage_aggregator(usage_aggregator.clone())
-        .with_prompt_config(prompt_config);
+    let mut app_state =
+        anthropic::middleware::AppState::new(&api_key, prompt_cache_runtime.clone())
+            .with_kiro_provider(kiro_provider.clone())
+            .with_compression_config(compression_config.clone())
+            .with_presets(presets.clone())
+            .with_client_keys(client_key_manager.clone())
+            .with_usage_recorder(usage_recorder.clone())
+            .with_usage_aggregator(usage_aggregator.clone())
+            .with_prompt_config(prompt_config);
     if let Some(arn) = &first_credentials.profile_arn {
         app_state = app_state.with_profile_arn(arn);
     }
@@ -394,12 +389,11 @@ async fn main() {
                     metrics_collector.clone(),
                     endpoint_names.clone(),
                 );
-                let mut admin_state =
-                    admin::AdminState::new(admin_key, admin_service)
-                        .with_presets(presets.clone())
-                        .with_client_keys(client_key_manager.clone())
-                        .with_usage_aggregator(usage_aggregator.clone())
-                        .with_groups(group_manager.clone());
+                let mut admin_state = admin::AdminState::new(admin_key, admin_service)
+                    .with_presets(presets.clone())
+                    .with_client_keys(client_key_manager.clone())
+                    .with_usage_aggregator(usage_aggregator.clone())
+                    .with_groups(group_manager.clone());
                 if let Some(ts) = &trace_store {
                     admin_state = admin_state.with_trace_store(ts.clone());
                 }

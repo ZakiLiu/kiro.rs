@@ -75,9 +75,10 @@ impl UsageRecorder {
             dir
         };
         if !dir.exists()
-            && let Err(e) = std::fs::create_dir_all(&dir) {
-                tracing::warn!("创建 usage_log 目录失败 {}: {}", dir.display(), e);
-            }
+            && let Err(e) = std::fs::create_dir_all(&dir)
+        {
+            tracing::warn!("创建 usage_log 目录失败 {}: {}", dir.display(), e);
+        }
         Self {
             inner: Mutex::new(RecorderState {
                 current_date: None,
@@ -154,10 +155,11 @@ impl UsageRecorder {
                 Err(_) => continue,
             };
             if let Some(date) = parse_usage_log_filename(&name)
-                && date < cutoff {
-                    let _ = std::fs::remove_file(entry.path());
-                    tracing::info!("已清理过期 usage_log: {}", name);
-                }
+                && date < cutoff
+            {
+                let _ = std::fs::remove_file(entry.path());
+                tracing::info!("已清理过期 usage_log: {}", name);
+            }
         }
     }
 }
@@ -524,9 +526,10 @@ impl UsageAggregator {
             };
             for (id, stats) in group {
                 if let Some(allow) = cred_filter
-                    && !allow.contains(id) {
-                        continue;
-                    }
+                    && !allow.contains(id)
+                {
+                    continue;
+                }
                 let entry = acc.entry(*id).or_default();
                 entry.input_tokens += stats.input_tokens;
                 entry.output_tokens += stats.output_tokens;

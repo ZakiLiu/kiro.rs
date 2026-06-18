@@ -215,9 +215,10 @@ impl ProxyPoolManager {
         drop(entries);
 
         if !added.is_empty()
-            && let Err(e) = self.persist() {
-                tracing::warn!("批量添加代理后持久化失败: {}", e);
-            }
+            && let Err(e) = self.persist()
+        {
+            tracing::warn!("批量添加代理后持久化失败: {}", e);
+        }
 
         (added, errors)
     }
@@ -507,7 +508,9 @@ mod tests {
     #[test]
     fn set_enabled_true_clears_auto_disable_state() {
         let mgr = ProxyPoolManager::new(None, TlsBackend::Rustls);
-        let entry = mgr.add("socks5://127.0.0.1:1080".to_string(), None).unwrap();
+        let entry = mgr
+            .add("socks5://127.0.0.1:1080".to_string(), None)
+            .unwrap();
         // 模拟自动禁用状态
         {
             let mut entries = mgr.entries.lock();

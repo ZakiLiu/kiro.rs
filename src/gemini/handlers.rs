@@ -12,10 +12,10 @@ use axum::{
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use serde_json::json;
-use tokio::time::{Instant, interval_at};
 use std::time::Duration;
+use tokio::time::{Instant, interval_at};
 
-use crate::anthropic::handlers::{record_request_telemetry, TelemetryData};
+use crate::anthropic::handlers::{TelemetryData, record_request_telemetry};
 use crate::anthropic::middleware::{AppState, AuthIdentity};
 use crate::kiro::model::events::Event;
 use crate::kiro::parser::decoder::EventStreamDecoder;
@@ -90,7 +90,10 @@ async fn handle_stream(
     auth: &AuthIdentity,
 ) -> Response {
     let start = Instant::now();
-    let result = match provider.call_api_stream(request_body, None, auth.group.as_deref()).await {
+    let result = match provider
+        .call_api_stream(request_body, None, auth.group.as_deref())
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Gemini upstream stream error: {}", e);
@@ -103,8 +106,12 @@ async fn handle_stream(
     };
 
     let stream = create_gemini_sse_stream(
-        result, model.to_string(), input_tokens,
-        state.clone(), auth.clone(), start,
+        result,
+        model.to_string(),
+        input_tokens,
+        state.clone(),
+        auth.clone(),
+        start,
     );
 
     Response::builder()
@@ -113,9 +120,7 @@ async fn handle_stream(
         .header(header::CACHE_CONTROL, "no-cache")
         .header("Connection", "keep-alive")
         .body(Body::from_stream(stream))
-        .unwrap_or_else(|_| {
-            (StatusCode::INTERNAL_SERVER_ERROR, "stream error").into_response()
-        })
+        .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "stream error").into_response())
 }
 
 fn create_gemini_sse_stream(
@@ -246,7 +251,10 @@ async fn handle_non_stream(
     auth: &AuthIdentity,
 ) -> Response {
     let start = Instant::now();
-    let result = match provider.call_api(request_body, None, auth.group.as_deref()).await {
+    let result = match provider
+        .call_api(request_body, None, auth.group.as_deref())
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Gemini upstream error: {}", e);
@@ -286,24 +294,22 @@ async fn handle_non_stream(
 
     for result in decoder.decode_iter() {
         match result {
-            Ok(frame) => {
-                match Event::from_frame(frame) {
-                    Ok(Event::AssistantResponse(ev)) => {
-                        if !ev.content.is_empty() {
-                            text_content.push_str(&ev.content);
-                            output_tokens += token::count_tokens(&ev.content) as i32;
-                        }
-                    }
-                    Ok(Event::TokenUsage(ev)) => {
-                        final_input_tokens = ev.uncached_input_tokens as i32;
-                        output_tokens = ev.output_tokens as i32;
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!("event parse error: {}", e);
+            Ok(frame) => match Event::from_frame(frame) {
+                Ok(Event::AssistantResponse(ev)) => {
+                    if !ev.content.is_empty() {
+                        text_content.push_str(&ev.content);
+                        output_tokens += token::count_tokens(&ev.content) as i32;
                     }
                 }
-            }
+                Ok(Event::TokenUsage(ev)) => {
+                    final_input_tokens = ev.uncached_input_tokens as i32;
+                    output_tokens = ev.output_tokens as i32;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!("event parse error: {}", e);
+                }
+            },
             Err(e) => {
                 tracing::warn!("decode error: {}", e);
             }
@@ -327,7 +333,9 @@ async fn handle_non_stream(
 
     let duration_ms = start.elapsed().as_millis() as u64;
     record_request_telemetry(
-        state, auth, TelemetryData {
+        state,
+        auth,
+        TelemetryData {
             model,
             is_stream: false,
             credential_id,
@@ -353,28 +361,40 @@ pub async fn list_models(State(_state): State<AppState>) -> impl IntoResponse {
             display_name: "Gemini 2.5 Pro".to_string(),
             input_token_limit: 1048576,
             output_token_limit: 65536,
-            supported_generation_methods: vec!["generateContent".to_string(), "streamGenerateContent".to_string()],
+            supported_generation_methods: vec![
+                "generateContent".to_string(),
+                "streamGenerateContent".to_string(),
+            ],
         },
         GeminiModel {
             name: "models/gemini-2.5-flash".to_string(),
             display_name: "Gemini 2.5 Flash".to_string(),
             input_token_limit: 1048576,
             output_token_limit: 65536,
-            supported_generation_methods: vec!["generateContent".to_string(), "streamGenerateContent".to_string()],
+            supported_generation_methods: vec![
+                "generateContent".to_string(),
+                "streamGenerateContent".to_string(),
+            ],
         },
         GeminiModel {
             name: "models/gemini-1.5-pro".to_string(),
             display_name: "Gemini 1.5 Pro".to_string(),
             input_token_limit: 2097152,
             output_token_limit: 8192,
-            supported_generation_methods: vec!["generateContent".to_string(), "streamGenerateContent".to_string()],
+            supported_generation_methods: vec![
+                "generateContent".to_string(),
+                "streamGenerateContent".to_string(),
+            ],
         },
         GeminiModel {
             name: "models/gemini-1.5-flash".to_string(),
             display_name: "Gemini 1.5 Flash".to_string(),
             input_token_limit: 1048576,
             output_token_limit: 8192,
-            supported_generation_methods: vec!["generateContent".to_string(), "streamGenerateContent".to_string()],
+            supported_generation_methods: vec![
+                "generateContent".to_string(),
+                "streamGenerateContent".to_string(),
+            ],
         },
     ];
 

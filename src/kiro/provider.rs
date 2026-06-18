@@ -13,9 +13,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
+use crate::admin::trace_db::{self, TraceAttempt, truncate_snippet};
 #[cfg(not(feature = "sensitive-logs"))]
 use crate::common::utf8::floor_char_boundary;
-use crate::admin::trace_db::{self, TraceAttempt, truncate_snippet};
 use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::cooldown::CooldownReason;
 use crate::kiro::endpoint::{
@@ -38,7 +38,6 @@ pub struct ApiCallResult {
     pub credential_id: u64,
     pub attempts: Vec<TraceAttempt>,
 }
-
 
 /// MCP 调用结果
 pub struct McpCallResult {
@@ -1223,15 +1222,22 @@ impl KiroProvider {
                     "{} API 请求失败（账号级风控，凭据 #{} 冷却 {}s 并切换）",
                     api_type, ctx.id, cooldown_secs
                 );
-                let remaining = self.token_manager.report_account_throttled(ctx.id, cooldown);
+                let remaining = self
+                    .token_manager
+                    .report_account_throttled(ctx.id, cooldown);
                 last_error = Some(anyhow::anyhow!(
                     "{} API 请求失败（账号级风控，凭据 #{} 已冷却 {}s）: {} {}",
-                    api_type, ctx.id, cooldown_secs, status, body
+                    api_type,
+                    ctx.id,
+                    cooldown_secs,
+                    status,
+                    body
                 ));
                 if remaining == 0 {
                     anyhow::bail!(
                         "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：account_throttle，来自凭据 #{}）",
-                        cooldown_secs, ctx.id
+                        cooldown_secs,
+                        ctx.id
                     );
                 }
                 failed_ids.push(ctx.id);
@@ -1242,7 +1248,9 @@ impl KiroProvider {
             if endpoint.is_client_validation_error(&body) {
                 tracing::warn!(
                     "{} API 请求失败（客户端请求格式错误，不重试）: {} {}",
-                    api_type, status, body
+                    api_type,
+                    status,
+                    body
                 );
                 anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
             }
@@ -1251,7 +1259,9 @@ impl KiroProvider {
             if status.as_u16() == 524 || endpoint.is_gateway_timeout(&body) {
                 tracing::warn!(
                     "{} API 请求失败（上游网关超时，不重试）: {} {}",
-                    api_type, status, body
+                    api_type,
+                    status,
+                    body
                 );
                 anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
             }

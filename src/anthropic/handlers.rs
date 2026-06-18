@@ -93,31 +93,36 @@ pub(crate) fn record_request_telemetry(
         );
     }
     if let Some(store) = &state.trace_store
-        && store.is_enabled() {
-            let trace = TraceRecord {
-                trace_id: Uuid::new_v4().to_string(),
-                ts: record.ts.clone(),
-                key_id: auth.key_id,
-                key_source: auth.key_source,
-                model: data.model.to_string(),
-                is_stream: data.is_stream,
-                final_status: data.status.to_string(),
-                final_credential_id: data.credential_id,
-                error_type: if data.status != "success" { Some(data.status.to_string()) } else { None },
-                error_message: None,
-                total_attempts: data.attempts.len().max(1) as u32,
-                duration_ms: data.duration_ms,
-                interrupted_after_bytes: None,
-                input_tokens: record.input_tokens,
-                output_tokens: record.output_tokens,
-                cache_creation_tokens: record.cache_creation_tokens,
-                cache_read_tokens: record.cache_read_tokens,
-                credits: data.credits,
-                first_token_ms: data.first_token_ms,
-                attempts: data.attempts,
-            };
-            store.insert(&trace);
-        }
+        && store.is_enabled()
+    {
+        let trace = TraceRecord {
+            trace_id: Uuid::new_v4().to_string(),
+            ts: record.ts.clone(),
+            key_id: auth.key_id,
+            key_source: auth.key_source,
+            model: data.model.to_string(),
+            is_stream: data.is_stream,
+            final_status: data.status.to_string(),
+            final_credential_id: data.credential_id,
+            error_type: if data.status != "success" {
+                Some(data.status.to_string())
+            } else {
+                None
+            },
+            error_message: None,
+            total_attempts: data.attempts.len().max(1) as u32,
+            duration_ms: data.duration_ms,
+            interrupted_after_bytes: None,
+            input_tokens: record.input_tokens,
+            output_tokens: record.output_tokens,
+            cache_creation_tokens: record.cache_creation_tokens,
+            cache_read_tokens: record.cache_read_tokens,
+            credits: data.credits,
+            first_token_ms: data.first_token_ms,
+            attempts: data.attempts,
+        };
+        store.insert(&trace);
+    }
 }
 /// 流式路径的 token 用量快照，由 unfold closure 在流结束时写入，
 /// 供 handler 层读取后传给 record_request_telemetry。
@@ -1442,7 +1447,9 @@ async fn handle_stream_request(
                 error_snippet.clone()
             };
             record_request_telemetry(
-                state, auth, TelemetryData {
+                state,
+                auth,
+                TelemetryData {
                     model: context.model,
                     is_stream: true,
                     credential_id: 0,
@@ -1466,7 +1473,9 @@ async fn handle_stream_request(
                 },
             );
             return map_kiro_provider_error_to_response(
-                context.request_body, e, context.adaptive_outcome,
+                context.request_body,
+                e,
+                context.adaptive_outcome,
             );
         }
     };
@@ -1539,7 +1548,9 @@ async fn handle_stream_request(
         let snap = usage_snapshot.lock().take().unwrap_or_default();
         let total_output = snap.output_tokens + snap.thinking_tokens;
         record_request_telemetry(
-            &stream_state, &stream_auth, TelemetryData {
+            &stream_state,
+            &stream_auth,
+            TelemetryData {
                 model: &stream_model,
                 is_stream: true,
                 credential_id: stream_credential_id,
@@ -1735,7 +1746,9 @@ async fn handle_non_stream_request(
                 error_snippet.clone()
             };
             record_request_telemetry(
-                state, auth, TelemetryData {
+                state,
+                auth,
+                TelemetryData {
                     model: context.model,
                     is_stream: false,
                     credential_id: 0,
@@ -1759,7 +1772,9 @@ async fn handle_non_stream_request(
                 },
             );
             return map_kiro_provider_error_to_response(
-                context.request_body, e, context.adaptive_outcome,
+                context.request_body,
+                e,
+                context.adaptive_outcome,
             );
         }
     };
@@ -2063,14 +2078,20 @@ async fn handle_non_stream_request(
 
     let credits = metering.as_ref().map(|m| m.usage).unwrap_or(0.0);
     record_request_telemetry(
-        state, auth, TelemetryData {
+        state,
+        auth,
+        TelemetryData {
             model: context.model,
             is_stream: false,
             credential_id: api_result.credential_id,
             input_tokens: context.input_tokens,
             output_tokens,
-            cache_creation_tokens: final_cache_context.map(|c| c.cache_creation_input_tokens).unwrap_or(0),
-            cache_read_tokens: final_cache_context.map(|c| c.cache_read_input_tokens).unwrap_or(0),
+            cache_creation_tokens: final_cache_context
+                .map(|c| c.cache_creation_input_tokens)
+                .unwrap_or(0),
+            cache_read_tokens: final_cache_context
+                .map(|c| c.cache_read_input_tokens)
+                .unwrap_or(0),
             credits,
             duration_ms: total_ms,
             status: "success",

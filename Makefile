@@ -1,4 +1,4 @@
-.PHONY: dev run build release clean test lint fmt ui ui-dev docker help
+.PHONY: dev run build release clean test lint fmt ui ui-ready ui-dev docker help
 
 # 默认目标
 help:
@@ -29,6 +29,11 @@ help:
 ui:
 	cd admin-ui && pnpm install && pnpm build
 
+ui-ready: admin-ui/dist/index.html
+
+admin-ui/dist/index.html:
+	cd admin-ui && pnpm install && pnpm build
+
 ui-dev:
 	@echo "启动前端 dev server: http://localhost:5173/admin/"
 	cd admin-ui && pnpm install && pnpm dev
@@ -53,10 +58,10 @@ release: ui
 
 # --- 质量 ---
 
-test:
+test: ui-ready
 	cargo test
 
-lint:
+lint: ui-ready
 	cargo clippy -- -D warnings
 
 fmt:

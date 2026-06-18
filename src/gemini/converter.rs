@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use crate::anthropic::converter::map_model;
 use crate::kiro::model::requests::conversation::{
-    ConversationState, CurrentMessage, HistoryAssistantMessage,
-    HistoryUserMessage, Message, UserInputMessage, UserMessage,
+    ConversationState, CurrentMessage, HistoryAssistantMessage, HistoryUserMessage, Message,
+    UserInputMessage, UserMessage,
 };
 use crate::kiro::model::requests::kiro::KiroRequest;
 

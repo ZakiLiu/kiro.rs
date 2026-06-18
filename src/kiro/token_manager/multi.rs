@@ -961,10 +961,9 @@ impl MultiTokenManager {
                 let entries = self.entries.lock();
                 let mut enabled_total = 0usize;
                 let mut enabled_tried = 0usize;
-                for entry in entries
-                    .iter()
-                    .filter(|entry| !entry.disabled && credential_matches_group(&entry.credentials, group))
-                {
+                for entry in entries.iter().filter(|entry| {
+                    !entry.disabled && credential_matches_group(&entry.credentials, group)
+                }) {
                     enabled_total += 1;
                     if tried_ids.contains(&entry.id) {
                         enabled_tried += 1;
@@ -1200,7 +1199,8 @@ impl MultiTokenManager {
         &self,
         user_id: Option<&str>,
     ) -> anyhow::Result<CallContext> {
-        self.acquire_context_for_user_inner(user_id, &[], None).await
+        self.acquire_context_for_user_inner(user_id, &[], None)
+            .await
     }
 
     /// 与 `acquire_context_for_user` 相同，但 `exclude_ids` 内的凭据会被强制跳过：
@@ -2234,11 +2234,14 @@ impl MultiTokenManager {
 
     /// 根据订阅等级自动归类到对应分组
     pub fn auto_assign_subscription_group(&self, id: u64, subscription_title: Option<&str>) {
-        let Some(title) = subscription_title else { return };
+        let Some(title) = subscription_title else {
+            return;
+        };
         let upper = title.to_uppercase();
         let group_name = if upper.contains("FREE") {
             "Free"
-        } else if upper.contains("PRO+") || upper.contains("PRO_PLUS") || upper.contains("PRO PLUS") {
+        } else if upper.contains("PRO+") || upper.contains("PRO_PLUS") || upper.contains("PRO PLUS")
+        {
             "Pro+"
         } else if upper.contains("PRO") {
             "Pro"
@@ -2247,12 +2250,17 @@ impl MultiTokenManager {
         };
 
         let mut entries = self.entries.lock();
-        let Some(entry) = entries.iter_mut().find(|e| e.id == id) else { return };
+        let Some(entry) = entries.iter_mut().find(|e| e.id == id) else {
+            return;
+        };
         if entry.credentials.groups.iter().any(|g| g == group_name) {
             return;
         }
         // 移除旧的订阅分组（Free/Pro/Pro+），避免重复
-        entry.credentials.groups.retain(|g| g != "Free" && g != "Pro" && g != "Pro+");
+        entry
+            .credentials
+            .groups
+            .retain(|g| g != "Free" && g != "Pro" && g != "Pro+");
         entry.credentials.groups.push(group_name.to_string());
         drop(entries);
 
@@ -2284,7 +2292,11 @@ impl MultiTokenManager {
 
         let already_disabled = {
             let entries = self.entries.lock();
-            entries.iter().find(|e| e.id == id).map(|e| e.disabled).unwrap_or(true)
+            entries
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.disabled)
+                .unwrap_or(true)
         };
         if already_disabled {
             return;
@@ -2292,7 +2304,9 @@ impl MultiTokenManager {
 
         tracing::warn!(
             "凭据 #{} 订阅等级 KIRO PRO，已使用额度 {:.0} 超过阈值 {:.0}，永久禁用",
-            id, current_usage, Self::PRO_USAGE_DISABLE_THRESHOLD
+            id,
+            current_usage,
+            Self::PRO_USAGE_DISABLE_THRESHOLD
         );
         {
             let mut entries = self.entries.lock();
@@ -2692,7 +2706,8 @@ impl MultiTokenManager {
                     if remaining < 1.0 {
                         tracing::info!(
                             "凭据 #{} 余额偏低 ({:.2})，保持可用（等待上游 402 判定）",
-                            id, remaining
+                            id,
+                            remaining
                         );
                     } else {
                         tracing::info!("凭据 #{} 余额初始化成功: {:.2}", id, remaining);

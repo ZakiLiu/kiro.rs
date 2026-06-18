@@ -152,7 +152,10 @@ impl CacheTracker {
 
             let mut inject = |idx: usize, ttl: Duration| -> bool {
                 if idx < blocks.len() && seen_breakpoints.insert(idx) {
-                    breakpoints.push(CacheBreakpoint { block_index: idx, ttl });
+                    breakpoints.push(CacheBreakpoint {
+                        block_index: idx,
+                        ttl,
+                    });
                     true
                 } else {
                     false
@@ -174,14 +177,18 @@ impl CacheTracker {
             // 3. 倒数第二条消息结尾（5min TTL）— 最新一轮对话前的完整历史
             if message_end_indices.len() >= 2 {
                 let idx = message_end_indices[message_end_indices.len() - 2];
-                if inject(idx, DEFAULT_CACHE_TTL) { count += 1; }
+                if inject(idx, DEFAULT_CACHE_TTL) {
+                    count += 1;
+                }
             }
 
             // 4. 历史中段（~50% 位置）（5min TTL）— 长对话中段复用
             if message_end_indices.len() >= 6 {
                 let mid = message_end_indices.len() / 2;
                 let idx = message_end_indices[mid];
-                if inject(idx, DEFAULT_CACHE_TTL) { count += 1; }
+                if inject(idx, DEFAULT_CACHE_TTL) {
+                    count += 1;
+                }
             }
 
             if count > 0 {

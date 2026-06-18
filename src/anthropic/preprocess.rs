@@ -13,20 +13,19 @@ pub(crate) fn inject_system_prompt(payload: &mut MessagesRequest, shared: &Share
         )
     };
 
-    if strip_restrictions
-        && let Some(ref mut system) = payload.system {
-            for msg in system.iter_mut() {
-                let stripped = super::prompt_filter::strip_restrictions(&msg.text);
-                if stripped.len() != msg.text.len() {
-                    tracing::info!(
-                        "剥离系统提示词限制: {} → {} bytes",
-                        msg.text.len(),
-                        stripped.len()
-                    );
-                    msg.text = stripped;
-                }
+    if strip_restrictions && let Some(ref mut system) = payload.system {
+        for msg in system.iter_mut() {
+            let stripped = super::prompt_filter::strip_restrictions(&msg.text);
+            if stripped.len() != msg.text.len() {
+                tracing::info!(
+                    "剥离系统提示词限制: {} → {} bytes",
+                    msg.text.len(),
+                    stripped.len()
+                );
+                msg.text = stripped;
             }
         }
+    }
 
     let Some(text) = injection else {
         return;

@@ -161,7 +161,6 @@ pub struct Config {
     pub presets: Vec<Preset>,
 
     // ── 运维管理（从 OTHER 移植） ──
-
     /// 负载均衡模式："priority"（默认，按优先级）或 "balanced"（均衡分配）
     #[serde(default = "default_load_balancing_mode")]
     pub load_balancing_mode: String,
@@ -191,7 +190,6 @@ pub struct Config {
     pub extract_thinking: bool,
 
     // ── 系统提示词控制 ──
-
     /// 是否剥离客户端 system prompt 中的安全限制，默认 false
     #[serde(default)]
     pub strip_system_restrictions: bool,
@@ -213,7 +211,6 @@ pub struct Config {
     pub system_prompt_position: SystemPromptPosition,
 
     // ── 在线更新 ──
-
     /// 上一次更新前运行的版本号（带 v 前缀）
     #[serde(default)]
     pub update_previous_version: Option<String>,

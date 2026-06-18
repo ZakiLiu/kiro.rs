@@ -17,12 +17,11 @@ use super::{
     types::{
         AddCredentialRequest, AddProxyRequest, AssignProxyRequest, AssignRoundRobinRequest,
         BatchAddProxyRequest, ClientKeyItem, ClientKeysResponse, CompleteSocialLoginRequest,
-        CreateClientKeyRequest, CreateClientKeyResponse, CreatePresetRequest,
-        GlobalProxyResponse, ImportTokenJsonRequest, SetAccountThrottleConfigRequest,
-        SetDisabledRequest, SetEndpointRequest, SetLoadBalancingModeRequest,
-        SetLogGovernanceConfigRequest, SetPriorityRequest, SetRegionRequest,
-        StartIdcLoginRequest, StartSocialLoginRequest, SuccessResponse,
-        UpdateAdminKeyRequest, UpdateClientKeyRequest, UpdateCredentialRequest,
+        CreateClientKeyRequest, CreateClientKeyResponse, CreatePresetRequest, GlobalProxyResponse,
+        ImportTokenJsonRequest, SetAccountThrottleConfigRequest, SetDisabledRequest,
+        SetEndpointRequest, SetLoadBalancingModeRequest, SetLogGovernanceConfigRequest,
+        SetPriorityRequest, SetRegionRequest, StartIdcLoginRequest, StartSocialLoginRequest,
+        SuccessResponse, UpdateAdminKeyRequest, UpdateClientKeyRequest, UpdateCredentialRequest,
         UpdatePresetRequest, UpdateProxyConfigRequest, UpdateRefreshTokenRequest,
     },
     usage_stats::{Range, StatsGranularity, StatsQueryWindow},
@@ -648,7 +647,7 @@ pub async fn set_global_proxy(
     State(state): State<AdminState>,
     Json(payload): Json<super::types::SetGlobalProxyRequest>,
 ) -> impl IntoResponse {
-    match state.service.set_global_proxy(payload.proxy_url) {
+    match state.service.set_global_proxy(payload.proxy_url).await {
         Ok(_) => Json(SuccessResponse::new("全局代理已更新")).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
@@ -671,11 +670,12 @@ pub async fn update_admin_key(
             .into_response();
     }
 
-    // 更新内存中的登录API密钥
-    *state.admin_api_key.write() = new_key.clone();
+    // 先持久化到 config.json，成功后再更新运行时登录密钥。
+    if let Err(e) = state.service.persist_admin_key(&new_key) {
+        return (e.status_code(), Json(e.into_response())).into_response();
+    }
 
-    // 通过 service 持久化到 config.json
-    state.service.persist_admin_key(&new_key);
+    *state.admin_api_key.write() = new_key;
 
     Json(SuccessResponse::new("登录API密钥已更新")).into_response()
 }
@@ -850,13 +850,19 @@ fn key_to_item(k: &super::client_keys::ClientKey) -> ClientKeyItem {
 }
 
 /// 获取 client_keys 管理器，若未初始化返回 501
-fn require_client_keys(state: &AdminState) -> Result<&super::client_keys::SharedClientKeyManager, Box<axum::response::Response>> {
+fn require_client_keys(
+    state: &AdminState,
+) -> Result<&super::client_keys::SharedClientKeyManager, Box<axum::response::Response>> {
     state.client_keys.as_ref().ok_or_else(|| {
-        Box::new((
-            StatusCode::NOT_IMPLEMENTED,
-            Json(super::types::AdminErrorResponse::internal_error("Client Key 管理器未初始化")),
+        Box::new(
+            (
+                StatusCode::NOT_IMPLEMENTED,
+                Json(super::types::AdminErrorResponse::internal_error(
+                    "Client Key 管理器未初始化",
+                )),
+            )
+                .into_response(),
         )
-            .into_response())
     })
 }
 
@@ -959,12 +965,14 @@ pub async fn update_client_key(
     let description = payload
         .description
         .map(|d| if d.is_empty() { None } else { Some(d) });
-    let group = payload
-        .group
-        .map(|g| {
-            let t = g.trim();
-            if t.is_empty() { None } else { Some(t.to_string()) }
-        });
+    let group = payload.group.map(|g| {
+        let t = g.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    });
     if client_keys.update_meta(id, payload.name, description, group) {
         Json(SuccessResponse::new(format!("Key #{} 已更新", id))).into_response()
     } else {
@@ -1165,35 +1173,53 @@ fn stats_bad_request(message: String) -> axum::response::Response {
 }
 
 /// 获取 usage_aggregator，若未初始化返回 501
-fn require_usage_aggregator(state: &AdminState) -> Result<&super::usage_stats::SharedAggregator, Box<axum::response::Response>> {
+fn require_usage_aggregator(
+    state: &AdminState,
+) -> Result<&super::usage_stats::SharedAggregator, Box<axum::response::Response>> {
     state.usage_aggregator.as_ref().ok_or_else(|| {
-        Box::new((
-            StatusCode::NOT_IMPLEMENTED,
-            Json(super::types::AdminErrorResponse::internal_error("用量聚合器未初始化")),
+        Box::new(
+            (
+                StatusCode::NOT_IMPLEMENTED,
+                Json(super::types::AdminErrorResponse::internal_error(
+                    "用量聚合器未初始化",
+                )),
+            )
+                .into_response(),
         )
-            .into_response())
     })
 }
 
 /// 获取 trace_store，若未初始化返回 501
-fn require_trace_store(state: &AdminState) -> Result<&super::trace_db::SharedTraceStore, Box<axum::response::Response>> {
+fn require_trace_store(
+    state: &AdminState,
+) -> Result<&super::trace_db::SharedTraceStore, Box<axum::response::Response>> {
     state.trace_store.as_ref().ok_or_else(|| {
-        Box::new((
-            StatusCode::NOT_IMPLEMENTED,
-            Json(super::types::AdminErrorResponse::internal_error("链路追踪存储未初始化")),
+        Box::new(
+            (
+                StatusCode::NOT_IMPLEMENTED,
+                Json(super::types::AdminErrorResponse::internal_error(
+                    "链路追踪存储未初始化",
+                )),
+            )
+                .into_response(),
         )
-            .into_response())
     })
 }
 
 /// 获取 groups 管理器，若未初始化返回 501
-fn require_groups(state: &AdminState) -> Result<&super::groups::SharedGroupManager, Box<axum::response::Response>> {
+fn require_groups(
+    state: &AdminState,
+) -> Result<&super::groups::SharedGroupManager, Box<axum::response::Response>> {
     state.groups.as_ref().ok_or_else(|| {
-        Box::new((
-            StatusCode::NOT_IMPLEMENTED,
-            Json(super::types::AdminErrorResponse::internal_error("分组管理器未初始化")),
+        Box::new(
+            (
+                StatusCode::NOT_IMPLEMENTED,
+                Json(super::types::AdminErrorResponse::internal_error(
+                    "分组管理器未初始化",
+                )),
+            )
+                .into_response(),
         )
-            .into_response())
     })
 }
 
@@ -1204,7 +1230,11 @@ pub async fn stats_overview(State(state): State<AdminState>) -> impl IntoRespons
         Err(resp) => return *resp,
     };
     let overview = usage_aggregator.overview();
-    let active_keys = state.client_keys.as_ref().map(|ck| ck.active_count() as u64).unwrap_or(0);
+    let active_keys = state
+        .client_keys
+        .as_ref()
+        .map(|ck| ck.active_count() as u64)
+        .unwrap_or(0);
     let snapshot = state.service.get_all_credentials();
     let active_credentials = snapshot.credentials.iter().filter(|c| !c.disabled).count() as u64;
     let response = serde_json::json!({
@@ -1280,9 +1310,8 @@ pub async fn stats_by_credential(
         .map(|c| (c.id, c.email.clone()))
         .collect();
     // group 过滤暂时返回空集（CredentialStatusItem 尚无 groups 字段）
-    let cred_ids: Option<std::collections::HashSet<u64>> = group.as_deref().map(|_g| {
-        std::collections::HashSet::new()
-    });
+    let cred_ids: Option<std::collections::HashSet<u64>> =
+        group.as_deref().map(|_g| std::collections::HashSet::new());
     let data = usage_aggregator.query_by_credential(window, key_id, cred_ids.as_ref());
     let enriched: Vec<serde_json::Value> = data
         .into_iter()
@@ -1354,12 +1383,7 @@ pub async fn list_traces(
     let client_key_name_map: HashMap<u64, String> = state
         .client_keys
         .as_ref()
-        .map(|ck| {
-            ck.list()
-                .into_iter()
-                .map(|k| (k.id, k.name))
-                .collect()
-        })
+        .map(|ck| ck.list().into_iter().map(|k| (k.id, k.name)).collect())
         .unwrap_or_default();
     let key_label = |key_id: u64| -> String {
         client_key_name_map
@@ -1446,10 +1470,7 @@ pub async fn trace_failure_stats(State(state): State<AdminState>) -> impl IntoRe
 
 // ============ 账号分组（独立实体）============
 
-fn group_to_item(
-    g: &super::groups::Group,
-    state: &AdminState,
-) -> super::types::GroupItem {
+fn group_to_item(g: &super::groups::Group, state: &AdminState) -> super::types::GroupItem {
     let credential_count = state
         .service
         .token_manager()
@@ -1475,8 +1496,10 @@ pub async fn list_groups(State(state): State<AdminState>) -> impl IntoResponse {
         Err(resp) => return *resp,
     };
     let group_list = groups.list();
-    let items: Vec<super::types::GroupItem> =
-        group_list.iter().map(|g| group_to_item(g, &state)).collect();
+    let items: Vec<super::types::GroupItem> = group_list
+        .iter()
+        .map(|g| group_to_item(g, &state))
+        .collect();
     Json(super::types::GroupsResponse {
         total: items.len(),
         groups: items,
@@ -1591,7 +1614,9 @@ pub async fn update_group(
         if let Err(e) = groups.update_description(&current_name, desc_opt) {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(super::types::AdminErrorResponse::invalid_request(e.to_string())),
+                Json(super::types::AdminErrorResponse::invalid_request(
+                    e.to_string(),
+                )),
             )
                 .into_response();
         }
@@ -1656,11 +1681,7 @@ pub async fn delete_group(
     }
 
     if query.force {
-        if let Err(e) = state
-            .service
-            .token_manager()
-            .remove_credential_group(&name)
-        {
+        if let Err(e) = state.service.token_manager().remove_credential_group(&name) {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(super::types::AdminErrorResponse::internal_error(format!(

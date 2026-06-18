@@ -154,7 +154,9 @@ impl StreamContext {
 
         if self.defer_message_start {
             // defer 模式：跳过 message_start，等 contextUsageEvent 后再发
-            tracing::debug!("defer_message_start 启用，message_start 将在收到 contextUsageEvent 后发送");
+            tracing::debug!(
+                "defer_message_start 启用，message_start 将在收到 contextUsageEvent 后发送"
+            );
             return events;
         }
 

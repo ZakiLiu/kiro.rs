@@ -10,17 +10,16 @@ use super::{
         add_credential, add_proxy, apply_image_update, assign_proxies_round_robin,
         assign_proxy_to_credential, batch_add_proxies, check_all_proxies, check_proxy,
         check_rate_limit, check_update, clear_throttle, complete_social_login,
-        complete_social_relogin, create_client_key, create_group, create_preset,
-        delete_client_key, delete_credential, delete_group, delete_preset, delete_proxy,
-        disable_quota_exceeded, enable_overage_all, export_credentials, force_refresh_token,
-        get_account_throttle_config, get_all_credentials, get_cached_balances,
-        get_credential_balance, get_credential_models, get_global_config, get_global_proxy,
-        get_load_balancing_mode, get_log_governance_config, get_metrics_by_credential,
-        get_metrics_by_model, get_metrics_summary, get_presets, get_proxy_config, get_proxy_pool,
-        get_update_config, import_token_json, list_client_keys, list_groups, list_traces,
-        poll_idc_login, poll_idc_relogin, poll_social_login, poll_social_relogin,
-        pull_update_image, reset_all_success_count, reset_client_key_stats, reset_failure_count,
-        reset_success_count, rollback_image_update, rotate_client_key,
+        complete_social_relogin, create_client_key, create_group, create_preset, delete_client_key,
+        delete_credential, delete_group, delete_preset, delete_proxy, disable_quota_exceeded,
+        enable_overage_all, export_credentials, force_refresh_token, get_account_throttle_config,
+        get_all_credentials, get_cached_balances, get_credential_balance, get_credential_models,
+        get_global_config, get_global_proxy, get_load_balancing_mode, get_log_governance_config,
+        get_metrics_by_credential, get_metrics_by_model, get_metrics_summary, get_presets,
+        get_proxy_config, get_proxy_pool, get_update_config, import_token_json, list_client_keys,
+        list_groups, list_traces, poll_idc_login, poll_idc_relogin, poll_social_login,
+        poll_social_relogin, pull_update_image, reset_all_success_count, reset_client_key_stats,
+        reset_failure_count, reset_success_count, rollback_image_update, rotate_client_key,
         set_account_throttle_config, set_client_key_disabled, set_credential_disabled,
         set_credential_endpoint, set_credential_overage, set_credential_priority,
         set_credential_region, set_global_proxy, set_load_balancing_mode,
@@ -51,7 +50,10 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route("/credentials/export", get(export_credentials))
         .route("/credentials/import-token-json", post(import_token_json))
         .route("/credentials/reset-stats", post(reset_all_success_count))
-        .route("/credentials/disable-quota-exceeded", post(disable_quota_exceeded))
+        .route(
+            "/credentials/disable-quota-exceeded",
+            post(disable_quota_exceeded),
+        )
         .route("/credentials/overage/enable-all", post(enable_overage_all))
         .route(
             "/credentials/{id}",
@@ -74,7 +76,10 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route("/proxy-pool", get(get_proxy_pool).post(add_proxy))
         .route("/proxy-pool/batch", post(batch_add_proxies))
         .route("/proxy-pool/check-all", post(check_all_proxies))
-        .route("/proxy-pool/assign-round-robin", post(assign_proxies_round_robin))
+        .route(
+            "/proxy-pool/assign-round-robin",
+            post(assign_proxies_round_robin),
+        )
         .route("/proxy-pool/{id}", delete(delete_proxy))
         .route("/proxy-pool/{id}/enabled", post(set_proxy_enabled))
         .route("/proxy-pool/{id}/check", post(check_proxy))
@@ -144,20 +149,23 @@ pub fn create_admin_router(state: AdminState) -> Router {
             post(poll_idc_relogin),
         )
         // ---- 客户端 Key 管理 ----
-        .route("/client-keys", get(list_client_keys).post(create_client_key))
+        .route(
+            "/client-keys",
+            get(list_client_keys).post(create_client_key),
+        )
         .route(
             "/client-keys/{id}",
             delete(delete_client_key).put(update_client_key),
         )
         .route("/client-keys/{id}/disabled", post(set_client_key_disabled))
-        .route("/client-keys/{id}/reset-stats", post(reset_client_key_stats))
+        .route(
+            "/client-keys/{id}/reset-stats",
+            post(reset_client_key_stats),
+        )
         .route("/client-keys/{id}/rotate", post(rotate_client_key))
         // ---- 账号分组 ----
         .route("/groups", get(list_groups).post(create_group))
-        .route(
-            "/groups/{name}",
-            delete(delete_group).patch(update_group),
-        )
+        .route("/groups/{name}", delete(delete_group).patch(update_group))
         // ---- 用量统计 ----
         .route("/stats/overview", get(stats_overview))
         .route("/stats/timeseries", get(stats_timeseries))

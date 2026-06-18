@@ -72,7 +72,6 @@ pub fn create_router_with_provider(
 
 /// 从已构造的 AppState 创建路由（供 main.rs 在注入运维组件后使用）
 pub fn create_router_from_state(state: AppState) -> Router {
-
     // 需要认证的 /v1 路由（Claude + OpenAI 共享 /v1 前缀）
     let openai_routes = crate::openai::router::openai_routes();
     let v1_routes = Router::new()
@@ -86,11 +85,9 @@ pub fn create_router_from_state(state: AppState) -> Router {
         ));
 
     // Gemini /v1beta 路由
-    let gemini_routes = crate::gemini::router::gemini_routes()
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth_middleware,
-        ));
+    let gemini_routes = crate::gemini::router::gemini_routes().layer(
+        middleware::from_fn_with_state(state.clone(), auth_middleware),
+    );
 
     // Claude Code 别名：/anthropic/v1/messages → 与 /v1/messages 行为一致
     let anthropic_v1_routes = Router::new()

@@ -212,10 +212,12 @@ impl TraceStore {
             path
         };
         if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty() && !parent.exists()
-                && let Err(e) = std::fs::create_dir_all(parent) {
-                    tracing::warn!("创建 traces.db 目录失败 {}: {}", parent.display(), e);
-                }
+            && !parent.as_os_str().is_empty()
+            && !parent.exists()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!("创建 traces.db 目录失败 {}: {}", parent.display(), e);
+        }
         let conn = Connection::open(&path)?;
         // WAL：并发读不阻塞写；synchronous=NORMAL：写吞吐与崩溃安全的平衡
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -268,10 +270,7 @@ impl TraceStore {
         let key_source_added = !existing.contains("key_source");
         for (name, def) in columns {
             if !existing.contains(name) {
-                conn.execute_batch(&format!(
-                    "ALTER TABLE traces ADD COLUMN {} {};",
-                    name, def
-                ))?;
+                conn.execute_batch(&format!("ALTER TABLE traces ADD COLUMN {} {};", name, def))?;
             }
         }
         // 老库 key_source 列首次添加后，按 key_id 语义回填：master apiKey (key_id=0) 之外都视为客户端 Key。

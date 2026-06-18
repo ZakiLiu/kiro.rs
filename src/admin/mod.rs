@@ -10,17 +10,17 @@
 //! - 查询凭据余额
 
 pub(crate) mod binary_update;
+pub mod client_keys;
 mod error;
+pub mod groups;
 mod handlers;
 mod middleware;
+pub mod proxy_pool;
 mod router;
 mod service;
-pub mod client_keys;
-pub mod proxy_pool;
 pub mod trace_db;
 pub mod types;
 pub mod usage_stats;
-pub mod groups;
 
 pub use middleware::AdminState;
 pub use router::create_admin_router;

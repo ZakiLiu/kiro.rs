@@ -222,15 +222,16 @@ pub async fn auth_middleware(
 
     // 所有 Key 统一走客户端 Key 管理器校验（master apiKey 已通过 ensure_system_key 注册为系统 Key）
     if let Some(ref mgr) = state.client_keys
-        && let Some(id) = mgr.verify_and_touch(&key) {
-            let group = mgr.group_of(id);
-            request.extensions_mut().insert(AuthIdentity {
-                key_id: id,
-                key_source: TraceKeySource::ClientKey,
-                group,
-            });
-            return next.run(request).await;
-        }
+        && let Some(id) = mgr.verify_and_touch(&key)
+    {
+        let group = mgr.group_of(id);
+        request.extensions_mut().insert(AuthIdentity {
+            key_id: id,
+            key_source: TraceKeySource::ClientKey,
+            group,
+        });
+        return next.run(request).await;
+    }
 
     // 兜底：ClientKeyManager 未初始化时回退 master apiKey 直接比对
     if auth::constant_time_eq(&key, &state.api_key) {

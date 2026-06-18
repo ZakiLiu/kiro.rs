@@ -66,17 +66,15 @@ impl OpenAIStreamContext {
         let mut chunks = Vec::new();
 
         match event {
-            Event::AssistantResponse(ev)
-                if !ev.content.is_empty() => {
-                    self.output_tokens += token::count_tokens(&ev.content) as i32;
-                    chunks.push(self.make_content_chunk(&ev.content));
-                }
-            Event::ReasoningContent(ev)
-                if !ev.text.is_empty() => {
-                    self.thinking_tokens += token::count_tokens(&ev.text) as i32;
-                    self.reasoning_buffer.push_str(&ev.text);
-                    chunks.push(self.make_reasoning_chunk(&ev.text));
-                }
+            Event::AssistantResponse(ev) if !ev.content.is_empty() => {
+                self.output_tokens += token::count_tokens(&ev.content) as i32;
+                chunks.push(self.make_content_chunk(&ev.content));
+            }
+            Event::ReasoningContent(ev) if !ev.text.is_empty() => {
+                self.thinking_tokens += token::count_tokens(&ev.text) as i32;
+                self.reasoning_buffer.push_str(&ev.text);
+                chunks.push(self.make_reasoning_chunk(&ev.text));
+            }
             Event::ToolUse(ev) => {
                 self.has_tool_use = true;
                 if ev.stop {
@@ -85,9 +83,15 @@ impl OpenAIStreamContext {
                     self.current_tool_index += 1;
                     let tool_id = ev.tool_use_id.clone();
                     self.tool_uses.push((tool_id.clone(), ev.name.clone()));
-                    chunks.push(self.make_tool_call_start_chunk(self.current_tool_index, &tool_id, &ev.name));
+                    chunks.push(self.make_tool_call_start_chunk(
+                        self.current_tool_index,
+                        &tool_id,
+                        &ev.name,
+                    ));
                     if !ev.input.is_empty() {
-                        chunks.push(self.make_tool_call_args_chunk(self.current_tool_index, &ev.input));
+                        chunks.push(
+                            self.make_tool_call_args_chunk(self.current_tool_index, &ev.input),
+                        );
                     }
                 } else if !ev.input.is_empty() {
                     chunks.push(self.make_tool_call_args_chunk(self.current_tool_index, &ev.input));
@@ -107,7 +111,11 @@ impl OpenAIStreamContext {
     }
 
     pub fn usage_values(&self) -> (i32, i32, i32) {
-        (self.input_tokens, self.output_tokens, self.cache_read_tokens)
+        (
+            self.input_tokens,
+            self.output_tokens,
+            self.cache_read_tokens,
+        )
     }
 
     pub fn generate_final_chunk(&mut self) -> Vec<String> {
@@ -127,12 +135,16 @@ impl OpenAIStreamContext {
             completion_tokens: self.output_tokens,
             total_tokens: self.input_tokens + self.output_tokens,
             prompt_tokens_details: if self.cache_read_tokens > 0 {
-                Some(PromptTokensDetails { cached_tokens: self.cache_read_tokens })
+                Some(PromptTokensDetails {
+                    cached_tokens: self.cache_read_tokens,
+                })
             } else {
                 None
             },
             completion_tokens_details: if self.thinking_tokens > 0 {
-                Some(CompletionTokensDetails { reasoning_tokens: self.thinking_tokens })
+                Some(CompletionTokensDetails {
+                    reasoning_tokens: self.thinking_tokens,
+                })
             } else {
                 None
             },
@@ -261,5 +273,8 @@ impl OpenAIStreamContext {
 }
 
 fn format_sse_chunk(chunk: &ChatCompletionChunk) -> String {
-    format!("data: {}\n\n", serde_json::to_string(chunk).unwrap_or_default())
+    format!(
+        "data: {}\n\n",
+        serde_json::to_string(chunk).unwrap_or_default()
+    )
 }

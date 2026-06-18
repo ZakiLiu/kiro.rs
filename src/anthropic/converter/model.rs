@@ -113,10 +113,16 @@ pub fn map_model(model: &str) -> Option<String> {
     if normalized_model.starts_with("gpt-3.5") || normalized_model.starts_with("gpt-3-5") {
         return Some(KIRO_MODEL_HAIKU_4_5.to_string());
     }
-    if normalized_model.starts_with("o4-mini") || normalized_model.starts_with("o3-mini") || normalized_model.starts_with("o1-mini") {
+    if normalized_model.starts_with("o4-mini")
+        || normalized_model.starts_with("o3-mini")
+        || normalized_model.starts_with("o1-mini")
+    {
         return Some(KIRO_MODEL_SONNET_4_5.to_string());
     }
-    if normalized_model.starts_with("o1") || normalized_model.starts_with("o3") || normalized_model.starts_with("o4") {
+    if normalized_model.starts_with("o1")
+        || normalized_model.starts_with("o3")
+        || normalized_model.starts_with("o4")
+    {
         return Some(KIRO_MODEL_OPUS_4_6.to_string());
     }
 
@@ -126,7 +132,9 @@ pub fn map_model(model: &str) -> Option<String> {
     }
 
     // Gemini 家族 → Claude 映射（strip models/ prefix for Gemini API paths）
-    let gemini_model = normalized_model.strip_prefix("models/").unwrap_or(&normalized_model);
+    let gemini_model = normalized_model
+        .strip_prefix("models/")
+        .unwrap_or(&normalized_model);
     if gemini_model.contains("gemini-3") && gemini_model.contains("pro") {
         return Some(KIRO_MODEL_OPUS_4_6.to_string());
     }

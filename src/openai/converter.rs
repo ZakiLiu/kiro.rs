@@ -4,17 +4,19 @@ use std::collections::HashMap;
 
 use uuid::Uuid;
 
-use crate::anthropic::converter::{map_model, build_additional_model_request_fields, thinking_config_for_model};
-use crate::anthropic::types::{MessagesRequest, Thinking, OutputConfig};
+use crate::anthropic::converter::{
+    build_additional_model_request_fields, map_model, thinking_config_for_model,
+};
+use crate::anthropic::types::{MessagesRequest, OutputConfig, Thinking};
+use crate::kiro::model::requests::conversation::KiroImage;
 use crate::kiro::model::requests::conversation::{
     AssistantMessage, ConversationState, CurrentMessage, HistoryAssistantMessage,
     HistoryUserMessage, Message, UserInputMessage, UserInputMessageContext, UserMessage,
 };
 use crate::kiro::model::requests::kiro::KiroRequest;
 use crate::kiro::model::requests::tool::{
-    InputSchema, ToolResult, ToolSpecification, ToolUseEntry, Tool,
+    InputSchema, Tool, ToolResult, ToolSpecification, ToolUseEntry,
 };
-use crate::kiro::model::requests::conversation::KiroImage;
 
 use super::types::{ChatCompletionRequest, ChatMessage, MessageContent};
 
@@ -29,11 +31,10 @@ pub fn convert_openai_to_kiro(
     req: &ChatCompletionRequest,
     profile_arn: Option<String>,
 ) -> Result<ConversionResult, String> {
-    let model_id = map_model(&req.model)
-        .unwrap_or_else(|| {
-            tracing::warn!("未知 OpenAI 模型 '{}', 回退到默认", req.model);
-            "claude-sonnet-4.5".to_string()
-        });
+    let model_id = map_model(&req.model).unwrap_or_else(|| {
+        tracing::warn!("未知 OpenAI 模型 '{}', 回退到默认", req.model);
+        "claude-sonnet-4.5".to_string()
+    });
 
     let mut system_prompt = String::new();
     let mut non_system_messages: Vec<&ChatMessage> = Vec::new();
@@ -84,7 +85,11 @@ pub fn convert_openai_to_kiro(
                 }
             }
             "assistant" => {
-                let text = msg.content.as_ref().map(content_to_text).unwrap_or_default();
+                let text = msg
+                    .content
+                    .as_ref()
+                    .map(content_to_text)
+                    .unwrap_or_default();
                 let content = if text.trim().is_empty() && msg.tool_calls.is_some() {
                     " ".to_string()
                 } else if text.trim().is_empty() {
@@ -117,7 +122,11 @@ pub fn convert_openai_to_kiro(
             }
             "tool" => {
                 if let Some(tool_call_id) = &msg.tool_call_id {
-                    let text = msg.content.as_ref().map(content_to_text).unwrap_or_else(|| "(no output)".to_string());
+                    let text = msg
+                        .content
+                        .as_ref()
+                        .map(content_to_text)
+                        .unwrap_or_else(|| "(no output)".to_string());
                     tool_results.push(ToolResult::success(tool_call_id, &text));
 
                     let next_msg = non_system_messages.get(i + 1);
@@ -126,8 +135,8 @@ pub fn convert_openai_to_kiro(
                     if should_flush && !tool_results.is_empty() && !is_last {
                         let mut ctx = UserInputMessageContext::new();
                         ctx = ctx.with_tool_results(std::mem::take(&mut tool_results));
-                        let user_msg = UserMessage::new("Tool results provided.", &model_id)
-                            .with_context(ctx);
+                        let user_msg =
+                            UserMessage::new("Tool results provided.", &model_id).with_context(ctx);
                         history.push(Message::User(HistoryUserMessage {
                             user_input_message: user_msg,
                         }));
@@ -141,16 +150,21 @@ pub fn convert_openai_to_kiro(
     // 如果最后一条是 assistant，自动续
     if !history.is_empty()
         && let Some(Message::Assistant(_)) = history.last()
-            && current_content.is_empty() {
-                current_content = "Continue.".to_string();
-            }
+        && current_content.is_empty()
+    {
+        current_content = "Continue.".to_string();
+    }
 
     // 如果没有 current_content 但有 tool_results
     if current_content.is_empty() && !tool_results.is_empty() {
         current_content = "Tool results provided.".to_string();
     }
 
-    let final_content = if current_content.is_empty() { "Continue.".to_string() } else { current_content };
+    let final_content = if current_content.is_empty() {
+        "Continue.".to_string()
+    } else {
+        current_content
+    };
 
     // System prompt 注入到 history 头部（与 Kiro IDE 一致）
     if !system_prompt.is_empty() {
@@ -211,7 +225,10 @@ pub fn convert_openai_to_kiro(
     })
 }
 
-fn build_openai_thinking_fields(req: &ChatCompletionRequest, model_id: &str) -> Option<serde_json::Value> {
+fn build_openai_thinking_fields(
+    req: &ChatCompletionRequest,
+    model_id: &str,
+) -> Option<serde_json::Value> {
     // 从 reasoning_effort 直接构建
     if let Some(effort) = &req.reasoning_effort {
         let thinking_config = thinking_config_for_model(model_id);
@@ -238,31 +255,38 @@ fn build_openai_thinking_fields(req: &ChatCompletionRequest, model_id: &str) -> 
 
     // 从 thinking 对象构建
     if let Some(thinking_val) = &req.thinking
-        && let Some(obj) = thinking_val.as_object() {
-            let t_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("disabled");
-            if t_type == "disabled" {
-                return None;
-            }
-            let budget = obj.get("budget_tokens").and_then(|v| v.as_i64()).unwrap_or(20000) as i32;
-            let thinking_config = thinking_config_for_model(model_id);
-            let fake_req = MessagesRequest {
-                model: req.model.clone(),
-                max_tokens: req.max_tokens.unwrap_or(8192),
-                messages: vec![],
-                stream: false,
-                system: None,
-                tools: None,
-                tool_choice: None,
-                thinking: Some(Thinking {
-                    thinking_type: t_type.to_string(),
-                    budget_tokens: budget,
-                }),
-                output_config: None,
-                metadata: None,
-                reasoning_effort: None,
-            };
-            return build_additional_model_request_fields(&fake_req, thinking_config.as_ref());
+        && let Some(obj) = thinking_val.as_object()
+    {
+        let t_type = obj
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("disabled");
+        if t_type == "disabled" {
+            return None;
         }
+        let budget = obj
+            .get("budget_tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(20000) as i32;
+        let thinking_config = thinking_config_for_model(model_id);
+        let fake_req = MessagesRequest {
+            model: req.model.clone(),
+            max_tokens: req.max_tokens.unwrap_or(8192),
+            messages: vec![],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: Some(Thinking {
+                thinking_type: t_type.to_string(),
+                budget_tokens: budget,
+            }),
+            output_config: None,
+            metadata: None,
+            reasoning_effort: None,
+        };
+        return build_additional_model_request_fields(&fake_req, thinking_config.as_ref());
+    }
 
     None
 }
@@ -270,15 +294,13 @@ fn build_openai_thinking_fields(req: &ChatCompletionRequest, model_id: &str) -> 
 fn content_to_text(content: &MessageContent) -> String {
     match content {
         MessageContent::Text(s) => s.clone(),
-        MessageContent::Parts(parts) => {
-            parts
-                .iter()
-                .filter(|p| p.part_type == "text")
-                .filter_map(|p| p.text.as_ref())
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("")
-        }
+        MessageContent::Parts(parts) => parts
+            .iter()
+            .filter(|p| p.part_type == "text")
+            .filter_map(|p| p.text.as_ref())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(""),
     }
 }
 
@@ -300,9 +322,10 @@ fn extract_user_content(msg: &ChatMessage) -> (String, Vec<KiroImage>) {
                     }
                     "image_url" => {
                         if let Some(img_url) = &part.image_url
-                            && let Some(kiro_img) = parse_data_url_image(&img_url.url) {
-                                images.push(kiro_img);
-                            }
+                            && let Some(kiro_img) = parse_data_url_image(&img_url.url)
+                        {
+                            images.push(kiro_img);
+                        }
                     }
                     _ => {}
                 }
@@ -356,7 +379,11 @@ fn convert_openai_tools(tools: &Option<Vec<super::types::ChatTool>>) -> Vec<Tool
                     name: tool.function.name.clone(),
                     description: desc,
                     input_schema: InputSchema {
-                        json: tool.function.parameters.clone().unwrap_or(serde_json::json!({"type": "object", "properties": {}})),
+                        json: tool
+                            .function
+                            .parameters
+                            .clone()
+                            .unwrap_or(serde_json::json!({"type": "object", "properties": {}})),
                     },
                 },
             }

@@ -1,6 +1,9 @@
 //! Gemini 兼容路由
 
-use axum::{Router, routing::{get, post}};
+use axum::{
+    Router,
+    routing::{get, post},
+};
 
 use crate::anthropic::middleware::AppState;
 

@@ -18,15 +18,8 @@ use crate::metrics::{MetricEventType, MetricsCollector};
 use crate::model::config::{CompressionConfig, Config};
 use parking_lot::RwLock;
 
-use crate::kiro::auth::idc::{self, BUILDER_ID_START_URL};
-use crate::kiro::auth::social;
 use super::error::AdminServiceError;
 use super::proxy_pool::ProxyPoolManager;
-use super::types::{
-    CheckRateLimitRequest, GitHubRateLimitInfo, ImageUpdateResponse, PollIdcLoginResponse,
-    SetUpdateConfigRequest, StartIdcLoginResponse, StartSocialLoginResponse, UpdateCheckInfo,
-    UpdateConfigResponse,
-};
 use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, CachedBalanceItem,
     CachedBalancesResponse, CredentialMetrics, CredentialStatusItem, CredentialsStatusResponse,
@@ -34,6 +27,13 @@ use super::types::{
     MetricsSummaryResponse, ModelMetrics, ProxyConfigResponse, ProxyPoolEntry, TokenJsonItem,
     UpdateProxyConfigRequest,
 };
+use super::types::{
+    CheckRateLimitRequest, GitHubRateLimitInfo, ImageUpdateResponse, PollIdcLoginResponse,
+    SetUpdateConfigRequest, StartIdcLoginResponse, StartSocialLoginResponse, UpdateCheckInfo,
+    UpdateConfigResponse,
+};
+use crate::kiro::auth::idc::{self, BUILDER_ID_START_URL};
+use crate::kiro::auth::social;
 
 /// 余额缓存过期时间（秒），5 分钟
 const BALANCE_CACHE_TTL_SECS: i64 = 300;
@@ -122,7 +122,10 @@ fn parse_semver_core(value: &str) -> [u32; 3] {
 
 fn staged_binary_path(exe: &std::path::Path, version: &str) -> std::path::PathBuf {
     let mut s = exe.as_os_str().to_os_string();
-    s.push(format!(".staged-{}", version.trim().trim_start_matches('v')));
+    s.push(format!(
+        ".staged-{}",
+        version.trim().trim_start_matches('v')
+    ));
     std::path::PathBuf::from(s)
 }
 
@@ -140,6 +143,7 @@ fn cleanup_other_staged(exe: &std::path::Path, keep_version: &str) {
         exe_name,
         keep_version.trim().trim_start_matches('v')
     );
+    let keep_metadata = format!("{}.metadata.json", keep);
     let prefix = format!("{}.staged-", exe_name);
     let entries = match std::fs::read_dir(dir) {
         Ok(it) => it,
@@ -150,8 +154,10 @@ fn cleanup_other_staged(exe: &std::path::Path, keep_version: &str) {
             Ok(n) => n,
             Err(_) => continue,
         };
-        if name.starts_with(&prefix) && name != keep {
-            let _ = std::fs::remove_file(entry.path());
+        if name.starts_with(&prefix) && name != keep && name != keep_metadata {
+            let path = entry.path();
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(super::binary_update::staged_metadata_path(&path));
         }
     }
 }
@@ -167,16 +173,10 @@ fn parse_auto_apply_time(value: &str) -> Result<(u32, u32), AdminServiceError> {
     let hour_str = parts.next().unwrap_or("");
     let minute_str = parts.next().unwrap_or("");
     let hour: u32 = hour_str.parse().map_err(|_| {
-        AdminServiceError::InvalidRequest(format!(
-            "自动更新时间格式无效：{}（应为 HH:MM）",
-            value
-        ))
+        AdminServiceError::InvalidRequest(format!("自动更新时间格式无效：{}（应为 HH:MM）", value))
     })?;
     let minute: u32 = minute_str.parse().map_err(|_| {
-        AdminServiceError::InvalidRequest(format!(
-            "自动更新时间格式无效：{}（应为 HH:MM）",
-            value
-        ))
+        AdminServiceError::InvalidRequest(format!("自动更新时间格式无效：{}（应为 HH:MM）", value))
     })?;
     if hour > 23 || minute > 59 {
         return Err(AdminServiceError::InvalidRequest(format!(
@@ -269,9 +269,7 @@ impl AdminService {
             token_manager.restore_balance_cache(*id, cached.data.remaining, cached.cached_at);
         }
 
-        let proxy_pool_path = token_manager
-            .cache_dir()
-            .map(|d| d.join("proxy_pool.json"));
+        let proxy_pool_path = token_manager.cache_dir().map(|d| d.join("proxy_pool.json"));
         let tls_backend = config.read().tls_backend;
         let proxy_pool = ProxyPoolManager::new(proxy_pool_path, tls_backend);
 
@@ -393,7 +391,11 @@ impl AdminService {
         let mut failure_messages: Vec<String> = Vec::new();
 
         for id in targets {
-            match self.token_manager.set_user_preference_for(id, "ENABLED").await {
+            match self
+                .token_manager
+                .set_user_preference_for(id, "ENABLED")
+                .await
+            {
                 Ok(()) => {
                     enabled_ids.push(id);
                     let mut cache = self.balance_cache.lock();
@@ -640,9 +642,11 @@ impl AdminService {
         self.token_manager.update_balance_cache(id, remaining);
 
         // KIRO PRO 超额检查
-        self.token_manager.check_pro_overuse_disable(id, usage.subscription_title(), current_usage);
+        self.token_manager
+            .check_pro_overuse_disable(id, usage.subscription_title(), current_usage);
         // 自动按订阅等级归类分组
-        self.token_manager.auto_assign_subscription_group(id, usage.subscription_title());
+        self.token_manager
+            .auto_assign_subscription_group(id, usage.subscription_title());
 
         Ok(BalanceResponse {
             id,
@@ -1587,21 +1591,21 @@ impl AdminService {
         id: u64,
         payload: super::types::UpdateCredentialRequest,
     ) -> Result<(), AdminServiceError> {
-        let proxy_url = payload.proxy_url.map(|u| {
-            if u.trim().is_empty() { None } else { Some(u) }
-        });
-        let proxy_username = payload.proxy_username.map(|u| {
-            if u.trim().is_empty() { None } else { Some(u) }
-        });
-        let proxy_password = payload.proxy_password.map(|p| {
-            if p.trim().is_empty() { None } else { Some(p) }
-        });
-        let email = payload.email.map(|e| {
-            if e.trim().is_empty() { None } else { Some(e) }
-        });
-        let source_channel = payload.source_channel.map(|s| {
-            if s.trim().is_empty() { None } else { Some(s) }
-        });
+        let proxy_url = payload
+            .proxy_url
+            .map(|u| if u.trim().is_empty() { None } else { Some(u) });
+        let proxy_username = payload
+            .proxy_username
+            .map(|u| if u.trim().is_empty() { None } else { Some(u) });
+        let proxy_password = payload
+            .proxy_password
+            .map(|p| if p.trim().is_empty() { None } else { Some(p) });
+        let email = payload
+            .email
+            .map(|e| if e.trim().is_empty() { None } else { Some(e) });
+        let source_channel = payload
+            .source_channel
+            .map(|s| if s.trim().is_empty() { None } else { Some(s) });
 
         use crate::kiro::token_manager::CredentialFieldUpdate;
         self.token_manager
@@ -1696,9 +1700,7 @@ impl AdminService {
         let (added, errors) = self.proxy_pool.batch_add(payload.urls);
         let values: Vec<serde_json::Value> = added
             .iter()
-            .filter_map(|e| {
-                serde_json::to_value(Self::new_proxy_pool_entry(e)).ok()
-            })
+            .filter_map(|e| serde_json::to_value(Self::new_proxy_pool_entry(e)).ok())
             .collect();
         (values, errors)
     }
@@ -1746,9 +1748,10 @@ impl AdminService {
                     .find(|e| e.id == proxy_id)
                     .ok_or(AdminServiceError::NotFound { id: proxy_id })?;
                 if !entry.enabled {
-                    return Err(AdminServiceError::InvalidCredential(
-                        format!("代理 #{} 已禁用，无法分配", proxy_id),
-                    ));
+                    return Err(AdminServiceError::InvalidCredential(format!(
+                        "代理 #{} 已禁用，无法分配",
+                        proxy_id
+                    )));
                 }
                 Some(entry.url.clone())
             }
@@ -1760,10 +1763,7 @@ impl AdminService {
     }
 
     /// 探测代理连通性
-    pub async fn check_proxy(
-        &self,
-        id: u64,
-    ) -> Result<serde_json::Value, AdminServiceError> {
+    pub async fn check_proxy(&self, id: u64) -> Result<serde_json::Value, AdminServiceError> {
         let entry = self
             .proxy_pool
             .check_one(id)
@@ -1777,8 +1777,7 @@ impl AdminService {
             enabled: entry.enabled,
             auto_disabled: entry.auto_disabled,
         };
-        serde_json::to_value(resp)
-            .map_err(|e| AdminServiceError::InternalError(e.to_string()))
+        serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
     }
 
     /// 全量代理健康检查
@@ -1833,7 +1832,8 @@ impl AdminService {
         let msg = e.to_string();
         if msg.contains("不存在") {
             AdminServiceError::NotFound { id: 0 }
-        } else if msg.contains("已存在") || msg.contains("无效") || msg.contains("不能为空") {
+        } else if msg.contains("已存在") || msg.contains("无效") || msg.contains("不能为空")
+        {
             AdminServiceError::InvalidCredential(msg)
         } else {
             AdminServiceError::InternalError(msg)
@@ -1960,29 +1960,30 @@ impl AdminService {
     }
 
     /// 设置或清除全局代理
-    pub fn set_global_proxy(&self, proxy_url: Option<String>) -> Result<(), AdminServiceError> {
-        let url = proxy_url
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-        {
-            let mut config = self.config.write();
-            config.proxy_url = url;
-            config
-                .save()
-                .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
-        }
-        Ok(())
+    pub async fn set_global_proxy(
+        &self,
+        proxy_url: Option<String>,
+    ) -> Result<(), AdminServiceError> {
+        self.update_proxy_config(UpdateProxyConfigRequest {
+            proxy_url,
+            proxy_username: None,
+            proxy_password: None,
+        })
+        .await
     }
 
     // ============ Admin Key 持久化 ============
 
     /// 持久化 admin key 到 config.json
-    pub fn persist_admin_key(&self, new_key: &str) {
-        let mut config = self.config.write();
-        config.admin_api_key = Some(new_key.to_string());
-        if let Err(e) = config.save() {
-            tracing::warn!("持久化 admin_api_key 失败: {}", e);
-        }
+    pub fn persist_admin_key(&self, new_key: &str) -> Result<(), AdminServiceError> {
+        let mut next_config = self.config.read().clone();
+        next_config.admin_api_key = Some(new_key.to_string());
+        next_config
+            .save()
+            .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+
+        self.config.write().admin_api_key = Some(new_key.to_string());
+        Ok(())
     }
 
     /// 持久化 api key 到 config.json
@@ -2001,8 +2002,14 @@ impl AdminService {
         req: super::types::StartSocialLoginRequest,
     ) -> Result<serde_json::Value, AdminServiceError> {
         let global_proxy = self.token_manager.proxy();
-        let proxy = req.proxy_url.as_deref().map(ProxyConfig::new).or(global_proxy);
-        let auth_endpoint = req.auth_endpoint.unwrap_or_else(|| social::KIRO_AUTH_ENDPOINT.to_string());
+        let proxy = req
+            .proxy_url
+            .as_deref()
+            .map(ProxyConfig::new)
+            .or(global_proxy);
+        let auth_endpoint = req
+            .auth_endpoint
+            .unwrap_or_else(|| social::KIRO_AUTH_ENDPOINT.to_string());
 
         let (code_verifier, code_challenge) = social::generate_pkce();
         let state = uuid::Uuid::new_v4().to_string();
@@ -2025,14 +2032,26 @@ impl AdminService {
         };
 
         let session = SocialAuthSession {
-            auth_endpoint, state, code_verifier, redirect_uri, expires_at,
+            auth_endpoint,
+            state,
+            code_verifier,
+            redirect_uri,
+            expires_at,
             callback_rx: tokio::sync::Mutex::new(rx),
-            cred_template, proxy, _server_handle: server_handle,
+            cred_template,
+            proxy,
+            _server_handle: server_handle,
             relogin_target_id: None,
         };
-        self.social_sessions.lock().insert(session_id.clone(), session);
+        self.social_sessions
+            .lock()
+            .insert(session_id.clone(), session);
 
-        let resp = StartSocialLoginResponse { session_id, portal_url, expires_at: expires_at.to_rfc3339() };
+        let resp = StartSocialLoginResponse {
+            session_id,
+            portal_url,
+            expires_at: expires_at.to_rfc3339(),
+        };
         serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
     }
 
@@ -2042,7 +2061,12 @@ impl AdminService {
     ) -> Result<serde_json::Value, AdminServiceError> {
         use tokio::sync::oneshot::error::TryRecvError;
 
-        enum PollOutcome { Expired, Closed, Pending, Received(social::OAuthCallbackData) }
+        enum PollOutcome {
+            Expired,
+            Closed,
+            Pending,
+            Received(social::OAuthCallbackData),
+        }
 
         let outcome = {
             let sessions = self.social_sessions.lock();
@@ -2066,16 +2090,20 @@ impl AdminService {
         match outcome {
             PollOutcome::Pending => {
                 let resp = PollIdcLoginResponse::Pending;
-                serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
+                serde_json::to_value(resp)
+                    .map_err(|e| AdminServiceError::InternalError(e.to_string()))
             }
             PollOutcome::Expired => {
                 self.social_sessions.lock().remove(session_id);
                 let resp = PollIdcLoginResponse::Expired;
-                serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
+                serde_json::to_value(resp)
+                    .map_err(|e| AdminServiceError::InternalError(e.to_string()))
             }
             PollOutcome::Closed => {
                 self.social_sessions.lock().remove(session_id);
-                Err(AdminServiceError::InternalError("Social 登录回调服务器已关闭，请重新发起登录".to_string()))
+                Err(AdminServiceError::InternalError(
+                    "Social 登录回调服务器已关闭，请重新发起登录".to_string(),
+                ))
             }
             PollOutcome::Received(callback) => {
                 self.do_complete_social_login(session_id, callback).await
@@ -2090,26 +2118,44 @@ impl AdminService {
     ) -> Result<serde_json::Value, AdminServiceError> {
         {
             let sessions = self.social_sessions.lock();
-            let s = sessions.get(session_id).ok_or(AdminServiceError::NotFound { id: 0 })?;
+            let s = sessions
+                .get(session_id)
+                .ok_or(AdminServiceError::NotFound { id: 0 })?;
             if callback.state != s.state {
-                return Err(AdminServiceError::InternalError("OAuth state 不匹配，请重新发起登录".to_string()));
+                return Err(AdminServiceError::InternalError(
+                    "OAuth state 不匹配，请重新发起登录".to_string(),
+                ));
             }
         }
 
-        let session = self.social_sessions.lock().remove(session_id)
+        let session = self
+            .social_sessions
+            .lock()
+            .remove(session_id)
             .ok_or(AdminServiceError::NotFound { id: 0 })?;
 
         let config = self.token_manager.config();
         let full_redirect_uri = if callback.login_option.is_empty() {
             format!("{}{}", session.redirect_uri, callback.path)
         } else {
-            format!("{}{}?login_option={}", session.redirect_uri, callback.path, urlencoding::encode(&callback.login_option))
+            format!(
+                "{}{}?login_option={}",
+                session.redirect_uri,
+                callback.path,
+                urlencoding::encode(&callback.login_option)
+            )
         };
 
         let token = social::exchange_code_for_token(
-            &session.auth_endpoint, &callback.code, &session.code_verifier,
-            &full_redirect_uri, &config, session.proxy.as_ref(),
-        ).await.map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+            &session.auth_endpoint,
+            &callback.code,
+            &session.code_verifier,
+            &full_redirect_uri,
+            &config,
+            session.proxy.as_ref(),
+        )
+        .await
+        .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
 
         if let Some(target_id) = session.relogin_target_id {
             let refresh_token = token.refresh_token.ok_or_else(|| {
@@ -2118,21 +2164,29 @@ impl AdminService {
             self.do_relogin_update(target_id, refresh_token)
                 .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
             tracing::info!("Social 重新登录成功，凭据 #{} Token 已更新", target_id);
-            let resp = PollIdcLoginResponse::Success { credential_id: target_id };
-            return serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()));
+            let resp = PollIdcLoginResponse::Success {
+                credential_id: target_id,
+            };
+            return serde_json::to_value(resp)
+                .map_err(|e| AdminServiceError::InternalError(e.to_string()));
         }
 
         let mut new_cred = session.cred_template;
         new_cred.access_token = Some(token.access_token);
         new_cred.refresh_token = token.refresh_token;
         new_cred.expires_at = token.expires_at.or_else(|| {
-            token.expires_in.map(|secs| (Utc::now() + Duration::seconds(secs)).to_rfc3339())
+            token
+                .expires_in
+                .map(|secs| (Utc::now() + Duration::seconds(secs)).to_rfc3339())
         });
         if let Some(arn) = token.profile_arn {
             new_cred.profile_arn = Some(arn);
         }
 
-        let credential_id = self.token_manager.add_credential(new_cred).await
+        let credential_id = self
+            .token_manager
+            .add_credential(new_cred)
+            .await
             .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
 
         if let Err(e) = self.get_balance(credential_id).await {
@@ -2154,13 +2208,21 @@ impl AdminService {
     ) -> Result<serde_json::Value, AdminServiceError> {
         {
             let sessions = self.social_sessions.lock();
-            let s = sessions.get(session_id).ok_or(AdminServiceError::NotFound { id: 0 })?;
+            let s = sessions
+                .get(session_id)
+                .ok_or(AdminServiceError::NotFound { id: 0 })?;
             if Utc::now() >= s.expires_at {
                 let resp = PollIdcLoginResponse::Expired;
-                return serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()));
+                return serde_json::to_value(resp)
+                    .map_err(|e| AdminServiceError::InternalError(e.to_string()));
             }
         }
-        let callback = social::OAuthCallbackData { code, login_option, path, state };
+        let callback = social::OAuthCallbackData {
+            code,
+            login_option,
+            path,
+            state,
+        };
         self.do_complete_social_login(session_id, callback).await
     }
 
@@ -2177,8 +2239,14 @@ impl AdminService {
         }
 
         let global_proxy = self.token_manager.proxy();
-        let proxy = req.proxy_url.as_deref().map(ProxyConfig::new).or(global_proxy);
-        let auth_endpoint = req.auth_endpoint.unwrap_or_else(|| social::KIRO_AUTH_ENDPOINT.to_string());
+        let proxy = req
+            .proxy_url
+            .as_deref()
+            .map(ProxyConfig::new)
+            .or(global_proxy);
+        let auth_endpoint = req
+            .auth_endpoint
+            .unwrap_or_else(|| social::KIRO_AUTH_ENDPOINT.to_string());
         let (code_verifier, code_challenge) = social::generate_pkce();
         let state = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = tokio::sync::oneshot::channel::<social::OAuthCallbackData>();
@@ -2190,15 +2258,26 @@ impl AdminService {
         let session_id = uuid::Uuid::new_v4().to_string();
 
         let session = SocialAuthSession {
-            auth_endpoint, state, code_verifier, redirect_uri, expires_at,
+            auth_endpoint,
+            state,
+            code_verifier,
+            redirect_uri,
+            expires_at,
             callback_rx: tokio::sync::Mutex::new(rx),
             cred_template: KiroCredentials::default(),
-            proxy, _server_handle: server_handle,
+            proxy,
+            _server_handle: server_handle,
             relogin_target_id: Some(target_id),
         };
-        self.social_sessions.lock().insert(session_id.clone(), session);
+        self.social_sessions
+            .lock()
+            .insert(session_id.clone(), session);
 
-        let resp = StartSocialLoginResponse { session_id, portal_url, expires_at: expires_at.to_rfc3339() };
+        let resp = StartSocialLoginResponse {
+            session_id,
+            portal_url,
+            expires_at: expires_at.to_rfc3339(),
+        };
         serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
     }
 
@@ -2210,14 +2289,26 @@ impl AdminService {
     ) -> Result<serde_json::Value, AdminServiceError> {
         let config = self.token_manager.config();
         let global_proxy = self.token_manager.proxy();
-        let proxy = req.proxy_url.as_deref().map(ProxyConfig::new).or(global_proxy);
+        let proxy = req
+            .proxy_url
+            .as_deref()
+            .map(ProxyConfig::new)
+            .or(global_proxy);
         let start_url = req.start_url.as_deref().unwrap_or(BUILDER_ID_START_URL);
 
         let reg = idc::register_client(&req.region, start_url, &config, proxy.as_ref())
-            .await.map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+            .await
+            .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
         let device = idc::start_device_authorization(
-            &req.region, start_url, &reg.client_id, &reg.client_secret, &config, proxy.as_ref(),
-        ).await.map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+            &req.region,
+            start_url,
+            &reg.client_id,
+            &reg.client_secret,
+            &config,
+            proxy.as_ref(),
+        )
+        .await
+        .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
 
         let expires_at = Utc::now() + Duration::seconds(device.expires_in);
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -2233,16 +2324,25 @@ impl AdminService {
         };
         let poll_interval = device.interval.max(5);
         let session = IdcAuthSession {
-            region: req.region, client_id: reg.client_id, client_secret: reg.client_secret,
-            device_code: device.device_code, expires_at, poll_interval,
-            cred_template, proxy, relogin_target_id: None,
+            region: req.region,
+            client_id: reg.client_id,
+            client_secret: reg.client_secret,
+            device_code: device.device_code,
+            expires_at,
+            poll_interval,
+            cred_template,
+            proxy,
+            relogin_target_id: None,
         };
         self.idc_sessions.lock().insert(session_id.clone(), session);
 
         let resp = StartIdcLoginResponse {
-            session_id, user_code: device.user_code, verification_uri: device.verification_uri,
+            session_id,
+            user_code: device.user_code,
+            verification_uri: device.verification_uri,
             verification_uri_complete: device.verification_uri_complete,
-            expires_at: expires_at.to_rfc3339(), poll_interval,
+            expires_at: expires_at.to_rfc3339(),
+            poll_interval,
         };
         serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
     }
@@ -2251,27 +2351,58 @@ impl AdminService {
         &self,
         session_id: &str,
     ) -> Result<serde_json::Value, AdminServiceError> {
-        let (region, client_id, client_secret, device_code, _expires_at, proxy, cred_template, relogin_target_id) = {
+        let (
+            region,
+            client_id,
+            client_secret,
+            device_code,
+            _expires_at,
+            proxy,
+            cred_template,
+            relogin_target_id,
+        ) = {
             let sessions = self.idc_sessions.lock();
-            let s = sessions.get(session_id).ok_or(AdminServiceError::NotFound { id: 0 })?;
+            let s = sessions
+                .get(session_id)
+                .ok_or(AdminServiceError::NotFound { id: 0 })?;
             if Utc::now() >= s.expires_at {
                 let resp = PollIdcLoginResponse::Expired;
-                return serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()));
+                return serde_json::to_value(resp)
+                    .map_err(|e| AdminServiceError::InternalError(e.to_string()));
             }
-            (s.region.clone(), s.client_id.clone(), s.client_secret.clone(),
-             s.device_code.clone(), s.expires_at, s.proxy.clone(), s.cred_template.clone(), s.relogin_target_id)
+            (
+                s.region.clone(),
+                s.client_id.clone(),
+                s.client_secret.clone(),
+                s.device_code.clone(),
+                s.expires_at,
+                s.proxy.clone(),
+                s.cred_template.clone(),
+                s.relogin_target_id,
+            )
         };
 
         let config = self.token_manager.config();
-        match idc::poll_token(&region, &client_id, &client_secret, &device_code, &config, proxy.as_ref()).await {
+        match idc::poll_token(
+            &region,
+            &client_id,
+            &client_secret,
+            &device_code,
+            &config,
+            proxy.as_ref(),
+        )
+        .await
+        {
             idc::PollResult::Pending => {
                 let resp = PollIdcLoginResponse::Pending;
-                serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
+                serde_json::to_value(resp)
+                    .map_err(|e| AdminServiceError::InternalError(e.to_string()))
             }
             idc::PollResult::Expired => {
                 self.idc_sessions.lock().remove(session_id);
                 let resp = PollIdcLoginResponse::Expired;
-                serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
+                serde_json::to_value(resp)
+                    .map_err(|e| AdminServiceError::InternalError(e.to_string()))
             }
             idc::PollResult::Error(e) => Err(AdminServiceError::InternalError(e.to_string())),
             idc::PollResult::Success(token) => {
@@ -2282,8 +2413,11 @@ impl AdminService {
                             .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
                     }
                     tracing::info!("IdC 重新登录成功，凭据 #{} Token 已更新", target_id);
-                    let resp = PollIdcLoginResponse::Success { credential_id: target_id };
-                    return serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()));
+                    let resp = PollIdcLoginResponse::Success {
+                        credential_id: target_id,
+                    };
+                    return serde_json::to_value(resp)
+                        .map_err(|e| AdminServiceError::InternalError(e.to_string()));
                 }
                 let mut new_cred = cred_template;
                 new_cred.access_token = Some(token.access_token);
@@ -2291,14 +2425,18 @@ impl AdminService {
                 if let Some(secs) = token.expires_in {
                     new_cred.expires_at = Some((Utc::now() + Duration::seconds(secs)).to_rfc3339());
                 }
-                let credential_id = self.token_manager.add_credential(new_cred).await
+                let credential_id = self
+                    .token_manager
+                    .add_credential(new_cred)
+                    .await
                     .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
                 if let Err(e) = self.get_balance(credential_id).await {
                     tracing::warn!("IdC 登录后刷新余额失败: {}", e);
                 }
                 tracing::info!("IdC 设备授权登录成功，已添加凭据 #{}", credential_id);
                 let resp = PollIdcLoginResponse::Success { credential_id };
-                serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
+                serde_json::to_value(resp)
+                    .map_err(|e| AdminServiceError::InternalError(e.to_string()))
             }
         }
     }
@@ -2316,37 +2454,58 @@ impl AdminService {
         }
         let config = self.token_manager.config();
         let global_proxy = self.token_manager.proxy();
-        let proxy = req.proxy_url.as_deref().map(ProxyConfig::new).or(global_proxy);
+        let proxy = req
+            .proxy_url
+            .as_deref()
+            .map(ProxyConfig::new)
+            .or(global_proxy);
         let start_url = req.start_url.as_deref().unwrap_or(BUILDER_ID_START_URL);
 
         let reg = idc::register_client(&req.region, start_url, &config, proxy.as_ref())
-            .await.map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+            .await
+            .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
         let device = idc::start_device_authorization(
-            &req.region, start_url, &reg.client_id, &reg.client_secret, &config, proxy.as_ref(),
-        ).await.map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
+            &req.region,
+            start_url,
+            &reg.client_id,
+            &reg.client_secret,
+            &config,
+            proxy.as_ref(),
+        )
+        .await
+        .map_err(|e| AdminServiceError::InternalError(e.to_string()))?;
 
         let expires_at = Utc::now() + Duration::seconds(device.expires_in);
         let session_id = uuid::Uuid::new_v4().to_string();
         let poll_interval = device.interval.max(5);
         let session = IdcAuthSession {
-            region: req.region, client_id: reg.client_id, client_secret: reg.client_secret,
-            device_code: device.device_code, expires_at, poll_interval,
-            cred_template: KiroCredentials::default(), proxy,
+            region: req.region,
+            client_id: reg.client_id,
+            client_secret: reg.client_secret,
+            device_code: device.device_code,
+            expires_at,
+            poll_interval,
+            cred_template: KiroCredentials::default(),
+            proxy,
             relogin_target_id: Some(target_id),
         };
         self.idc_sessions.lock().insert(session_id.clone(), session);
 
         let resp = StartIdcLoginResponse {
-            session_id, user_code: device.user_code, verification_uri: device.verification_uri,
+            session_id,
+            user_code: device.user_code,
+            verification_uri: device.verification_uri,
             verification_uri_complete: device.verification_uri_complete,
-            expires_at: expires_at.to_rfc3339(), poll_interval,
+            expires_at: expires_at.to_rfc3339(),
+            poll_interval,
         };
         serde_json::to_value(resp).map_err(|e| AdminServiceError::InternalError(e.to_string()))
     }
 
     fn do_relogin_update(&self, target_id: u64, refresh_token: String) -> anyhow::Result<()> {
         self.token_manager.set_disabled(target_id, true)?;
-        self.token_manager.update_refresh_token(target_id, refresh_token, None, None)?;
+        self.token_manager
+            .update_refresh_token(target_id, refresh_token, None, None)?;
         self.token_manager.reset_and_enable(target_id)?;
         Ok(())
     }
@@ -2357,9 +2516,7 @@ impl AdminService {
     }
 }
 
-fn credential_to_export_account(
-    cred: KiroCredentials,
-) -> Option<super::types::ExportedAccount> {
+fn credential_to_export_account(cred: KiroCredentials) -> Option<super::types::ExportedAccount> {
     let refresh_token = cred
         .refresh_token
         .as_deref()
@@ -2501,17 +2658,16 @@ impl AdminService {
     }
 
     pub async fn check_update(&self, force: bool) -> UpdateCheckInfo {
-        if !force
-            && let Some(cached) = self.update_check_cache.lock().clone() {
-                let age = Utc::now()
-                    .signed_duration_since(cached.cached_at)
-                    .num_seconds();
-                if age < UPDATE_CHECK_TTL_SECS {
-                    let mut info = cached.info.clone();
-                    info.cached = true;
-                    return info;
-                }
+        if !force && let Some(cached) = self.update_check_cache.lock().clone() {
+            let age = Utc::now()
+                .signed_duration_since(cached.cached_at)
+                .num_seconds();
+            if age < UPDATE_CHECK_TTL_SECS {
+                let mut info = cached.info.clone();
+                info.cached = true;
+                return info;
             }
+        }
 
         match self.fetch_latest_release().await {
             Ok(info) => {
@@ -2649,6 +2805,7 @@ impl AdminService {
             )
             .await?;
         }
+        super::binary_update::verify_staged_binary(&staged, &version)?;
         cleanup_other_staged(&exe, &version);
 
         Ok(ImageUpdateResponse {
@@ -2656,10 +2813,7 @@ impl AdminService {
             message: if reused {
                 format!("v{} 已下载并校验，可直接执行「更新并重启」", version)
             } else {
-                format!(
-                    "已下载并校验 v{} 二进制，可直接执行「更新并重启」",
-                    version
-                )
+                format!("已下载并校验 v{} 二进制，可直接执行「更新并重启」", version)
             },
             output: Some(format!(
                 "{}: v{}\nstaged: {}",
@@ -2694,6 +2848,7 @@ impl AdminService {
             )
             .await?;
         }
+        let staged_metadata = super::binary_update::verify_staged_binary(&staged, &version)?;
         cleanup_other_staged(&exe, &version);
 
         let previous_version = env!("CARGO_PKG_VERSION").to_string();
@@ -2724,10 +2879,12 @@ impl AdminService {
                 version
             ),
             output: Some(format!(
-                "previous: v{}\n{}: v{}",
+                "previous: v{}\n{}: v{}\nstaged_sha256: {}\nstaged_size: {}",
                 previous_version,
                 if reused { "reused-staged" } else { "installed" },
-                version
+                version,
+                staged_metadata.sha256,
+                staged_metadata.size
             )),
             applied: true,
             need_restart: true,
@@ -2804,8 +2961,14 @@ impl AdminService {
             Ok(c) => c,
             Err(e) => {
                 return GitHubRateLimitInfo {
-                    valid: false, authenticated, limit: 0, remaining: 0, used: 0, reset: 0,
-                    login: None, warning: Some(format!("构造 HTTP 客户端失败: {}", e)),
+                    valid: false,
+                    authenticated,
+                    limit: 0,
+                    remaining: 0,
+                    used: 0,
+                    reset: 0,
+                    login: None,
+                    warning: Some(format!("构造 HTTP 客户端失败: {}", e)),
                 };
             }
         };
@@ -2824,8 +2987,14 @@ impl AdminService {
             Ok(r) => r,
             Err(e) => {
                 return GitHubRateLimitInfo {
-                    valid: false, authenticated, limit: 0, remaining: 0, used: 0, reset: 0,
-                    login: None, warning: Some(format!("请求 GitHub API 失败: {}", e)),
+                    valid: false,
+                    authenticated,
+                    limit: 0,
+                    remaining: 0,
+                    used: 0,
+                    reset: 0,
+                    login: None,
+                    warning: Some(format!("请求 GitHub API 失败: {}", e)),
                 };
             }
         };
@@ -2833,14 +3002,25 @@ impl AdminService {
         let status = resp.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return GitHubRateLimitInfo {
-                valid: false, authenticated, limit: 0, remaining: 0, used: 0, reset: 0,
-                login: None, warning: Some("GitHub Token 无效或已过期".to_string()),
+                valid: false,
+                authenticated,
+                limit: 0,
+                remaining: 0,
+                used: 0,
+                reset: 0,
+                login: None,
+                warning: Some("GitHub Token 无效或已过期".to_string()),
             };
         }
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             return GitHubRateLimitInfo {
-                valid: false, authenticated, limit: 0, remaining: 0, used: 0, reset: 0,
+                valid: false,
+                authenticated,
+                limit: 0,
+                remaining: 0,
+                used: 0,
+                reset: 0,
                 login: None,
                 warning: Some(format!(
                     "GitHub API 返回 {}: {}",
@@ -2854,8 +3034,14 @@ impl AdminService {
             Ok(v) => v,
             Err(e) => {
                 return GitHubRateLimitInfo {
-                    valid: false, authenticated, limit: 0, remaining: 0, used: 0, reset: 0,
-                    login: None, warning: Some(format!("解析 GitHub 响应失败: {}", e)),
+                    valid: false,
+                    authenticated,
+                    limit: 0,
+                    remaining: 0,
+                    used: 0,
+                    reset: 0,
+                    login: None,
+                    warning: Some(format!("解析 GitHub 响应失败: {}", e)),
                 };
             }
         };
@@ -2864,10 +3050,22 @@ impl AdminService {
             .get("resources")
             .and_then(|r| r.get("core"))
             .or_else(|| payload.get("rate"));
-        let limit = core.and_then(|c| c.get("limit")).and_then(|v| v.as_u64()).unwrap_or(0);
-        let remaining = core.and_then(|c| c.get("remaining")).and_then(|v| v.as_u64()).unwrap_or(0);
-        let used = core.and_then(|c| c.get("used")).and_then(|v| v.as_u64()).unwrap_or(0);
-        let reset = core.and_then(|c| c.get("reset")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let limit = core
+            .and_then(|c| c.get("limit"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let remaining = core
+            .and_then(|c| c.get("remaining"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let used = core
+            .and_then(|c| c.get("used"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let reset = core
+            .and_then(|c| c.get("reset"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
 
         let login = if authenticated {
             self.fetch_github_login(&client, token.as_deref()).await
@@ -2876,7 +3074,14 @@ impl AdminService {
         };
 
         GitHubRateLimitInfo {
-            valid: true, authenticated, limit, remaining, used, reset, login, warning: None,
+            valid: true,
+            authenticated,
+            limit,
+            remaining,
+            used,
+            reset,
+            login,
+            warning: None,
         }
     }
 
@@ -2899,7 +3104,10 @@ impl AdminService {
             return None;
         }
         let payload: serde_json::Value = resp.json().await.ok()?;
-        payload.get("login").and_then(|v| v.as_str()).map(|s| s.to_string())
+        payload
+            .get("login")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     }
 
     pub fn start_auto_update_scheduler(self: &Arc<Self>) {
