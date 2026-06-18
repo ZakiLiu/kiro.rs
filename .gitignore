@@ -46,3 +46,12 @@ tmp/
 .workflow/wiki-index.json
 .workflow/codebase/
 .workflow/research/
+# Local code index / agent runtime artifacts
+.code-abyss/
+.maestroignore
+
+# Workflow runtime/index artifacts (local, do not commit)
+.workflow/archive/
+.workflow/kg/
+.workflow/specs/.hit-log.jsonl
+.workflow/milestones/M-adhoc-*/
