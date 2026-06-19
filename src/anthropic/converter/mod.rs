@@ -1735,8 +1735,9 @@ mod tests {
     fn test_effort_whitelist_fallback() {
         use crate::anthropic::types::{Message as AnthropicMessage, OutputConfig, Thinking};
 
+        // Opus 4.6 + adaptive → additionalModelRequestFields 有值
         let mut req = MessagesRequest {
-            model: "claude-sonnet-4-6".to_string(),
+            model: "claude-opus-4-6".to_string(),
             max_tokens: 1024,
             messages: vec![AnthropicMessage {
                 role: "user".to_string(),
@@ -1757,9 +1758,10 @@ mod tests {
             metadata: None,
         };
 
+        // thinking prefix 始终生成（与 additionalModelRequestFields 双通道）
         assert!(
-            generate_thinking_prefix(&req).is_none(),
-            "native additionalModelRequestFields 启用时不应再注入 legacy thinking 标签"
+            generate_thinking_prefix(&req).is_some(),
+            "thinking prefix 应始终为 adaptive thinking 生成"
         );
 
         let fields = build_additional_model_request_fields(&req, None).unwrap();
@@ -1770,6 +1772,11 @@ mod tests {
         });
         let fields = build_additional_model_request_fields(&req, None).unwrap();
         assert_eq!(fields["output_config"]["effort"], "high");
+
+        // 非 Opus 4.6 → additionalModelRequestFields 为 None，thinking 通过 XML 前缀注入
+        req.model = "claude-sonnet-4-6".to_string();
+        assert!(build_additional_model_request_fields(&req, None).is_none());
+        assert!(generate_thinking_prefix(&req).is_some());
     }
 
     #[test]
@@ -1798,13 +1805,18 @@ mod tests {
             metadata: None,
         };
 
+        // Opus 4.6 clamps xhigh → high
         let fields = build_additional_model_request_fields(&req, None).unwrap();
         assert_eq!(fields["output_config"]["effort"], "high");
 
+        // 非 Opus 4.6 模型不生成 additionalModelRequestFields
         req.model = "claude-opus-4-7".to_string();
-        let fields = build_additional_model_request_fields(&req, None).unwrap();
-        assert_eq!(fields["output_config"]["effort"], "xhigh");
+        assert!(
+            build_additional_model_request_fields(&req, None).is_none(),
+            "非 Opus 4.6 模型不应生成 additionalModelRequestFields"
+        );
 
+        // Opus 4.6 MAX → max
         req.model = "claude-opus-4-6".to_string();
         req.output_config = Some(OutputConfig {
             effort: "  MAX  ".to_string(),
@@ -1814,10 +1826,11 @@ mod tests {
     }
 
     #[test]
-    fn test_additional_model_request_fields_without_schema_uses_minimal_native_switch() {
+    fn test_additional_model_request_fields_non_opus46_returns_none() {
         use crate::anthropic::types::{Message as AnthropicMessage, Thinking};
 
-        let mut req = MessagesRequest {
+        // 非 Opus 4.6 模型 → additionalModelRequestFields 为 None（thinking 通过 XML 前缀）
+        let req = MessagesRequest {
             model: "claude-sonnet-4-5-20250929".to_string(),
             max_tokens: 1024,
             messages: vec![AnthropicMessage {
@@ -1837,24 +1850,23 @@ mod tests {
             metadata: None,
         };
 
-        let fields = build_additional_model_request_fields(&req, None).unwrap();
-        assert_eq!(fields["thinking"]["type"], "adaptive");
-        assert!(fields.get("output_config").is_none());
-        assert!(fields.get("reasoning").is_none());
-
-        req.thinking = Some(Thinking {
-            thinking_type: "disabled".to_string(),
-            budget_tokens: 0,
-        });
-        assert!(build_additional_model_request_fields(&req, None).is_none());
+        assert!(
+            build_additional_model_request_fields(&req, None).is_none(),
+            "非 Opus 4.6 模型不应生成 additionalModelRequestFields"
+        );
+        assert!(
+            generate_thinking_prefix(&req).is_some(),
+            "thinking 应通过 XML 前缀注入"
+        );
     }
 
     #[test]
-    fn test_additional_model_request_fields_budget_and_reasoning_paths() {
-        use crate::anthropic::types::{Message as AnthropicMessage, Thinking};
+    fn test_additional_model_request_fields_opus46_budget_path() {
+        use crate::anthropic::types::{Message as AnthropicMessage, OutputConfig, Thinking};
 
-        let base = || MessagesRequest {
-            model: "claude-sonnet-4-6".to_string(),
+        // Opus 4.6 + adaptive → 有 additionalModelRequestFields
+        let req = MessagesRequest {
+            model: "claude-opus-4-6".to_string(),
             max_tokens: 1024,
             messages: vec![AnthropicMessage {
                 role: "user".to_string(),
@@ -1865,29 +1877,32 @@ mod tests {
             tools: None,
             tool_choice: None,
             thinking: Some(Thinking {
-                thinking_type: "enabled".to_string(),
-                budget_tokens: 16_001,
+                thinking_type: "adaptive".to_string(),
+                budget_tokens: 0,
             }),
-            output_config: None,
+            output_config: Some(OutputConfig {
+                effort: "high".to_string(),
+            }),
             reasoning_effort: None,
             metadata: None,
         };
 
-        let fields = build_additional_model_request_fields(&base(), None).unwrap();
-        assert_eq!(fields["thinking"]["type"], "adaptive");
-        assert_eq!(fields["thinking"]["display"], "summarized");
+        let fields = build_additional_model_request_fields(&req, None).unwrap();
         assert_eq!(fields["output_config"]["effort"], "high");
 
-        let reasoning_config = ThinkingConfig {
-            schema_path: ThinkingSchemaPath::Reasoning,
-            efforts: vec!["low".into(), "medium".into(), "high".into(), "xhigh".into()],
-            default_effort: Some("medium".into()),
+        // 非 adaptive（enabled）→ 不生成 additionalModelRequestFields
+        let req_enabled = MessagesRequest {
+            model: "claude-opus-4-6".to_string(),
+            thinking: Some(Thinking {
+                thinking_type: "enabled".to_string(),
+                budget_tokens: 16_001,
+            }),
+            ..req.clone()
         };
-        let mut req = base();
-        req.reasoning_effort = Some("max".to_string());
-        let fields = build_additional_model_request_fields(&req, Some(&reasoning_config)).unwrap();
-        assert_eq!(fields["reasoning"]["effort"], "max");
-        assert!(fields.get("output_config").is_none());
+        assert!(
+            build_additional_model_request_fields(&req_enabled, None).is_none(),
+            "非 adaptive thinking 不应生成 additionalModelRequestFields"
+        );
     }
 
     #[test]

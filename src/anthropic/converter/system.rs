@@ -140,10 +140,6 @@ pub fn thinking_config_for_model(model: &str) -> Option<ThinkingConfig> {
 /// 新路径优先走 Kiro 原生 `additionalModelRequestFields`；只要请求里带
 /// thinking / reasoning_effort，就不再注入 `<thinking_mode>`，避免双通道控制。
 pub(super) fn generate_thinking_prefix(req: &MessagesRequest) -> Option<String> {
-    if wants_native_thinking(req) {
-        return None;
-    }
-
     if let Some(t) = &req.thinking {
         if t.thinking_type == "enabled" {
             return Some(format!(
@@ -171,15 +167,6 @@ pub(super) fn generate_thinking_prefix(req: &MessagesRequest) -> Option<String> 
         }
     }
     None
-}
-
-fn wants_native_thinking(req: &MessagesRequest) -> bool {
-    req.reasoning_effort.is_some()
-        || req
-            .thinking
-            .as_ref()
-            .map(|t| t.thinking_type != "disabled")
-            .unwrap_or(false)
 }
 
 fn budget_to_effort(budget_tokens: i32) -> &'static str {
@@ -326,6 +313,20 @@ fn clamp_effort_for_model(raw: String, config: &ThinkingConfig, model: &str) -> 
     fallback
 }
 
+/// 是否应为当前请求发送 `additionalModelRequestFields`。
+///
+/// 该字段目前仅 Opus 4.6 + adaptive thinking 路径接受；发送给其他模型
+/// 会导致上游返回 400（如 Free 凭据使用的 Sonnet 模型）。
+fn should_emit_additional_fields(req: &MessagesRequest) -> bool {
+    let model = req.model.to_ascii_lowercase().replace('.', "-");
+    let is_opus_4_6 = model.contains("opus") && model.contains("4-6");
+    is_opus_4_6
+        && req
+            .thinking
+            .as_ref()
+            .is_some_and(|t| t.thinking_type == "adaptive")
+}
+
 /// 将客户端 thinking / reasoning_effort / output_config 参数映射为
 /// Kiro `additionalModelRequestFields`。
 ///
@@ -336,19 +337,13 @@ pub fn build_additional_model_request_fields(
     req: &MessagesRequest,
     thinking_config: Option<&ThinkingConfig>,
 ) -> Option<serde_json::Value> {
-    // 客户端明确关闭
-    if req
-        .thinking
-        .as_ref()
-        .map(|t| t.thinking_type == "disabled")
-        .unwrap_or(false)
-    {
+    // 仅 Opus 4.6 + adaptive thinking 才发送 additionalModelRequestFields。
+    // 其他模型（含 Free 凭据可用的 Sonnet/Haiku）不支持该字段，
+    // 上游会返回 400 "additionalModelRequestFields is not supported for this model"。
+    // Thinking 控制对其他模型通过系统消息 XML 前缀注入。
+    if !should_emit_additional_fields(req) {
         return None;
     }
-
-    if !wants_native_thinking(req) {
-        return None;
-    };
 
     let derived_config;
     let config = match thinking_config {
