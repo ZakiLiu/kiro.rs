@@ -675,6 +675,24 @@ impl KiroProvider {
 
             // 401/403 凭据问题
             if matches!(status.as_u16(), 401 | 403) {
+                // 账户暂停：设长冷却并切换，避免临时风控被误持久化禁用
+                if is_suspended_signal(&body) {
+                    tracing::warn!(
+                        "凭据 #{} 账户暂停，已进入冷却（不永久禁用）: {} {}",
+                        ctx.id,
+                        status,
+                        body
+                    );
+                    self.token_manager.report_account_suspended(ctx.id);
+                    failed_ids.push(ctx.id);
+                    last_error = Some(anyhow::anyhow!(
+                        "MCP 请求失败（账户暂停）: {} {}",
+                        status,
+                        body
+                    ));
+                    continue;
+                }
+
                 // bearer token 失效：优先触发刷新再重试（避免因 expiresAt 不准导致误判/误禁用）
                 if endpoint.is_bearer_token_invalid(&body) && forced_token_refresh.insert(ctx.id) {
                     tracing::warn!(
@@ -1152,6 +1170,25 @@ impl KiroProvider {
 
             // 401/403 - 更可能是凭据/权限问题：计入失败并允许故障转移
             if matches!(status.as_u16(), 401 | 403) {
+                // 账户暂停：设长冷却并切换，避免临时风控被误持久化禁用
+                if is_suspended_signal(&body) {
+                    tracing::warn!(
+                        "凭据 #{} 账户暂停，已进入冷却（不永久禁用）: {} {}",
+                        ctx.id,
+                        status,
+                        body
+                    );
+                    self.token_manager.report_account_suspended(ctx.id);
+                    failed_ids.push(ctx.id);
+                    last_error = Some(anyhow::anyhow!(
+                        "{} API 请求失败（账户暂停）: {} {}",
+                        api_type,
+                        status,
+                        body
+                    ));
+                    continue;
+                }
+
                 // bearer token 失效：优先触发刷新再重试（避免因 expiresAt 不准导致误判/误禁用）
                 if endpoint.is_bearer_token_invalid(&body) && forced_token_refresh.insert(ctx.id) {
                     tracing::warn!(
