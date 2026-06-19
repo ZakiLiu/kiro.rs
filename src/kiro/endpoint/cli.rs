@@ -272,8 +272,10 @@ impl CliEndpoint {
     /// bearer token but credential[0]'s ARN — server-side this either 4xx's
     /// or accounts usage to the wrong tenant.
     ///
-    /// Same auth-method gating as IDE endpoint: AWS SSO OIDC (`idc` /
-    /// `builder-id`) credentials must NOT send profileArn — strip it.
+    /// AWS SSO OIDC (`idc` / `builder-id`) credentials still use the CLI
+    /// endpoint path where profileArn must be stripped. Social / Free
+    /// credentials use `effective_profile_arn()` so the shared Social ARN is
+    /// injected even when old credentials were imported without one.
     fn inject_profile_arn(body: &str, credentials: &KiroCredentials) -> anyhow::Result<String> {
         let mut request: serde_json::Value = serde_json::from_str(body)?;
         let Some(obj) = request.as_object_mut() else {
@@ -286,7 +288,7 @@ impl CliEndpoint {
             && credentials.client_secret.is_some());
         if is_sso_oidc {
             obj.remove("profileArn");
-        } else if let Some(arn) = credentials.profile_arn.as_deref() {
+        } else if let Some(arn) = credentials.effective_profile_arn() {
             obj.insert(
                 "profileArn".to_string(),
                 serde_json::Value::String(arn.to_string()),

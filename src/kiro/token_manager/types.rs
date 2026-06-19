@@ -120,9 +120,7 @@ pub(crate) async fn get_available_models(
     let node_version = &config.node_version;
 
     let profile_arn_query = credentials
-        .profile_arn
-        .as_deref()
-        .filter(|arn| arn.contains(":profile/"))
+        .effective_profile_arn()
         .map(|arn| format!("&profileArn={}", urlencoding::encode(arn)))
         .unwrap_or_default();
 
@@ -220,7 +218,7 @@ pub enum DisableReason {
     RefreshFailureLimit,
     /// 认证失败（如 invalid_grant）
     AuthenticationFailed,
-    /// 账户被暂停（终态禁用，需人工处理或手动重新启用）
+    /// 历史遗留的账户暂停禁用原因；新逻辑只用于迁移旧配置，运行时改用 cooldown
     AccountSuspended,
     /// 余额不足
     #[allow(dead_code)]

@@ -421,6 +421,8 @@ impl MultiTokenManager {
         let mut next_id = max_existing_id + 1;
         let mut has_new_ids = false;
         let mut has_new_machine_ids = false;
+        let mut has_profile_arn_updates = false;
+        let mut has_legacy_suspended_disabled = false;
         let config_ref = &config;
 
         let entries: Vec<CredentialEntry> = credentials
@@ -445,6 +447,29 @@ impl MultiTokenManager {
                         has_new_machine_ids = true;
                     }
                 }
+                if cred.fill_default_profile_arn() && !cred.runtime_only {
+                    has_profile_arn_updates = true;
+                }
+
+                let parsed_disable_reason = if cred.disabled {
+                    Some(parse_disable_reason(cred.disable_reason.as_deref()))
+                } else {
+                    None
+                };
+                if cred.disabled
+                    && matches!(parsed_disable_reason, Some(DisableReason::AccountSuspended))
+                {
+                    cred.disabled = false;
+                    cred.disable_reason = None;
+                    if !cred.runtime_only {
+                        has_legacy_suspended_disabled = true;
+                    }
+                    tracing::warn!(
+                        "凭据 #{} 携带旧版 AccountSuspended 持久化禁用状态，已迁移为启用；后续 suspended 信号只进入冷却",
+                        id
+                    );
+                }
+
                 // 为每个凭据生成独立的设备指纹
                 let fingerprint_seed = cred
                     .refresh_token
@@ -468,7 +493,7 @@ impl MultiTokenManager {
                         None
                     },
                     disable_reason: if cred.disabled {
-                        Some(parse_disable_reason(cred.disable_reason.as_deref()))
+                        parsed_disable_reason
                     } else {
                         None
                     },
@@ -540,12 +565,16 @@ impl MultiTokenManager {
             keepalive_last_probed: Mutex::new(HashMap::new()),
         };
 
-        // 如果有新分配的 ID 或新生成的 machineId，立即持久化到配置文件
-        if has_new_ids || has_new_machine_ids {
+        // 如果有新分配的 ID、新生成的 machineId、补齐/修正 profileArn，或迁移了旧版误禁用状态，立即持久化到配置文件
+        if has_new_ids
+            || has_new_machine_ids
+            || has_profile_arn_updates
+            || has_legacy_suspended_disabled
+        {
             if let Err(e) = manager.persist_credentials() {
-                tracing::warn!("补全凭据 ID/machineId 后持久化失败: {}", e);
+                tracing::warn!("补全/迁移凭据元数据后持久化失败: {}", e);
             } else {
-                tracing::info!("已补全凭据 ID/machineId 并写回配置文件");
+                tracing::info!("已补全/迁移凭据元数据并写回配置文件");
             }
         }
 
@@ -1902,14 +1931,13 @@ impl MultiTokenManager {
                 .map(|e| {
                     let mut cred = e.credentials.clone();
                     cred.canonicalize_auth_method();
-                    // 仅持久化终态禁用状态（Manual/AuthFailed/Suspended/QuotaExceeded）。
+                    // 仅持久化终态禁用状态（Manual/AuthFailed/QuotaExceeded）。
                     // FailureLimit/RefreshFailureLimit 等可自愈状态不落盘，重启后自动恢复。
                     let is_terminal = matches!(
                         e.disable_reason,
                         Some(
                             DisableReason::Manual
                                 | DisableReason::AuthenticationFailed
-                                | DisableReason::AccountSuspended
                                 | DisableReason::QuotaExceeded
                         )
                     );
@@ -2144,10 +2172,7 @@ impl MultiTokenManager {
         let proxy = self.proxy.read().clone();
         let client = crate::http_client::build_client(proxy.as_ref(), 60, config.tls_backend)?;
 
-        let profile_arn = credentials
-            .profile_arn
-            .as_deref()
-            .filter(|arn| arn.contains(":profile/"));
+        let profile_arn = credentials.effective_profile_arn();
         let body = if let Some(arn) = profile_arn {
             serde_json::json!({
                 "overageConfiguration": { "overageStatus": overage_status },
@@ -3470,6 +3495,7 @@ impl MultiTokenManager {
         validated_cred.proxy_username = new_cred.proxy_username;
         validated_cred.proxy_password = new_cred.proxy_password;
         validated_cred.kiro_api_key = new_cred.kiro_api_key;
+        validated_cred.fill_default_profile_arn();
 
         // 为新凭据生成设备指纹
         let fingerprint_seed = validated_cred
@@ -3674,33 +3700,19 @@ impl MultiTokenManager {
             .set_cooldown_with_duration(id, reason, duration)
     }
 
-    /// 账户暂停：按终态问题立即禁用，并解除亲和绑定。
+    /// 账户暂停：按临时上游状态设置长冷却，并解除亲和绑定。
     ///
-    /// 上游返回 suspended 时账号通常不可短期恢复；禁用并写回 credentials，
-    /// 避免重启后再次回池把客户端流量压到坏账号上。
+    /// 上游 `TEMPORARILY_SUSPENDED` / `AccountSuspended` 类信号可能是临时风控，
+    /// 不能持久化禁用凭据；到期后由 cooldown 自动回池。
     pub fn report_account_suspended(&self, id: u64) -> bool {
-        let has_available = {
-            let mut entries = self.entries.lock();
-            if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
-                entry.disabled = true;
-                entry.disabled_at = Some(Utc::now());
-                entry.recovery_attempts = 0;
-                entry.auto_heal_reason = None;
-                entry.disable_reason = Some(DisableReason::AccountSuspended);
-                entry.last_used_at = Some(Utc::now().to_rfc3339());
-                entry.failure_count = MAX_FAILURES_PER_CREDENTIAL;
-                tracing::error!("凭据 #{} 账户暂停（suspended），已禁用，需人工处理", id);
-            }
-            entries.iter().any(|e| !e.disabled)
-        };
+        self.set_credential_cooldown_with_duration(id, CooldownReason::AccountSuspended, None);
         self.affinity.remove_by_credential(id);
-        self.cooldown_manager.clear_cooldown(id);
         self.rate_limiter.reset(id);
-        self.save_stats_debounced();
-        if let Err(e) = self.persist_credentials() {
-            tracing::warn!("账户暂停凭据禁用状态持久化失败: {}", e);
-        }
-        has_available
+        tracing::warn!(
+            "凭据 #{} 收到 suspended 信号，已进入账户暂停冷却（不永久禁用）",
+            id
+        );
+        self.available_count() > 0
     }
 
     /// 账号级风控限流：设冷却 + 解绑 affinity，返回剩余非禁用凭据数

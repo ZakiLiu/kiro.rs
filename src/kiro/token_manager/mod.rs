@@ -32,9 +32,12 @@ mod tests {
     use super::*;
     use crate::kiro::cooldown::CooldownReason;
     use crate::kiro::endpoint::{IdeEndpoint, KiroEndpoint, RequestContext};
-    use crate::kiro::model::credentials::KiroCredentials;
+    use crate::kiro::model::credentials::{
+        BUILDER_ID_PROFILE_ARN, KiroCredentials, SOCIAL_PROFILE_ARN,
+    };
     use crate::model::config::Config;
     use chrono::{Duration, Utc};
+    use std::fs;
 
     #[test]
     fn test_token_manager_new() {
@@ -511,7 +514,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_report_account_suspended_disables_and_skips_acquire() {
+    async fn test_report_account_suspended_sets_cooldown_and_skips_acquire() {
         let config = Config::default();
         let mut cred1 = KiroCredentials::default();
         cred1.access_token = Some("t1".to_string());
@@ -528,19 +531,97 @@ mod tests {
 
         let has_available = manager.report_account_suspended(1);
         assert!(has_available);
-        assert!(manager.cooldown_manager().check_cooldown(1).is_none());
+        let (reason, remaining) = manager.cooldown_manager().check_cooldown(1).unwrap();
+        assert_eq!(reason, CooldownReason::AccountSuspended);
+        assert!(remaining > std::time::Duration::from_secs(23 * 60 * 60));
 
         let snapshot = manager.snapshot();
         let entry1 = snapshot.entries.iter().find(|e| e.id == 1).unwrap();
-        assert!(entry1.disabled);
-        assert_eq!(entry1.disable_reason, Some(DisableReason::AccountSuspended));
+        assert!(!entry1.disabled);
+        assert_eq!(entry1.disable_reason, None);
         assert!(!entry1.ready);
-        assert_eq!(snapshot.available, 1);
+        assert_eq!(entry1.cooldown_reason.as_deref(), Some("账户暂停"));
+        assert_eq!(snapshot.available, 2);
         assert_eq!(snapshot.ready, 1);
 
-        // acquire 跳过已禁用的凭据 1，选中凭据 2
+        // acquire 跳过冷却中的凭据 1，选中凭据 2
         let ctx = manager.acquire_context().await.unwrap();
         assert_eq!(ctx.id, 2);
+    }
+
+    #[test]
+    fn test_legacy_account_suspended_disabled_state_is_migrated_to_enabled() {
+        let config = Config::default();
+        let path = std::env::temp_dir().join(format!(
+            "kiro-rs-legacy-suspended-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let mut cred = KiroCredentials {
+            id: Some(1),
+            refresh_token: Some("legacy-refresh".to_string()),
+            disabled: true,
+            disable_reason: Some("AccountSuspended".to_string()),
+            ..Default::default()
+        };
+        // 避免构造时补 machineId 导致本测试无法只观察 disabled 迁移。
+        cred.machine_id = Some("a".repeat(64));
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&vec![cred.clone()]).unwrap(),
+        )
+        .unwrap();
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred], None, Some(path.clone()), true).unwrap();
+        let snapshot = manager.snapshot();
+        let entry = snapshot.entries.iter().find(|e| e.id == 1).unwrap();
+        assert!(!entry.disabled);
+        assert_eq!(entry.disable_reason, None);
+
+        let persisted = fs::read_to_string(&path).unwrap();
+        let persisted_creds: Vec<KiroCredentials> = serde_json::from_str(&persisted).unwrap();
+        assert_eq!(persisted_creds.len(), 1);
+        assert!(!persisted_creds[0].disabled);
+        assert_eq!(persisted_creds[0].disable_reason, None);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_legacy_social_builder_placeholder_is_migrated_to_social_profile_arn() {
+        let config = Config::default();
+        let path = std::env::temp_dir().join(format!(
+            "kiro-rs-legacy-social-profile-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let mut cred = KiroCredentials {
+            id: Some(1),
+            refresh_token: Some("legacy-refresh".to_string()),
+            auth_method: Some("social".to_string()),
+            profile_arn: Some(BUILDER_ID_PROFILE_ARN.to_string()),
+            ..Default::default()
+        };
+        cred.machine_id = Some("b".repeat(64));
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&vec![cred.clone()]).unwrap(),
+        )
+        .unwrap();
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred], None, Some(path.clone()), true).unwrap();
+        let snapshot = manager.snapshot();
+        let entry = snapshot.entries.iter().find(|e| e.id == 1).unwrap();
+        assert!(entry.has_profile_arn);
+
+        let persisted = fs::read_to_string(&path).unwrap();
+        let persisted_creds: Vec<KiroCredentials> = serde_json::from_str(&persisted).unwrap();
+        assert_eq!(
+            persisted_creds[0].profile_arn.as_deref(),
+            Some(SOCIAL_PROFILE_ARN)
+        );
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]

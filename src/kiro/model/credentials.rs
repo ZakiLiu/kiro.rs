@@ -10,6 +10,11 @@ use std::path::Path;
 use crate::http_client::ProxyConfig;
 use crate::model::config::Config;
 
+pub const BUILDER_ID_PROFILE_ARN: &str =
+    "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX";
+pub const SOCIAL_PROFILE_ARN: &str =
+    "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK";
+
 /// Kiro OAuth 凭证
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -310,6 +315,54 @@ impl KiroCredentials {
         }
     }
 
+    /// 缺少显式 profileArn 时补齐默认值。
+    ///
+    /// Social / Free 凭据使用官方 Social 共享 ARN；BuilderID 等非 Social 凭据使用
+    /// BuilderID 占位符。API Key 凭据没有 profileArn 概念，不补齐。
+    pub fn fill_default_profile_arn(&mut self) -> bool {
+        if self.is_api_key_credential() {
+            return false;
+        }
+
+        if self.is_social_login()
+            && self
+                .profile_arn
+                .as_deref()
+                .is_some_and(is_placeholder_profile_arn)
+        {
+            self.profile_arn = Some(SOCIAL_PROFILE_ARN.to_string());
+            return true;
+        }
+
+        if self.profile_arn.is_none() {
+            self.profile_arn = Some(self.default_profile_arn().to_string());
+            return true;
+        }
+
+        false
+    }
+
+    /// 是否为 Social 登录（GitHub / Google / 默认 Portal OAuth）。
+    fn is_social_login(&self) -> bool {
+        match self.auth_method.as_deref() {
+            Some(method) => canonicalize_auth_method_value(method).eq_ignore_ascii_case("social"),
+            None => {
+                !self.is_api_key_credential()
+                    && self.client_id.is_none()
+                    && self.client_secret.is_none()
+            }
+        }
+    }
+
+    /// 凭据缺少显式 profileArn 时应使用的默认 ARN。
+    fn default_profile_arn(&self) -> &'static str {
+        if self.is_social_login() {
+            SOCIAL_PROFILE_ARN
+        } else {
+            BUILDER_ID_PROFILE_ARN
+        }
+    }
+
     pub fn is_api_key_credential(&self) -> bool {
         self.kiro_api_key
             .as_deref()
@@ -318,6 +371,40 @@ impl KiroCredentials {
                 .auth_method
                 .as_deref()
                 .is_some_and(|method| canonicalize_auth_method_value(method) == "api_key")
+    }
+
+    /// 返回可发送给 REST / MCP 头部类接口的真实 profileArn。
+    ///
+    /// BuilderID 占位符不是 REST `ListAvailableModels` / `getUsageLimits` 可接受的真实
+    /// profile，必须跳过；Social / Free 凭据缺失 ARN 或误带 BuilderID 占位符时回退
+    /// 官方 Social 共享 ARN。
+    pub fn effective_profile_arn(&self) -> Option<&str> {
+        match self.profile_arn.as_deref() {
+            Some(arn) if !is_placeholder_profile_arn(arn) => Some(arn),
+            Some(_) if self.is_social_login() => Some(SOCIAL_PROFILE_ARN),
+            Some(_) => None,
+            None if self.is_social_login() => Some(SOCIAL_PROFILE_ARN),
+            None => None,
+        }
+    }
+
+    /// 返回流式聊天端点应发送的 profileArn。
+    ///
+    /// 新版 `generateAssistantResponse` 对非 API Key 凭据要求请求体携带 profileArn。
+    /// Social / Free 凭据缺失时使用 Social 共享 ARN，BuilderID 缺失时使用占位符。
+    pub fn streaming_profile_arn(&self) -> Option<String> {
+        if self.is_api_key_credential() {
+            return None;
+        }
+
+        if let Some(arn) = self.profile_arn.as_deref() {
+            if self.is_social_login() && is_placeholder_profile_arn(arn) {
+                return Some(SOCIAL_PROFILE_ARN.to_string());
+            }
+            return Some(arn.to_string());
+        }
+
+        Some(self.default_profile_arn().to_string())
     }
 
     /// 检查凭据是否支持 Opus 模型
@@ -334,6 +421,11 @@ impl KiroCredentials {
             None => true,
         }
     }
+}
+
+/// 判断给定 profileArn 是否为 BuilderID 占位符（非真实可用 profile）。
+pub fn is_placeholder_profile_arn(arn: &str) -> bool {
+    arn == BUILDER_ID_PROFILE_ARN
 }
 
 #[cfg(test)]
@@ -413,6 +505,97 @@ mod tests {
             KiroCredentials::default_credentials_path(),
             "credentials.json"
         );
+    }
+
+    #[test]
+    fn test_is_placeholder_profile_arn() {
+        assert!(is_placeholder_profile_arn(BUILDER_ID_PROFILE_ARN));
+        assert!(!is_placeholder_profile_arn(SOCIAL_PROFILE_ARN));
+        assert!(!is_placeholder_profile_arn(
+            "arn:aws:codewhisperer:us-east-1:123456789012:profile/REAL123"
+        ));
+    }
+
+    #[test]
+    fn test_effective_profile_arn_skips_builder_id_placeholder() {
+        let mut cred = KiroCredentials {
+            auth_method: Some("idc".to_string()),
+            ..Default::default()
+        };
+        cred.profile_arn = Some(BUILDER_ID_PROFILE_ARN.to_string());
+        assert_eq!(cred.effective_profile_arn(), None);
+
+        cred.profile_arn = Some(SOCIAL_PROFILE_ARN.to_string());
+        assert_eq!(cred.effective_profile_arn(), Some(SOCIAL_PROFILE_ARN));
+
+        let real = "arn:aws:codewhisperer:us-east-1:123456789012:profile/REAL123";
+        cred.profile_arn = Some(real.to_string());
+        assert_eq!(cred.effective_profile_arn(), Some(real));
+    }
+
+    #[test]
+    fn test_social_effective_profile_arn_replaces_legacy_builder_placeholder() {
+        let cred = KiroCredentials {
+            auth_method: Some("social".to_string()),
+            profile_arn: Some(BUILDER_ID_PROFILE_ARN.to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(cred.effective_profile_arn(), Some(SOCIAL_PROFILE_ARN));
+        assert_eq!(
+            cred.streaming_profile_arn().as_deref(),
+            Some(SOCIAL_PROFILE_ARN)
+        );
+    }
+
+    #[test]
+    fn test_fill_default_profile_arn_migrates_social_placeholder() {
+        let mut cred = KiroCredentials {
+            auth_method: Some("social".to_string()),
+            profile_arn: Some(BUILDER_ID_PROFILE_ARN.to_string()),
+            ..Default::default()
+        };
+
+        assert!(cred.fill_default_profile_arn());
+        assert_eq!(cred.profile_arn.as_deref(), Some(SOCIAL_PROFILE_ARN));
+    }
+
+    #[test]
+    fn test_social_effective_profile_arn_uses_default_when_missing() {
+        let cred = KiroCredentials {
+            auth_method: Some("social".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(cred.effective_profile_arn(), Some(SOCIAL_PROFILE_ARN));
+    }
+
+    #[test]
+    fn test_streaming_profile_arn_uses_default_for_free_social() {
+        let social = KiroCredentials {
+            auth_method: Some("social".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            social.streaming_profile_arn().as_deref(),
+            Some(SOCIAL_PROFILE_ARN)
+        );
+
+        let builder = KiroCredentials {
+            auth_method: Some("idc".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            builder.streaming_profile_arn().as_deref(),
+            Some(BUILDER_ID_PROFILE_ARN)
+        );
+
+        let api = KiroCredentials {
+            kiro_api_key: Some("ksk_test".to_string()),
+            auth_method: Some("api_key".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(api.streaming_profile_arn(), None);
     }
 
     #[test]

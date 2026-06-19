@@ -23,11 +23,11 @@ use super::{
         set_account_throttle_config, set_client_key_disabled, set_credential_disabled,
         set_credential_endpoint, set_credential_overage, set_credential_priority,
         set_credential_region, set_global_proxy, set_load_balancing_mode,
-        set_log_governance_config, set_proxy_enabled, set_update_config, start_idc_login,
-        start_idc_relogin, start_social_login, start_social_relogin, stats_by_credential,
-        stats_by_model, stats_overview, stats_timeseries, trace_failure_stats, update_admin_key,
-        update_client_key, update_credential, update_global_config, update_group, update_preset,
-        update_proxy_config, update_refresh_token,
+        set_log_governance_config, set_proxy_enabled, set_update_config, social_oauth_callback,
+        start_idc_login, start_idc_relogin, start_social_login, start_social_relogin,
+        stats_by_credential, stats_by_model, stats_overview, stats_timeseries, trace_failure_stats,
+        update_admin_key, update_client_key, update_credential, update_global_config, update_group,
+        update_preset, update_proxy_config, update_refresh_token,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -186,5 +186,12 @@ pub fn create_admin_router(state: AdminState) -> Router {
             admin_auth_middleware,
         ));
 
-    Router::new().merge(authenticated).with_state(state)
+    // 免鉴权路由：远程部署模式下 OAuth 公网回调（浏览器顶层导航到达，不带 admin API Key）。
+    // 由 OAuth state 定位会话，CSRF 保护与本地回调服务器同等。
+    let public = Router::new().route("/auth/callback/{*tail}", get(social_oauth_callback));
+
+    Router::new()
+        .merge(authenticated)
+        .merge(public)
+        .with_state(state)
 }

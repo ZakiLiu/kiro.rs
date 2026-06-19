@@ -93,6 +93,14 @@ pub struct Config {
     #[serde(default)]
     pub admin_api_key: Option<String>,
 
+    /// Social OAuth 公网回调基址（可选）。
+    /// 配置后（如 `https://example.com/api/admin/auth/callback`）：OAuth `redirect_uri`
+    /// 改用此地址，浏览器授权后落到 `{callbackBaseUrl}/oauth/callback`，
+    /// 由本服务公网路由自动接收，适合远程部署。
+    /// 未配置时 Admin UI 会按当前访问 origin 自动派生；非 UI 客户端仍可回落本地端口模式。
+    #[serde(default)]
+    pub callback_base_url: Option<String>,
+
     /// 单个凭据的目标请求速率（RPM，每分钟请求数）
     ///
     /// 用于凭据级节流/分流：当某个凭据短时间内请求过密时，优先将流量分配到其他可用凭据，
@@ -475,6 +483,7 @@ impl Default for Config {
             proxy_username: None,
             proxy_password: None,
             admin_api_key: None,
+            callback_base_url: None,
             credential_rpm: None,
             credential_daily_max_requests: None,
             keepalive_idle_threshold_seconds: None,

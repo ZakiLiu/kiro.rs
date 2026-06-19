@@ -675,9 +675,14 @@ impl KiroProvider {
 
             // 401/403 凭据问题
             if matches!(status.as_u16(), 401 | 403) {
-                // 账户暂停：终态禁用，避免坏账号反复回池
+                // 账户暂停：设长冷却并切换，避免临时风控被误持久化禁用
                 if is_suspended_signal(&body) {
-                    tracing::error!("凭据 #{} 账户暂停，已禁用: {} {}", ctx.id, status, body);
+                    tracing::warn!(
+                        "凭据 #{} 账户暂停，已进入冷却（不永久禁用）: {} {}",
+                        ctx.id,
+                        status,
+                        body
+                    );
                     self.token_manager.report_account_suspended(ctx.id);
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
@@ -1165,9 +1170,14 @@ impl KiroProvider {
 
             // 401/403 - 更可能是凭据/权限问题：计入失败并允许故障转移
             if matches!(status.as_u16(), 401 | 403) {
-                // 账户暂停：终态禁用，避免坏账号反复回池
+                // 账户暂停：设长冷却并切换，避免临时风控被误持久化禁用
                 if is_suspended_signal(&body) {
-                    tracing::error!("凭据 #{} 账户暂停，已禁用: {} {}", ctx.id, status, body);
+                    tracing::warn!(
+                        "凭据 #{} 账户暂停，已进入冷却（不永久禁用）: {} {}",
+                        ctx.id,
+                        status,
+                        body
+                    );
                     self.token_manager.report_account_suspended(ctx.id);
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
@@ -1738,7 +1748,9 @@ mod tests {
     use crate::kiro::endpoint::{
         CliEndpoint, IdeEndpoint, default_is_bearer_token_invalid, default_is_monthly_request_limit,
     };
-    use crate::kiro::model::credentials::KiroCredentials;
+    use crate::kiro::model::credentials::{
+        BUILDER_ID_PROFILE_ARN, KiroCredentials, SOCIAL_PROFILE_ARN,
+    };
     use crate::model::config::Config;
     use reqwest::header::{AUTHORIZATION, CONNECTION, CONTENT_TYPE, HeaderValue};
 
@@ -2337,7 +2349,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ide_endpoint_decorate_mcp_omits_profile_arn_for_idc_auth() {
+    fn test_ide_endpoint_decorate_mcp_includes_real_profile_arn_for_idc_auth() {
         let mut config = Config::default();
         config.region = "us-east-1".to_string();
         config.kiro_version = "0.8.0".to_string();
@@ -2359,7 +2371,15 @@ mod tests {
         let request =
             endpoint.decorate_mcp(reqwest::Client::new().post("https://example.com"), &ctx);
         let built = request.build().unwrap();
-        assert!(built.headers().get("x-amzn-kiro-profile-arn").is_none());
+        assert_eq!(
+            built
+                .headers()
+                .get("x-amzn-kiro-profile-arn")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "arn:aws:sso::123456789:profile/test"
+        );
     }
 
     #[test]
@@ -2570,7 +2590,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ide_endpoint_inject_profile_arn_idc_removes_field() {
+    fn test_ide_endpoint_inject_profile_arn_idc_uses_existing_profile_arn() {
         let mut credentials = KiroCredentials::default();
         credentials.auth_method = Some("idc".to_string());
         credentials.profile_arn = Some("arn:aws:sso::111111111:profile/idc-profile".to_string());
@@ -2589,12 +2609,15 @@ mod tests {
         let result = endpoint.transform_api_body(request_body, &ctx).unwrap();
 
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert!(parsed.get("profileArn").is_none());
+        assert_eq!(
+            parsed["profileArn"].as_str().unwrap(),
+            "arn:aws:sso::111111111:profile/idc-profile"
+        );
         assert!(parsed.get("conversationState").is_some());
     }
 
     #[test]
-    fn test_ide_endpoint_inject_profile_arn_builder_id_removes_field() {
+    fn test_ide_endpoint_inject_profile_arn_builder_id_uses_default_placeholder() {
         let mut credentials = KiroCredentials::default();
         credentials.auth_method = Some("builder-id".to_string());
 
@@ -2612,7 +2635,10 @@ mod tests {
         let result = endpoint.transform_api_body(request_body, &ctx).unwrap();
 
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert!(parsed.get("profileArn").is_none());
+        assert_eq!(
+            parsed["profileArn"].as_str().unwrap(),
+            BUILDER_ID_PROFILE_ARN
+        );
     }
 
     #[test]
@@ -2636,7 +2662,10 @@ mod tests {
         let result = endpoint.transform_api_body(request_body, &ctx).unwrap();
 
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert!(parsed.get("profileArn").is_none());
+        assert_eq!(
+            parsed["profileArn"].as_str().unwrap(),
+            "arn:aws:sso::111111111:profile/test"
+        );
     }
 
     #[test]
@@ -2658,7 +2687,8 @@ mod tests {
         };
         let result = endpoint.transform_api_body(request_body, &ctx).unwrap();
 
-        assert_eq!(result, request_body);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["profileArn"].as_str().unwrap(), SOCIAL_PROFILE_ARN);
     }
 
     #[test]
