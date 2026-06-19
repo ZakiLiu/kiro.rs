@@ -1243,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "kiro-rs"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "anyhow",
  "async-stream",
