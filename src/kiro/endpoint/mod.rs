@@ -12,7 +12,7 @@ pub mod cli;
 pub mod ide;
 
 pub use cli::{CLI_ENDPOINT_NAME, CliEndpoint};
-pub use ide::{IDE_ENDPOINT_NAME, IdeEndpoint};
+pub use ide::{IDE_ENDPOINT_NAME, IDE_RUNTIME_ENDPOINT_NAME, IdeEndpoint};
 
 pub struct UsageRequestParts {
     pub url: String,

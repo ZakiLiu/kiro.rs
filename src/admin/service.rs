@@ -3309,12 +3309,17 @@ mod tests {
                 .unwrap(),
         );
 
-        let known_endpoints: HashSet<String> = vec!["ide".to_string(), "cli".to_string()]
-            .into_iter()
-            .collect();
+        let known_endpoints: HashSet<String> = vec![
+            "ide".to_string(),
+            "ide-runtime".to_string(),
+            "cli".to_string(),
+        ]
+        .into_iter()
+        .collect();
 
         let mut endpoints: HashMap<String, Arc<dyn KiroEndpoint>> = HashMap::new();
         endpoints.insert("ide".to_string(), Arc::new(IdeEndpoint::new()));
+        endpoints.insert("ide-runtime".to_string(), Arc::new(IdeEndpoint::runtime()));
         endpoints.insert("cli".to_string(), Arc::new(CliEndpoint::new()));
         let provider = Arc::new(KiroProvider::with_proxy(
             Arc::clone(&tm),

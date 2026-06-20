@@ -2,10 +2,11 @@
 
 use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::endpoint::{
-    CLI_ENDPOINT_NAME, CliEndpoint, IDE_ENDPOINT_NAME, IdeEndpoint, KiroEndpoint, RequestContext,
+    CLI_ENDPOINT_NAME, CliEndpoint, IDE_ENDPOINT_NAME, IDE_RUNTIME_ENDPOINT_NAME, IdeEndpoint,
+    KiroEndpoint, RequestContext,
 };
 use crate::kiro::machine_id;
-use crate::kiro::model::available_models::ListAvailableModelsResponse;
+use crate::kiro::model::available_models::{ListAvailableModelsResponse, runtime_fallback_models};
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model::usage_limits::UsageLimitsResponse;
 use crate::model::config::Config;
@@ -43,6 +44,7 @@ pub(super) fn endpoint_for_credentials(
 ) -> anyhow::Result<Box<dyn KiroEndpoint>> {
     match credentials.effective_endpoint_name(Some(&config.default_endpoint)) {
         IDE_ENDPOINT_NAME => Ok(Box::new(IdeEndpoint::new())),
+        IDE_RUNTIME_ENDPOINT_NAME => Ok(Box::new(IdeEndpoint::runtime())),
         CLI_ENDPOINT_NAME => Ok(Box::new(CliEndpoint::new())),
         name => bail!("未知 endpoint: {}", name),
     }
@@ -111,6 +113,15 @@ pub(crate) async fn get_available_models(
     token: &str,
     proxy: Option<&ProxyConfig>,
 ) -> anyhow::Result<ListAvailableModelsResponse> {
+    if credentials.effective_endpoint_name(Some(&config.default_endpoint))
+        == IDE_RUNTIME_ENDPOINT_NAME
+    {
+        tracing::debug!(
+            "runtime.kiro.dev endpoint 不支持 ListAvailableModels，使用静态 fallback 模型列表"
+        );
+        return Ok(runtime_fallback_models());
+    }
+
     let sso_region = credentials.effective_auth_region(config);
     let candidates = rest_api_region_candidates(sso_region);
     let machine_id = machine_id::generate_from_credentials(credentials, config)
@@ -201,6 +212,26 @@ mod tests {
     #[test]
     fn test_usage_api_kiro_version_is_pinned_for_rest_usage_apis() {
         assert_eq!(USAGE_API_KIRO_VERSION, "0.9.2");
+    }
+
+    #[tokio::test]
+    async fn test_runtime_endpoint_get_available_models_uses_static_fallback() {
+        let mut config = Config::default();
+        config.default_endpoint = IDE_RUNTIME_ENDPOINT_NAME.to_string();
+
+        let credentials = KiroCredentials::default();
+        let models = get_available_models(&credentials, &config, "not_a_real_token", None)
+            .await
+            .unwrap();
+
+        let ids: Vec<&str> = models
+            .models
+            .iter()
+            .map(|model| model.model_id.as_str())
+            .collect();
+        assert!(ids.contains(&"claude-sonnet-4.6"));
+        assert!(ids.contains(&"claude-opus-4.8"));
+        assert!(ids.contains(&"claude-haiku-4.5"));
     }
 }
 

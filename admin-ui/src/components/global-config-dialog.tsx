@@ -249,9 +249,10 @@ export function GlobalConfigDialog({ open, onOpenChange }: GlobalConfigDialogPro
                   disabled={isPending}
                 >
                   <option value="ide">ide</option>
+                  <option value="ide-runtime">ide-runtime</option>
                   <option value="cli">cli</option>
                 </select>
-                <p className="text-xs text-muted-foreground">凭据未显式指定 endpoint 时使用此默认值</p>
+                <p className="text-xs text-muted-foreground">凭据未显式指定 endpoint 时使用此默认值；ide-runtime 使用 runtime.&#123;region&#125;.kiro.dev</p>
               </div>
             </div>
 

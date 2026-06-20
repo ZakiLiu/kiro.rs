@@ -89,6 +89,8 @@ impl KiroProvider {
         let mut endpoints: HashMap<String, Arc<dyn KiroEndpoint>> = HashMap::new();
         let ide: Arc<dyn KiroEndpoint> = Arc::new(IdeEndpoint::new());
         endpoints.insert(ide.name().to_string(), ide);
+        let ide_runtime: Arc<dyn KiroEndpoint> = Arc::new(IdeEndpoint::runtime());
+        endpoints.insert(ide_runtime.name().to_string(), ide_runtime);
         let cli: Arc<dyn KiroEndpoint> = Arc::new(CliEndpoint::new());
         endpoints.insert(cli.name().to_string(), cli);
         endpoints
@@ -1751,6 +1753,9 @@ mod tests {
     use crate::kiro::model::credentials::{
         BUILDER_ID_PROFILE_ARN, KiroCredentials, SOCIAL_PROFILE_ARN,
     };
+    use crate::kiro::model::events::Event;
+    use crate::kiro::parser::frame::Frame;
+    use crate::kiro::parser::header::{HeaderValue as EventHeaderValue, Headers};
     use crate::model::config::Config;
     use reqwest::header::{AUTHORIZATION, CONNECTION, CONTENT_TYPE, HeaderValue};
 
@@ -2244,6 +2249,34 @@ mod tests {
     }
 
     #[test]
+    fn test_ide_runtime_endpoint_host_like_domain() {
+        let mut config = Config::default();
+        config.region = "eu-central-1".to_string();
+        let credentials = KiroCredentials::default();
+        let endpoint = IdeEndpoint::runtime();
+        let machine_id = "a".repeat(64);
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+
+        assert_eq!(
+            endpoint.api_url(&ctx),
+            "https://runtime.eu-central-1.kiro.dev/generateAssistantResponse"
+        );
+
+        let request =
+            endpoint.decorate_api(reqwest::Client::new().post("https://example.com"), &ctx);
+        let built = request.build().unwrap();
+        assert_eq!(
+            built.headers().get("host").unwrap(),
+            "runtime.eu-central-1.kiro.dev"
+        );
+    }
+
+    #[test]
     fn test_ide_endpoint_decorate_api_headers() {
         let mut config = Config::default();
         config.region = "us-east-1".to_string();
@@ -2280,6 +2313,82 @@ mod tests {
         assert_eq!(
             built.headers().get("x-amzn-kiro-agent-mode").unwrap(),
             "vibe"
+        );
+        assert!(
+            built
+                .headers()
+                .get(AUTHORIZATION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("Bearer ")
+        );
+        assert_eq!(built.headers().get(CONNECTION).unwrap(), "close");
+    }
+
+    #[test]
+    fn test_ide_runtime_endpoint_decorate_api_headers() {
+        let mut config = Config::default();
+        config.region = "us-east-1".to_string();
+        config.kiro_version = "0.11.107".to_string();
+
+        let mut credentials = KiroCredentials::default();
+        credentials.profile_arn = Some("arn:aws:sso::123456789:profile/test".to_string());
+        credentials.refresh_token = Some("a".repeat(150));
+
+        let endpoint = IdeEndpoint::runtime();
+        let machine_id = "b".repeat(64);
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let request = endpoint.decorate_api(
+            reqwest::Client::new()
+                .post("https://example.com")
+                .header("Connection", "close"),
+            &ctx,
+        );
+        let built = request.build().unwrap();
+
+        assert_eq!(
+            built.headers().get("host").unwrap(),
+            "runtime.us-east-1.kiro.dev"
+        );
+        assert_eq!(
+            built.headers().get(CONTENT_TYPE).unwrap(),
+            "application/x-amz-json-1.0"
+        );
+        assert_eq!(
+            built.headers().get("x-amz-target").unwrap(),
+            "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
+        );
+        assert_eq!(
+            built.headers().get("x-amzn-codewhisperer-optout").unwrap(),
+            "true"
+        );
+        assert_eq!(
+            built.headers().get("x-amzn-kiro-agent-mode").unwrap(),
+            "vibe"
+        );
+        assert!(
+            built
+                .headers()
+                .get("x-amz-user-agent")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("aws-sdk-js/1.0.27 KiroIDE-0.7.45-")
+        );
+        assert!(
+            built
+                .headers()
+                .get("user-agent")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("api/codewhispererstreaming#1.0.27")
         );
         assert!(
             built
@@ -2380,6 +2489,107 @@ mod tests {
                 .unwrap(),
             "arn:aws:sso::123456789:profile/test"
         );
+    }
+
+    #[test]
+    fn test_ide_runtime_endpoint_injects_profile_arn_for_social_auth() {
+        let mut credentials = KiroCredentials::default();
+        credentials.auth_method = Some("social".to_string());
+        credentials.profile_arn = Some("arn:aws:sso::111111111:profile/social-profile".to_string());
+
+        let request_body = r#"{"conversationState":{"conversationId":"test"}}"#;
+        let endpoint = IdeEndpoint::runtime();
+        let machine_id = "a".repeat(64);
+        let config = Config::default();
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "test_token",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let result = endpoint.transform_api_body(request_body, &ctx).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(
+            parsed["profileArn"].as_str().unwrap(),
+            "arn:aws:sso::111111111:profile/social-profile"
+        );
+        assert_eq!(parsed["conversationState"]["conversationId"], "test");
+    }
+
+    #[test]
+    fn test_ide_runtime_endpoint_does_not_inject_profile_arn_for_api_key() {
+        let mut credentials = KiroCredentials::default();
+        credentials.auth_method = Some("api_key".to_string());
+        credentials.kiro_api_key = Some("ksk_test_api_key".to_string());
+
+        let request_body = r#"{"conversationState":{"conversationId":"test"}}"#;
+        let endpoint = IdeEndpoint::runtime();
+        let machine_id = "a".repeat(64);
+        let config = Config::default();
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "ksk_test_api_key",
+            machine_id: &machine_id,
+            config: &config,
+        };
+        let result = endpoint.transform_api_body(request_body, &ctx).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            parsed.get("profileArn").is_none(),
+            "API key runtime requests must not inject profileArn"
+        );
+        assert_eq!(parsed["conversationState"]["conversationId"], "test");
+    }
+
+    #[test]
+    fn test_ide_runtime_streaming_parser_accepts_usage_frames() {
+        fn event_frame(event_type: &str, payload: &'static [u8]) -> Frame {
+            let mut headers = Headers::new();
+            headers.insert(
+                ":message-type".to_string(),
+                EventHeaderValue::String("event".to_string()),
+            );
+            headers.insert(
+                ":event-type".to_string(),
+                EventHeaderValue::String(event_type.to_string()),
+            );
+            Frame {
+                headers,
+                payload: payload.to_vec(),
+            }
+        }
+
+        let token_usage = Event::from_frame(event_frame(
+            "tokenUsageEvent",
+            br#"{"uncachedInputTokens":100,"outputTokens":20,"totalTokens":120,"cacheReadInputTokens":10,"cacheWriteInputTokens":5}"#,
+        ))
+        .unwrap();
+        match token_usage {
+            Event::TokenUsage(usage) => {
+                assert_eq!(usage.uncached_input_tokens, 100);
+                assert_eq!(usage.output_tokens, 20);
+                assert_eq!(usage.total_tokens, 120);
+                assert_eq!(usage.cache_read_input_tokens, Some(10));
+                assert_eq!(usage.cache_write_input_tokens, Some(5));
+            }
+            other => panic!("expected tokenUsageEvent, got {other:?}"),
+        }
+
+        let metering = Event::from_frame(event_frame(
+            "meteringEvent",
+            br#"{"unit":"credit","unitPlural":"credits","usage":0.25}"#,
+        ))
+        .unwrap();
+        match metering {
+            Event::Metering(metering) => {
+                assert_eq!(metering.unit, "credit");
+                assert_eq!(metering.unit_plural, "credits");
+                assert_eq!(metering.usage, 0.25);
+            }
+            other => panic!("expected meteringEvent, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2732,6 +2942,7 @@ mod tests {
 
         let mut endpoints: HashMap<String, Arc<dyn KiroEndpoint>> = HashMap::new();
         endpoints.insert("ide".to_string(), Arc::new(IdeEndpoint::new()));
+        endpoints.insert("ide-runtime".to_string(), Arc::new(IdeEndpoint::runtime()));
         endpoints.insert("cli".to_string(), Arc::new(CliEndpoint::new()));
 
         let tm =
@@ -2747,6 +2958,13 @@ mod tests {
         provider.update_default_endpoint("cli".to_string()).unwrap();
         let endpoint = provider.endpoint_for(&credentials).unwrap();
         assert_eq!(endpoint.name(), "cli");
+
+        // 热更新为 ide-runtime
+        provider
+            .update_default_endpoint("ide-runtime".to_string())
+            .unwrap();
+        let endpoint = provider.endpoint_for(&credentials).unwrap();
+        assert_eq!(endpoint.name(), "ide-runtime");
 
         // 热更新回 ide
         provider.update_default_endpoint("ide".to_string()).unwrap();
@@ -2769,6 +2987,7 @@ mod tests {
 
         let mut endpoints: HashMap<String, Arc<dyn KiroEndpoint>> = HashMap::new();
         endpoints.insert("ide".to_string(), Arc::new(IdeEndpoint::new()));
+        endpoints.insert("ide-runtime".to_string(), Arc::new(IdeEndpoint::runtime()));
         endpoints.insert("cli".to_string(), Arc::new(CliEndpoint::new()));
 
         let tm =
@@ -2781,6 +3000,13 @@ mod tests {
 
         // 即使热更新默认值为 ide，凭据显式配置仍生效
         provider.update_default_endpoint("ide".to_string()).unwrap();
+        let endpoint = provider.endpoint_for(&credentials).unwrap();
+        assert_eq!(endpoint.name(), "cli");
+
+        // 即使热更新默认值为 runtime，凭据显式配置仍生效
+        provider
+            .update_default_endpoint("ide-runtime".to_string())
+            .unwrap();
         let endpoint = provider.endpoint_for(&credentials).unwrap();
         assert_eq!(endpoint.name(), "cli");
     }

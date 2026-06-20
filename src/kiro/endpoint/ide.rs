@@ -8,36 +8,75 @@ use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::token_manager::types::USAGE_API_KIRO_VERSION;
 
 pub const IDE_ENDPOINT_NAME: &str = "ide";
+pub const IDE_RUNTIME_ENDPOINT_NAME: &str = "ide-runtime";
+const IDE_RUNTIME_API_TARGET: &str =
+    "AmazonCodeWhispererStreamingService.GenerateAssistantResponse";
+const IDE_RUNTIME_SDK_VERSION: &str = "1.0.27";
+const IDE_RUNTIME_KIRO_VERSION: &str = "0.7.45";
 
-pub struct IdeEndpoint;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdeEndpointMode {
+    AwsQ,
+    Runtime,
+}
+
+pub struct IdeEndpoint {
+    mode: IdeEndpointMode,
+}
 
 impl IdeEndpoint {
     pub fn new() -> Self {
-        Self
+        Self {
+            mode: IdeEndpointMode::AwsQ,
+        }
+    }
+
+    pub fn runtime() -> Self {
+        Self {
+            mode: IdeEndpointMode::Runtime,
+        }
     }
 
     fn host(&self, ctx: &RequestContext<'_>) -> String {
-        format!(
-            "q.{}.amazonaws.com",
-            ctx.credentials.effective_api_region(ctx.config)
-        )
+        match self.mode {
+            IdeEndpointMode::AwsQ => format!(
+                "q.{}.amazonaws.com",
+                ctx.credentials.effective_api_region(ctx.config)
+            ),
+            IdeEndpointMode::Runtime => format!(
+                "runtime.{}.kiro.dev",
+                ctx.credentials.effective_api_region(ctx.config)
+            ),
+        }
     }
 
     fn x_amz_user_agent(&self, ctx: &RequestContext<'_>) -> String {
-        format!(
-            "aws-sdk-js/1.0.34 KiroIDE-{}-{}",
-            ctx.config.kiro_version, ctx.machine_id
-        )
+        match self.mode {
+            IdeEndpointMode::AwsQ => format!(
+                "aws-sdk-js/1.0.34 KiroIDE-{}-{}",
+                ctx.config.kiro_version, ctx.machine_id
+            ),
+            IdeEndpointMode::Runtime => format!(
+                "aws-sdk-js/{IDE_RUNTIME_SDK_VERSION} KiroIDE-{IDE_RUNTIME_KIRO_VERSION}-{}",
+                ctx.machine_id
+            ),
+        }
     }
 
     fn user_agent(&self, ctx: &RequestContext<'_>) -> String {
-        format!(
-            "aws-sdk-js/1.0.34 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererstreaming#1.0.34 m/E KiroIDE-{}-{}",
-            ctx.config.system_version,
-            ctx.config.node_version,
-            ctx.config.kiro_version,
-            ctx.machine_id
-        )
+        match self.mode {
+            IdeEndpointMode::AwsQ => format!(
+                "aws-sdk-js/1.0.34 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererstreaming#1.0.34 m/E KiroIDE-{}-{}",
+                ctx.config.system_version,
+                ctx.config.node_version,
+                ctx.config.kiro_version,
+                ctx.machine_id
+            ),
+            IdeEndpointMode::Runtime => format!(
+                "aws-sdk-js/{IDE_RUNTIME_SDK_VERSION} ua/2.1 os/win32#10.0.19044 lang/js md/nodejs#22.21.1 api/codewhispererstreaming#{IDE_RUNTIME_SDK_VERSION} m/E KiroIDE-{IDE_RUNTIME_KIRO_VERSION}-{}",
+                ctx.machine_id
+            ),
+        }
     }
 
     fn mcp_profile_arn_header_value(credentials: &KiroCredentials) -> Option<&str> {
@@ -73,26 +112,28 @@ impl Default for IdeEndpoint {
 
 impl KiroEndpoint for IdeEndpoint {
     fn name(&self) -> &'static str {
-        IDE_ENDPOINT_NAME
+        match self.mode {
+            IdeEndpointMode::AwsQ => IDE_ENDPOINT_NAME,
+            IdeEndpointMode::Runtime => IDE_RUNTIME_ENDPOINT_NAME,
+        }
     }
 
     fn api_url(&self, ctx: &RequestContext<'_>) -> String {
-        format!(
-            "https://q.{}.amazonaws.com/generateAssistantResponse",
-            ctx.credentials.effective_api_region(ctx.config)
-        )
+        format!("https://{}/generateAssistantResponse", self.host(ctx))
     }
 
     fn mcp_url(&self, ctx: &RequestContext<'_>) -> String {
-        format!(
-            "https://q.{}.amazonaws.com/mcp",
-            ctx.credentials.effective_api_region(ctx.config)
-        )
+        format!("https://{}/mcp", self.host(ctx))
     }
 
     fn decorate_api(&self, req: RequestBuilder, ctx: &RequestContext<'_>) -> RequestBuilder {
+        let content_type = match self.mode {
+            IdeEndpointMode::AwsQ => "application/json",
+            IdeEndpointMode::Runtime => "application/x-amz-json-1.0",
+        };
+
         let mut req = req
-            .header("content-type", "application/json")
+            .header("content-type", content_type)
             .header("x-amzn-codewhisperer-optout", "true")
             .header("x-amzn-kiro-agent-mode", "vibe")
             .header("x-amz-user-agent", self.x_amz_user_agent(ctx))
@@ -101,6 +142,10 @@ impl KiroEndpoint for IdeEndpoint {
             .header("amz-sdk-invocation-id", Uuid::new_v4().to_string())
             .header("amz-sdk-request", "attempt=1; max=3")
             .header("Authorization", format!("Bearer {}", ctx.token));
+
+        if self.mode == IdeEndpointMode::Runtime {
+            req = req.header("x-amz-target", IDE_RUNTIME_API_TARGET);
+        }
 
         if ctx.credentials.is_api_key_credential() {
             req = req.header("tokentype", "API_KEY");

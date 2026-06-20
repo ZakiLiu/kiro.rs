@@ -115,6 +115,8 @@ async fn main() {
     {
         let ide: Arc<dyn KiroEndpoint> = Arc::new(IdeEndpoint::new());
         endpoints.insert(ide.name().to_string(), ide);
+        let ide_runtime: Arc<dyn KiroEndpoint> = Arc::new(IdeEndpoint::runtime());
+        endpoints.insert(ide_runtime.name().to_string(), ide_runtime);
         let cli: Arc<dyn KiroEndpoint> = Arc::new(CliEndpoint::new());
         endpoints.insert(cli.name().to_string(), cli);
     }
