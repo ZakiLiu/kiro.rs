@@ -3,6 +3,7 @@
 pub mod affinity;
 pub mod auth;
 pub mod background_refresh;
+pub mod cli_db_credentials;
 pub mod cooldown;
 pub mod endpoint;
 pub mod fingerprint;

@@ -63,6 +63,36 @@ async fn main() {
     // 转换为按优先级排序的凭据列表
     let mut credentials_list = credentials_config.into_sorted_credentials();
 
+    match kiro::cli_db_credentials::load_from_env_or_default_paths() {
+        Ok(Some(loaded)) => {
+            let credentials = loaded.credentials;
+            tracing::info!(
+                db_path = %loaded.db_path.display(),
+                token_key = %loaded.token_key,
+                auth_method = ?credentials.auth_method.as_deref(),
+                has_access_token = credentials.access_token.is_some(),
+                has_refresh_token = credentials.refresh_token.is_some(),
+                has_profile_arn = credentials.profile_arn.is_some(),
+                has_device_registration = loaded.has_device_registration,
+                has_state_profile = loaded.has_state_profile,
+                region = ?credentials.region.as_deref(),
+                api_region = ?credentials.api_region.as_deref(),
+                "已从 Kiro CLI SQLite 加载运行时 CLI 凭据"
+            );
+            // 插到前面并保持 runtime_only=true：
+            // - 优先于 credentials.json 中的普通凭据；
+            // - 不写回 credentials.json；
+            // - 后续 KIRO_API_KEY 仍会再插到最前，保持环境变量最高优先级。
+            credentials_list.insert(0, credentials);
+        }
+        Ok(None) => {
+            tracing::debug!("未发现可导入的 Kiro CLI SQLite 凭据");
+        }
+        Err(e) => {
+            tracing::warn!("加载 Kiro CLI SQLite 凭据失败，跳过 CLI DB 导入: {}", e);
+        }
+    }
+
     if let Ok(kiro_api_key) = std::env::var("KIRO_API_KEY")
         && !kiro_api_key.trim().is_empty()
     {
