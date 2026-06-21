@@ -35,16 +35,12 @@ pub(super) fn mask_user_id(user_id: Option<&str>) -> String {
     }
 }
 
-/// Token 管理器
-///
-/// 负责管理凭据和 Token 的自动刷新
-pub(super) fn endpoint_for_credentials(
+fn usage_endpoint_for_credentials(
     credentials: &KiroCredentials,
     config: &Config,
 ) -> anyhow::Result<Box<dyn KiroEndpoint>> {
     match credentials.effective_endpoint_name(Some(&config.default_endpoint)) {
-        IDE_ENDPOINT_NAME => Ok(Box::new(IdeEndpoint::new())),
-        IDE_RUNTIME_ENDPOINT_NAME => Ok(Box::new(IdeEndpoint::runtime())),
+        IDE_ENDPOINT_NAME | IDE_RUNTIME_ENDPOINT_NAME => Ok(Box::new(IdeEndpoint::new())),
         CLI_ENDPOINT_NAME => Ok(Box::new(CliEndpoint::new())),
         name => bail!("未知 endpoint: {}", name),
     }
@@ -64,7 +60,7 @@ pub(crate) async fn get_usage_limits(
 
     let machine_id = machine_id::generate_from_credentials(credentials, config)
         .ok_or_else(|| anyhow::anyhow!("无法生成 machineId"))?;
-    let endpoint = endpoint_for_credentials(credentials, config)?;
+    let endpoint = usage_endpoint_for_credentials(credentials, config)?;
     let ctx = RequestContext {
         credentials,
         token,
@@ -212,6 +208,56 @@ mod tests {
     #[test]
     fn test_usage_api_kiro_version_is_pinned_for_rest_usage_apis() {
         assert_eq!(USAGE_API_KIRO_VERSION, "0.9.2");
+    }
+
+    #[test]
+    fn test_runtime_endpoint_usage_uses_legacy_ide_rest_endpoint() {
+        let mut config = Config::default();
+        config.default_endpoint = IDE_RUNTIME_ENDPOINT_NAME.to_string();
+        config.region = "us-east-1".to_string();
+        config.api_region = None;
+        config.system_version = "win32#10.0.22631".to_string();
+        config.node_version = "22.22.0".to_string();
+
+        let credentials = KiroCredentials::default();
+        let endpoint = usage_endpoint_for_credentials(&credentials, &config).unwrap();
+        assert_eq!(endpoint.name(), IDE_ENDPOINT_NAME);
+
+        let ctx = RequestContext {
+            credentials: &credentials,
+            token: "token",
+            machine_id: "machine123",
+            config: &config,
+        };
+        let usage = endpoint.usage_request_parts(&ctx).unwrap();
+
+        assert!(
+            usage
+                .url
+                .starts_with("https://q.us-east-1.amazonaws.com/getUsageLimits")
+        );
+        assert!(!usage.url.contains("runtime.us-east-1.kiro.dev"));
+        assert!(usage.url.contains("resourceType=AGENTIC_REQUEST"));
+
+        let host = usage
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "host")
+            .map(|(_, value)| value.as_str())
+            .unwrap();
+        assert_eq!(host, "q.us-east-1.amazonaws.com");
+    }
+
+    #[test]
+    fn test_credential_runtime_endpoint_usage_uses_legacy_ide_rest_endpoint() {
+        let config = Config::default();
+        let credentials = KiroCredentials {
+            endpoint: Some(IDE_RUNTIME_ENDPOINT_NAME.to_string()),
+            ..KiroCredentials::default()
+        };
+
+        let endpoint = usage_endpoint_for_credentials(&credentials, &config).unwrap();
+        assert_eq!(endpoint.name(), IDE_ENDPOINT_NAME);
     }
 
     #[tokio::test]
