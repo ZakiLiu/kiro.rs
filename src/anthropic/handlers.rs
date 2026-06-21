@@ -308,6 +308,22 @@ fn billed_input_tokens(
         .max(0)
 }
 
+fn stream_telemetry_input_tokens(ctx: &StreamContext) -> i32 {
+    if let Some(ref token_usage) = ctx.token_usage {
+        return token_usage.billing_split().input_tokens;
+    }
+
+    ctx.cache_usage
+        .map(|cache_usage| {
+            billed_input_tokens(
+                ctx.input_tokens,
+                cache_usage.cache_creation_input_tokens,
+                cache_usage.cache_read_input_tokens,
+            )
+        })
+        .unwrap_or(ctx.input_tokens)
+}
+
 fn inject_credit_usage_fields(usage: &mut serde_json::Value, metering: &MeteringEvent) {
     usage["credit_usage"] = json!(metering.usage);
     usage["credit_unit"] = json!(metering.unit);
@@ -1723,8 +1739,9 @@ fn create_sse_stream(
                             ctx.state_manager.set_stop_reason("error");
                             let final_events = ctx.generate_final_events();
                             // 写入 usage snapshot 供 handler 层 telemetry 使用
+                            let telemetry_input_tokens = stream_telemetry_input_tokens(&ctx);
                             *usage_snapshot.lock() = Some(StreamUsageSnapshot {
-                                input_tokens: ctx.input_tokens,
+                                input_tokens: telemetry_input_tokens,
                                 output_tokens: ctx.output_tokens,
                                 thinking_tokens: ctx.thinking_tokens,
                                 cache_creation: ctx.cache_usage.map(|c| c.cache_creation_input_tokens).unwrap_or(0),
@@ -1741,8 +1758,9 @@ fn create_sse_stream(
                             // 流结束，发送最终事件
                             let final_events = ctx.generate_final_events();
                             // 写入 usage snapshot 供 handler 层 telemetry 使用
+                            let telemetry_input_tokens = stream_telemetry_input_tokens(&ctx);
                             *usage_snapshot.lock() = Some(StreamUsageSnapshot {
-                                input_tokens: ctx.input_tokens,
+                                input_tokens: telemetry_input_tokens,
                                 output_tokens: ctx.output_tokens,
                                 thinking_tokens: ctx.thinking_tokens,
                                 cache_creation: ctx.cache_usage.map(|c| c.cache_creation_input_tokens).unwrap_or(0),
@@ -2136,7 +2154,7 @@ async fn handle_non_stream_request(
             model: context.model,
             is_stream: false,
             credential_id: api_result.credential_id,
-            input_tokens: context.input_tokens,
+            input_tokens: billed_input_tokens,
             output_tokens,
             cache_creation_tokens: final_cache_context
                 .map(|c| c.cache_creation_input_tokens)
@@ -2455,6 +2473,24 @@ mod tests {
         assert_eq!(billed_input_tokens(3829, 0, 1788), 2041);
         assert_eq!(billed_input_tokens(4131, 544, 2544), 1043);
         assert_eq!(billed_input_tokens(10, 3, 20), 0);
+    }
+
+    #[test]
+    fn test_stream_telemetry_input_tokens_uses_billed_cache_breakdown() {
+        let ctx = StreamContext::new_with_thinking(
+            "test-model",
+            100,
+            Some(CacheUsageBreakdown {
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 95,
+                cache_creation_5m_input_tokens: 0,
+                cache_creation_1h_input_tokens: 0,
+            }),
+            false,
+            std::collections::HashMap::new(),
+        );
+
+        assert_eq!(stream_telemetry_input_tokens(&ctx), 5);
     }
 
     #[test]

@@ -438,6 +438,7 @@ export interface TimeSeriesPoint {
   outputTokens: number
   cacheCreationTokens: number
   cacheReadTokens: number
+  cacheHitRate?: number
   calls: number
   errors: number
   credits: number

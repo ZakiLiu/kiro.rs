@@ -47,9 +47,12 @@ function formatTs(ts: string, granularity: StatsGranularity): string {
   return `${d.getFullYear()}-${md} ${String(d.getHours()).padStart(2, '0')}:00`
 }
 
-/** 命中率 = cacheRead / (input + cacheRead)，无缓存读取时为 0 */
+/** 命中率 = cacheRead / (input + cacheCreation + cacheRead)，无缓存读取时为 0 */
 function calcHitRate(p: TimeSeriesPoint): number {
-  const denom = p.inputTokens + p.cacheReadTokens
+  if (typeof p.cacheHitRate === 'number' && Number.isFinite(p.cacheHitRate)) {
+    return p.cacheHitRate
+  }
+  const denom = p.inputTokens + p.cacheCreationTokens + p.cacheReadTokens
   if (denom <= 0) return 0
   return (p.cacheReadTokens / denom) * 100
 }

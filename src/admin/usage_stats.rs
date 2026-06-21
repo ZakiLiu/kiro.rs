@@ -206,6 +206,18 @@ impl BucketStats {
         self.calls += other.calls;
         self.errors += other.errors;
     }
+
+    fn cache_hit_rate(&self) -> f64 {
+        let denominator = self
+            .input_tokens
+            .saturating_add(self.cache_creation_tokens)
+            .saturating_add(self.cache_read_tokens);
+        if denominator == 0 {
+            return 0.0;
+        }
+
+        (self.cache_read_tokens as f64 / denominator as f64) * 100.0
+    }
 }
 
 /// 单个时间桶含分组数据
@@ -301,6 +313,7 @@ pub struct TimeSeriesPoint {
     pub output_tokens: u64,
     pub cache_creation_tokens: u64,
     pub cache_read_tokens: u64,
+    pub cache_hit_rate: f64,
     pub calls: u64,
     pub errors: u64,
     pub credits: f64,
@@ -467,6 +480,7 @@ impl UsageAggregator {
                     output_tokens: stats.output_tokens,
                     cache_creation_tokens: stats.cache_creation_tokens,
                     cache_read_tokens: stats.cache_read_tokens,
+                    cache_hit_rate: stats.cache_hit_rate(),
                     calls: stats.calls,
                     errors: stats.errors,
                     credits: stats.credits,
@@ -754,6 +768,34 @@ mod tests {
         let by_cred = agg.query_by_credential(window, None, None);
         assert_eq!(by_cred.len(), 1);
         assert_eq!(by_cred[0].credential_id, 5);
+    }
+
+    #[test]
+    fn timeseries_reports_cache_hit_rate_from_token_breakdown() {
+        let agg = UsageAggregator::new();
+        let rec = UsageRecord {
+            ts: Utc::now().to_rfc3339(),
+            key_id: 0,
+            credential_id: 5,
+            model: "claude-sonnet-4-6".to_string(),
+            input_tokens: 5,
+            output_tokens: 20,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 95,
+            credits: 0.01,
+            duration_ms: 100,
+            status: "success".to_string(),
+        };
+        agg.ingest(&rec);
+
+        let window = StatsQueryWindow::preset(Range::Last24h, StatsGranularity::Hour);
+        let series = agg.query_timeseries(window, None, None);
+        let point = series
+            .iter()
+            .find(|p| p.calls > 0)
+            .expect("expected non-empty stats bucket");
+
+        assert!((point.cache_hit_rate - 95.0).abs() < f64::EPSILON);
     }
 
     #[test]
