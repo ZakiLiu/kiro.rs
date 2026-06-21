@@ -327,7 +327,7 @@ mod tests {
     use model::*;
     use schema::normalize_json_schema;
     use system::{
-        ThinkingConfig, ThinkingSchemaPath, build_additional_model_request_fields,
+        ThinkingSchemaPath, build_additional_model_request_fields,
         extract_thinking_config_from_schema, generate_thinking_prefix,
         output_config_thinking_schema, wrap_system_for_history,
     };

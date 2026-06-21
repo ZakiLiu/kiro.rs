@@ -25,6 +25,80 @@ use super::converter::convert_openai_to_kiro;
 use super::stream::OpenAIStreamContext;
 use super::types::*;
 
+#[derive(Debug, Clone, Copy)]
+struct OpenAITelemetryState {
+    input_tokens: i32,
+    output_tokens: i32,
+    cache_creation_tokens: i32,
+    cache_read_tokens: i32,
+    credits: f64,
+    first_token_ms: Option<u64>,
+    has_token_usage: bool,
+}
+
+impl OpenAITelemetryState {
+    fn new(input_tokens: i32) -> Self {
+        Self {
+            input_tokens,
+            output_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            credits: 0.0,
+            first_token_ms: None,
+            has_token_usage: false,
+        }
+    }
+
+    fn observe_stream_event(&mut self, event: &Event, elapsed_ms: u64) {
+        if self.first_token_ms.is_none() && openai_event_has_visible_output(event) {
+            self.first_token_ms = Some(elapsed_ms);
+        }
+        self.observe_metering_and_usage(event);
+    }
+
+    fn observe_metering_and_usage(&mut self, event: &Event) {
+        match event {
+            Event::Metering(ev) => {
+                if ev.usage.is_finite() {
+                    self.credits = ev.usage;
+                }
+            }
+            Event::TokenUsage(ev) if ev.has_real_usage() => {
+                let split = ev.billing_split();
+                self.input_tokens = split.input_tokens;
+                self.output_tokens = split.output_tokens;
+                self.cache_creation_tokens = split.cache_creation_input_tokens;
+                self.cache_read_tokens = split.cache_read_input_tokens;
+                self.has_token_usage = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn with_fallback_usage(
+        mut self,
+        input_tokens: i32,
+        output_tokens: i32,
+        cache_read_tokens: i32,
+    ) -> Self {
+        if !self.has_token_usage {
+            self.input_tokens = input_tokens;
+            self.output_tokens = output_tokens;
+            self.cache_read_tokens = cache_read_tokens;
+        }
+        self
+    }
+}
+
+fn openai_event_has_visible_output(event: &Event) -> bool {
+    match event {
+        Event::AssistantResponse(ev) => !ev.content.is_empty(),
+        Event::ReasoningContent(ev) => !ev.text.is_empty(),
+        Event::ToolUse(ev) => !ev.stop && (!ev.name.is_empty() || !ev.input.is_empty()),
+        _ => false,
+    }
+}
+
 pub async fn post_chat_completions(
     State(state): State<AppState>,
     axum::Extension(auth): axum::Extension<AuthIdentity>,
@@ -153,6 +227,7 @@ fn create_openai_sse_stream(
     let response = api_result.response;
     async_stream::stream! {
         let mut ctx = OpenAIStreamContext::new(&model, input_tokens);
+        let mut telemetry = OpenAITelemetryState::new(input_tokens);
 
         let initial = ctx.generate_initial_chunk();
         yield Ok(Bytes::from(initial));
@@ -178,6 +253,10 @@ fn create_openai_sse_stream(
                                     Ok(frame) => {
                                         match Event::from_frame(frame) {
                                             Ok(event) => {
+                                                telemetry.observe_stream_event(
+                                                    &event,
+                                                    start.elapsed().as_millis() as u64,
+                                                );
                                                 for sse_chunk in ctx.process_kiro_event(&event) {
                                                     yield Ok(Bytes::from(sse_chunk));
                                                 }
@@ -211,21 +290,23 @@ fn create_openai_sse_stream(
         }
 
         let (final_input, final_output, final_cache_read) = ctx.usage_values();
+        let telemetry =
+            telemetry.with_fallback_usage(final_input, final_output, final_cache_read);
         let duration_ms = start.elapsed().as_millis() as u64;
         record_request_telemetry(
             &state, &auth, TelemetryData {
                 model: &model,
                 is_stream: true,
                 credential_id,
-                input_tokens: final_input,
-                output_tokens: final_output,
-                cache_creation_tokens: 0,
-                cache_read_tokens: final_cache_read,
-                credits: 0.0,
+                input_tokens: telemetry.input_tokens,
+                output_tokens: telemetry.output_tokens,
+                cache_creation_tokens: telemetry.cache_creation_tokens,
+                cache_read_tokens: telemetry.cache_read_tokens,
+                credits: telemetry.credits,
                 duration_ms,
                 status: "success",
                 attempts,
-                first_token_ms: None,
+                first_token_ms: telemetry.first_token_ms,
             },
         );
     }
@@ -296,66 +377,72 @@ async fn handle_non_stream(
     let mut final_input_tokens = input_tokens;
     let mut cache_read_tokens = 0i32;
     let mut thinking_tokens = 0i32;
+    let mut telemetry = OpenAITelemetryState::new(input_tokens);
 
     for result in decoder.decode_iter() {
         match result {
             Ok(frame) => match Event::from_frame(frame) {
-                Ok(Event::AssistantResponse(ev)) => {
-                    if !ev.content.is_empty() {
-                        text_content.push_str(&ev.content);
-                        output_tokens += token::count_tokens(&ev.content) as i32;
-                    }
-                }
-                Ok(Event::ReasoningContent(ev)) => {
-                    if !ev.text.is_empty() {
-                        reasoning_content.push_str(&ev.text);
-                        thinking_tokens += token::count_tokens(&ev.text) as i32;
-                    }
-                }
-                Ok(Event::ToolUse(ev)) => {
-                    if ev.stop {
-                        if !current_tool_id.is_empty() {
-                            tool_calls.push(ToolCall {
-                                id: current_tool_id.clone(),
-                                call_type: "function".to_string(),
-                                function: ToolCallFunction {
-                                    name: current_tool_name.clone(),
-                                    arguments: current_tool_input.clone(),
-                                },
-                            });
-                            current_tool_input.clear();
-                            current_tool_name.clear();
-                            current_tool_id.clear();
+                Ok(event) => {
+                    telemetry.observe_metering_and_usage(&event);
+                    match event {
+                        Event::AssistantResponse(ev) => {
+                            if !ev.content.is_empty() {
+                                text_content.push_str(&ev.content);
+                                output_tokens += token::count_tokens(&ev.content) as i32;
+                            }
                         }
-                    } else if !ev.name.is_empty() && current_tool_name != ev.name {
-                        if !current_tool_id.is_empty() {
-                            tool_calls.push(ToolCall {
-                                id: current_tool_id.clone(),
-                                call_type: "function".to_string(),
-                                function: ToolCallFunction {
-                                    name: current_tool_name.clone(),
-                                    arguments: current_tool_input.clone(),
-                                },
-                            });
-                            current_tool_input.clear();
+                        Event::ReasoningContent(ev) => {
+                            if !ev.text.is_empty() {
+                                reasoning_content.push_str(&ev.text);
+                                thinking_tokens += token::count_tokens(&ev.text) as i32;
+                            }
                         }
-                        current_tool_name = ev.name.clone();
-                        current_tool_id = ev.tool_use_id.clone();
-                        if !ev.input.is_empty() {
-                            current_tool_input.push_str(&ev.input);
+                        Event::ToolUse(ev) => {
+                            if ev.stop {
+                                if !current_tool_id.is_empty() {
+                                    tool_calls.push(ToolCall {
+                                        id: current_tool_id.clone(),
+                                        call_type: "function".to_string(),
+                                        function: ToolCallFunction {
+                                            name: current_tool_name.clone(),
+                                            arguments: current_tool_input.clone(),
+                                        },
+                                    });
+                                    current_tool_input.clear();
+                                    current_tool_name.clear();
+                                    current_tool_id.clear();
+                                }
+                            } else if !ev.name.is_empty() && current_tool_name != ev.name {
+                                if !current_tool_id.is_empty() {
+                                    tool_calls.push(ToolCall {
+                                        id: current_tool_id.clone(),
+                                        call_type: "function".to_string(),
+                                        function: ToolCallFunction {
+                                            name: current_tool_name.clone(),
+                                            arguments: current_tool_input.clone(),
+                                        },
+                                    });
+                                    current_tool_input.clear();
+                                }
+                                current_tool_name = ev.name.clone();
+                                current_tool_id = ev.tool_use_id.clone();
+                                if !ev.input.is_empty() {
+                                    current_tool_input.push_str(&ev.input);
+                                }
+                            } else if !ev.input.is_empty() {
+                                current_tool_input.push_str(&ev.input);
+                            }
                         }
-                    } else if !ev.input.is_empty() {
-                        current_tool_input.push_str(&ev.input);
+                        Event::TokenUsage(ev) => {
+                            final_input_tokens = ev.uncached_input_tokens as i32;
+                            output_tokens = ev.output_tokens as i32;
+                            if let Some(cr) = ev.cache_read_input_tokens {
+                                cache_read_tokens = cr as i32;
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                Ok(Event::TokenUsage(ev)) => {
-                    final_input_tokens = ev.uncached_input_tokens as i32;
-                    output_tokens = ev.output_tokens as i32;
-                    if let Some(cr) = ev.cache_read_input_tokens {
-                        cache_read_tokens = cr as i32;
-                    }
-                }
-                Ok(_) => {}
                 Err(e) => {
                     tracing::warn!("event parse error: {}", e);
                 }
@@ -437,6 +524,8 @@ async fn handle_non_stream(
     };
 
     let duration_ms = start.elapsed().as_millis() as u64;
+    let telemetry =
+        telemetry.with_fallback_usage(final_input_tokens, output_tokens, cache_read_tokens);
     record_request_telemetry(
         state,
         auth,
@@ -444,11 +533,11 @@ async fn handle_non_stream(
             model,
             is_stream: false,
             credential_id,
-            input_tokens: final_input_tokens,
-            output_tokens,
-            cache_creation_tokens: 0,
-            cache_read_tokens,
-            credits: 0.0,
+            input_tokens: telemetry.input_tokens,
+            output_tokens: telemetry.output_tokens,
+            cache_creation_tokens: telemetry.cache_creation_tokens,
+            cache_read_tokens: telemetry.cache_read_tokens,
+            credits: telemetry.credits,
             duration_ms,
             status: "success",
             attempts,
@@ -726,4 +815,111 @@ async fn wrap_as_responses_response(inner_response: Response, req: &ResponsesReq
     };
 
     (StatusCode::OK, Json(json!(responses_resp))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kiro::model::events::{
+        AssistantResponseEvent, MeteringEvent, ReasoningContentEvent, TokenUsageEvent, ToolUseEvent,
+    };
+
+    fn assistant_event(content: &str) -> Event {
+        let mut event = AssistantResponseEvent::default();
+        event.content = content.to_string();
+        Event::AssistantResponse(event)
+    }
+
+    #[test]
+    fn openai_visible_output_detection_matches_sse_chunks() {
+        assert!(!openai_event_has_visible_output(&Event::Metering(
+            MeteringEvent {
+                unit: "credit".to_string(),
+                unit_plural: "credits".to_string(),
+                usage: 0.25,
+            },
+        )));
+        assert!(!openai_event_has_visible_output(&Event::AssistantResponse(
+            AssistantResponseEvent::default(),
+        )));
+        assert!(openai_event_has_visible_output(&assistant_event("hello")));
+        assert!(openai_event_has_visible_output(&Event::ReasoningContent(
+            ReasoningContentEvent {
+                text: "thinking".to_string(),
+                signature: None,
+                redacted_content: None,
+            },
+        )));
+        assert!(!openai_event_has_visible_output(&Event::ToolUse(
+            ToolUseEvent {
+                name: "run".to_string(),
+                tool_use_id: "toolu_1".to_string(),
+                input: "{}".to_string(),
+                stop: true,
+            },
+        )));
+        assert!(openai_event_has_visible_output(&Event::ToolUse(
+            ToolUseEvent {
+                name: "run".to_string(),
+                tool_use_id: "toolu_1".to_string(),
+                input: String::new(),
+                stop: false,
+            },
+        )));
+    }
+
+    #[test]
+    fn openai_telemetry_tracks_credits_first_token_and_precise_usage() {
+        let mut telemetry = OpenAITelemetryState::new(123);
+
+        telemetry.observe_stream_event(
+            &Event::Metering(MeteringEvent {
+                unit: "credit".to_string(),
+                unit_plural: "credits".to_string(),
+                usage: 0.02707833114427861,
+            }),
+            17,
+        );
+        assert!((telemetry.credits - 0.02707833114427861).abs() < f64::EPSILON);
+        assert_eq!(telemetry.first_token_ms, None);
+
+        telemetry.observe_stream_event(
+            &Event::ReasoningContent(ReasoningContentEvent {
+                text: "first visible delta".to_string(),
+                signature: None,
+                redacted_content: None,
+            }),
+            42,
+        );
+        telemetry.observe_stream_event(&assistant_event("second delta"), 99);
+        assert_eq!(telemetry.first_token_ms, Some(42));
+
+        telemetry.observe_stream_event(
+            &Event::TokenUsage(TokenUsageEvent {
+                uncached_input_tokens: 1_000,
+                output_tokens: 200,
+                total_tokens: 1_500,
+                cache_read_input_tokens: Some(300),
+                cache_write_input_tokens: Some(400),
+            }),
+            120,
+        );
+
+        assert_eq!(telemetry.input_tokens, 600);
+        assert_eq!(telemetry.output_tokens, 200);
+        assert_eq!(telemetry.cache_creation_tokens, 400);
+        assert_eq!(telemetry.cache_read_tokens, 300);
+    }
+
+    #[test]
+    fn openai_telemetry_falls_back_to_local_usage_without_token_usage_event() {
+        let telemetry = OpenAITelemetryState::new(10).with_fallback_usage(11, 22, 3);
+
+        assert_eq!(telemetry.input_tokens, 11);
+        assert_eq!(telemetry.output_tokens, 22);
+        assert_eq!(telemetry.cache_creation_tokens, 0);
+        assert_eq!(telemetry.cache_read_tokens, 3);
+        assert_eq!(telemetry.credits, 0.0);
+        assert_eq!(telemetry.first_token_ms, None);
+    }
 }

@@ -31,10 +31,7 @@ pub fn convert_openai_to_kiro(
     req: &ChatCompletionRequest,
     profile_arn: Option<String>,
 ) -> Result<ConversionResult, String> {
-    let model_id = map_model(&req.model).unwrap_or_else(|| {
-        tracing::warn!("未知 OpenAI 模型 '{}', 回退到默认", req.model);
-        "claude-sonnet-4.5".to_string()
-    });
+    let model_id = resolve_openai_model_id(&req.model);
 
     let mut system_prompt = String::new();
     let mut non_system_messages: Vec<&ChatMessage> = Vec::new();
@@ -225,6 +222,62 @@ pub fn convert_openai_to_kiro(
     })
 }
 
+fn resolve_openai_model_id(model: &str) -> String {
+    let normalized = normalize_openai_model_for_kiro(model);
+
+    // `auto-kiro` 是 kiro-gateway 的公开别名，用来避开部分 IDE 自己的 `auto`；
+    // `auto` 本身虽然不在列表中展示，也应保持可直连 runtime。
+    if normalized == "auto" {
+        tracing::info!(
+            requested_model = %model,
+            normalized_model = %normalized,
+            "OpenAI 模型别名按 Kiro runtime pass-through 处理"
+        );
+        return normalized;
+    }
+
+    if let Some(mapped) = map_model(model).or_else(|| map_model(&normalized)) {
+        return mapped;
+    }
+
+    tracing::info!(
+        requested_model = %model,
+        normalized_model = %normalized,
+        "未知 OpenAI 模型按 Kiro runtime pass-through 处理"
+    );
+    normalized
+}
+
+fn normalize_openai_model_for_kiro(model: &str) -> String {
+    let mut normalized = model.trim().trim_matches('/').to_ascii_lowercase();
+    if let Some(stripped) = normalized.strip_prefix("models/") {
+        normalized = stripped.to_string();
+    }
+    normalized = normalized.split_whitespace().collect::<Vec<_>>().join("-");
+    normalized = normalized.replace('_', "-");
+
+    match normalized.as_str() {
+        "auto-kiro" => return "auto".to_string(),
+        "deepseek-v3.2" | "deepseek-v3-2" | "deepseek-3-2" => {
+            return "deepseek-3.2".to_string();
+        }
+        "glm5" => return "glm-5".to_string(),
+        "minimax-m2-1" => return "minimax-m2.1".to_string(),
+        "minimax-m2-5" => return "minimax-m2.5".to_string(),
+        "qwen-3-coder-next" => return "qwen3-coder-next".to_string(),
+        _ => {}
+    }
+
+    if let Some(rest) = normalized.strip_prefix("deepseek-") {
+        let rest = rest.strip_prefix('v').unwrap_or(rest);
+        if rest == "3.2" || rest == "3-2" {
+            return "deepseek-3.2".to_string();
+        }
+    }
+
+    normalized
+}
+
 fn build_openai_thinking_fields(
     req: &ChatCompletionRequest,
     model_id: &str,
@@ -389,4 +442,68 @@ fn convert_openai_tools(tools: &Option<Vec<super::types::ChatTool>>) -> Vec<Tool
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request_for_model(model: &str) -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: model.to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("hello".to_string())),
+                reasoning_content: None,
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            stream: false,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            tools: None,
+            tool_choice: None,
+            reasoning_effort: None,
+            thinking: None,
+            metadata: None,
+        }
+    }
+
+    fn converted_current_model_id(model: &str) -> String {
+        convert_openai_to_kiro(&request_for_model(model), None)
+            .unwrap()
+            .kiro_request
+            .conversation_state
+            .current_message
+            .user_input_message
+            .model_id
+    }
+
+    #[test]
+    fn unknown_runtime_models_pass_through_instead_of_falling_back() {
+        assert_eq!(converted_current_model_id("deepseek-v3.2"), "deepseek-3.2");
+        assert_eq!(
+            converted_current_model_id("models/qwen3-coder-next"),
+            "qwen3-coder-next"
+        );
+        assert_eq!(converted_current_model_id("MiniMax M2.5"), "minimax-m2.5");
+        assert_eq!(converted_current_model_id("GLM 5"), "glm-5");
+    }
+
+    #[test]
+    fn openai_auto_kiro_alias_passes_runtime_auto() {
+        assert_eq!(converted_current_model_id("auto-kiro"), "auto");
+        assert_eq!(converted_current_model_id("auto"), "auto");
+    }
+
+    #[test]
+    fn known_openai_aliases_still_use_existing_model_mapping() {
+        assert_eq!(converted_current_model_id("gpt-4"), "claude-sonnet-4.5");
+        assert_eq!(
+            converted_current_model_id("models/gpt-4"),
+            "claude-sonnet-4.5"
+        );
+    }
 }

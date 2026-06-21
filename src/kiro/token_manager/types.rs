@@ -232,6 +232,11 @@ mod tests {
         assert!(ids.contains(&"claude-sonnet-4.6"));
         assert!(ids.contains(&"claude-opus-4.8"));
         assert!(ids.contains(&"claude-haiku-4.5"));
+        assert!(ids.contains(&"deepseek-3.2"));
+        assert!(ids.contains(&"glm-5"));
+        assert!(ids.contains(&"minimax-m2.1"));
+        assert!(ids.contains(&"minimax-m2.5"));
+        assert!(ids.contains(&"qwen3-coder-next"));
     }
 }
 

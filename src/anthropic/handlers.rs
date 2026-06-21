@@ -743,7 +743,7 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             .map(|_| super::converter::output_config_thinking_schema())
     };
 
-    let models = vec![
+    let mut models = vec![
         Model {
             id: "claude-sonnet-4-6".to_string(),
             object: "model".to_string(),
@@ -1053,10 +1053,62 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
         },
     ];
 
+    append_runtime_gateway_models(&mut models);
+
     Json(ModelsResponse {
         object: "list".to_string(),
         data: models,
     })
+}
+
+fn append_runtime_gateway_models(models: &mut Vec<Model>) {
+    for model in runtime_gateway_models_for_models_endpoint() {
+        if !models.iter().any(|existing| existing.id == model.id) {
+            models.push(model);
+        }
+    }
+}
+
+fn runtime_gateway_models_for_models_endpoint() -> Vec<Model> {
+    crate::kiro::model::available_models::runtime_fallback_models()
+        .models
+        .into_iter()
+        .map(|upstream| {
+            let list_id = if upstream.model_id == "auto" {
+                // 与 kiro-gateway 对齐：`auto` 仍可直连，但列表中展示避开 IDE 冲突的别名。
+                "auto-kiro".to_string()
+            } else {
+                upstream.model_id
+            };
+            let display_name = upstream.model_name.unwrap_or_else(|| list_id.clone());
+            let context_length = upstream
+                .token_limits
+                .and_then(|limits| limits.max_input_tokens)
+                .map(|tokens| tokens.min(i32::MAX as i64) as i32);
+            let thinking = if list_id.starts_with("claude-") {
+                Some(true)
+            } else {
+                None
+            };
+            let additional_model_request_fields_schema =
+                super::converter::thinking_config_for_model(&list_id)
+                    .map(|_| super::converter::output_config_thinking_schema());
+
+            Model {
+                id: list_id,
+                object: "model".to_string(),
+                created: 1779897600,
+                owned_by: "kiro".to_string(),
+                display_name,
+                model_type: "chat".to_string(),
+                max_tokens: 32000,
+                context_length,
+                max_completion_tokens: Some(64_000),
+                thinking,
+                additional_model_request_fields_schema,
+            }
+        })
+        .collect()
 }
 
 /// POST /v1/messages
@@ -2472,6 +2524,25 @@ mod tests {
         assert_eq!(usage["credit_usage"], json!(0.5));
         assert_eq!(usage["credit_unit"], json!("credit"));
         assert_eq!(usage["credit_unit_plural"], json!("credits"));
+    }
+
+    #[test]
+    fn test_models_endpoint_includes_runtime_gateway_models() {
+        let mut models = Vec::new();
+        append_runtime_gateway_models(&mut models);
+        let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+
+        for expected in [
+            "auto-kiro",
+            "deepseek-3.2",
+            "glm-5",
+            "minimax-m2.1",
+            "minimax-m2.5",
+            "qwen3-coder-next",
+        ] {
+            assert!(ids.contains(&expected), "{expected} missing");
+        }
+        assert!(!ids.contains(&"auto"));
     }
 
     // 注意：is_no_credentials_error / is_quota_exhausted_error / is_all_credentials_cooling_down_error
