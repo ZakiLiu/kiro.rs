@@ -540,7 +540,7 @@ pub struct UpdateGlobalConfigRequest {
     /// 单凭据每日最大请求数（缺失不更新，null 恢复默认，0 关闭每日上限）
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub credential_daily_max_requests: Option<Option<u32>>,
-    /// Prompt Cache TTL（秒，可选，仅支持 300 或 3600）
+    /// Prompt Cache TTL（秒，可选，仅支持 300、3600、7200 或 18000）
     pub prompt_cache_ttl_seconds: Option<u64>,
     /// 是否启用本地 Prompt Cache usage 记账（可选）
     pub prompt_cache_accounting_enabled: Option<bool>,

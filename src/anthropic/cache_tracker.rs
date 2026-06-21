@@ -113,7 +113,7 @@ impl CacheTracker {
             });
 
             if let Some(ttl) = block.breakpoint_ttl {
-                let ttl = ttl.min(self.max_supported_ttl);
+                let ttl = self.resolve_breakpoint_ttl(ttl);
                 active_ttl = Some(ttl);
                 if seen_breakpoints.insert(index) {
                     breakpoints.push(CacheBreakpoint {
@@ -138,14 +138,15 @@ impl CacheTracker {
         // 自动注入 breakpoint：客户端没发 cache_control 时，在关键位置插入缓存锚点
         //
         // 策略（最多 4 个 breakpoint，Anthropic 上限）：
-        // 1. 最后一个 tool definition    → 1h TTL（tools 几乎不变）
-        // 2. 最后一个 system block       → 1h TTL（system prompt 稳定）
+        // 1. 最后一个 tool definition    → 稳定 prompt TTL（tools 几乎不变）
+        // 2. 最后一个 system block       → 稳定 prompt TTL（system prompt 稳定）
         // 3. 倒数第二条消息结尾           → 5min TTL（历史前缀缓存）
         // 4. 历史中段消息结尾（~50%位置） → 5min TTL（长对话中段复用）
         if breakpoints.is_empty() && !blocks.is_empty() {
             let tool_count = payload.tools.as_ref().map(|t| t.len()).unwrap_or(0);
             let system_count = payload.system.as_ref().map(|s| s.len()).unwrap_or(0);
             let static_block_count = tool_count + system_count;
+            let stable_prompt_ttl = self.max_supported_ttl.max(ONE_HOUR_CACHE_TTL);
 
             // 使用循环中已收集的消息边界索引
             let message_end_indices = &message_end_block_indices;
@@ -164,13 +165,13 @@ impl CacheTracker {
 
             let mut count = 0usize;
 
-            // 1. 最后一个 tool（1h TTL）
-            if tool_count > 0 && inject(tool_count - 1, ONE_HOUR_CACHE_TTL) {
+            // 1. 最后一个 tool（稳定 prompt TTL；对外协议上报时仍归到 1h 桶）
+            if tool_count > 0 && inject(tool_count - 1, stable_prompt_ttl) {
                 count += 1;
             }
 
-            // 2. 最后一个 system（1h TTL）
-            if system_count > 0 && inject(static_block_count - 1, ONE_HOUR_CACHE_TTL) {
+            // 2. 最后一个 system（稳定 prompt TTL；对外协议上报时仍归到 1h 桶）
+            if system_count > 0 && inject(static_block_count - 1, stable_prompt_ttl) {
                 count += 1;
             }
 
@@ -287,6 +288,7 @@ impl CacheTracker {
                 Some(existing) => {
                     existing.token_count = existing.token_count.max(block.cumulative_tokens);
                     existing.ttl = existing.ttl.max(breakpoint.ttl);
+                    existing.expires_at = existing.expires_at.max(next_expiry);
                 }
                 None => {
                     pool.insert(
@@ -299,6 +301,14 @@ impl CacheTracker {
                     );
                 }
             }
+        }
+    }
+
+    fn resolve_breakpoint_ttl(&self, protocol_ttl: Duration) -> Duration {
+        if protocol_ttl >= ONE_HOUR_CACHE_TTL && self.max_supported_ttl > ONE_HOUR_CACHE_TTL {
+            self.max_supported_ttl
+        } else {
+            protocol_ttl.min(self.max_supported_ttl)
         }
     }
 }
@@ -319,7 +329,9 @@ fn compute_ttl_breakdown(profile: &CacheProfile, matched_tokens: i32) -> (i32, i
         return (0, 0);
     }
 
-    if last_breakpoint.ttl == ONE_HOUR_CACHE_TTL {
+    // Anthropic 协议只有 5m / 1h 两个 cache_creation 桶；
+    // 本地支持的 2h / 5h 长 TTL 必须对客户端 clamp 到 1h 桶。
+    if last_breakpoint.ttl >= ONE_HOUR_CACHE_TTL {
         (0, new_tokens)
     } else {
         (new_tokens, 0)
@@ -945,6 +957,65 @@ mod tests {
                 .iter()
                 .all(|bp| bp.ttl == Duration::from_secs(3600))
         );
+    }
+
+    #[test]
+    fn explicit_protocol_1h_uses_configured_long_internal_ttl() {
+        let req = build_request(vec![
+            msg(
+                "user",
+                serde_json::json!([{
+                    "type": "text",
+                    "text": long_cacheable_text(),
+                    "cache_control": { "type": "ephemeral", "ttl": "1h" }
+                }]),
+            ),
+            msg("assistant", serde_json::json!("R1")),
+            msg("user", serde_json::json!("R2")),
+        ]);
+        let tracker = CacheTracker::new(Duration::from_secs(18000));
+        let profile = tracker.build_profile(&req, estimate_input_tokens(&req));
+        let breakpoints = profile.cacheable_breakpoints();
+
+        assert!(breakpoints.len() >= 2);
+        assert!(
+            breakpoints
+                .iter()
+                .all(|bp| bp.ttl == Duration::from_secs(18000))
+        );
+    }
+
+    #[test]
+    fn auto_injected_static_breakpoints_use_configured_long_ttl() {
+        let req = build_request(vec![msg("user", serde_json::json!("hello"))]);
+        let tracker = CacheTracker::new(Duration::from_secs(7200));
+        let profile = tracker.build_profile(&req, estimate_input_tokens(&req));
+
+        assert!(
+            profile
+                .breakpoints
+                .iter()
+                .take(2)
+                .all(|bp| bp.ttl == Duration::from_secs(7200))
+        );
+    }
+
+    #[test]
+    fn long_ttl_cache_creation_is_reported_in_protocol_1h_bucket() {
+        let profile = CacheProfile {
+            total_input_tokens: 2_000,
+            min_cacheable_tokens: 0,
+            blocks: vec![CacheBlock {
+                prefix_fingerprint: [0; 32],
+                cumulative_tokens: 1_500,
+            }],
+            breakpoints: vec![CacheBreakpoint {
+                block_index: 0,
+                ttl: Duration::from_secs(18_000),
+            }],
+        };
+
+        assert_eq!(compute_ttl_breakdown(&profile, 0), (0, 1_500));
     }
 
     #[test]

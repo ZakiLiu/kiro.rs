@@ -15,7 +15,7 @@ use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::provider::KiroProvider;
 use crate::kiro::token_manager::{CachedBalanceInfo, MultiTokenManager};
 use crate::metrics::{MetricEventType, MetricsCollector};
-use crate::model::config::{CompressionConfig, Config};
+use crate::model::config::{CompressionConfig, Config, is_supported_prompt_cache_ttl_seconds};
 use parking_lot::RwLock;
 
 use super::error::AdminServiceError;
@@ -1456,9 +1456,10 @@ impl AdminService {
             }
 
             if let Some(ttl_seconds) = req.prompt_cache_ttl_seconds {
-                if !matches!(ttl_seconds, 300 | 3600) {
+                if !is_supported_prompt_cache_ttl_seconds(ttl_seconds) {
                     return Err(AdminServiceError::InvalidRequest(
-                        "Prompt Cache TTL 仅支持 300（5分钟）或 3600（1小时）".to_string(),
+                        "Prompt Cache TTL 仅支持 300（5分钟）、3600（1小时）、7200（2小时）或 18000（5小时）"
+                            .to_string(),
                     ));
                 }
                 config.prompt_cache_ttl_seconds = ttl_seconds;
@@ -3462,6 +3463,81 @@ mod tests {
 
         let persisted = read_persisted_config(&service);
         assert_eq!(persisted.default_endpoint, "cli");
+    }
+
+    #[tokio::test]
+    async fn test_update_global_config_prompt_cache_ttl_accepts_long_values() {
+        let service = create_test_service();
+
+        for ttl_seconds in [7200, 18000] {
+            let req = super::super::types::UpdateGlobalConfigRequest {
+                region: None,
+                credential_rpm: None,
+                credential_daily_max_requests: None,
+                prompt_cache_ttl_seconds: Some(ttl_seconds),
+                prompt_cache_accounting_enabled: None,
+                default_endpoint: None,
+                compression: None,
+            };
+
+            let result = service.update_global_config(req).await;
+            assert!(result.is_ok());
+
+            let config = service.get_global_config();
+            assert_eq!(config.prompt_cache_ttl_seconds, ttl_seconds);
+            assert_eq!(
+                service.prompt_cache_runtime.read().snapshot().ttl_seconds,
+                ttl_seconds
+            );
+
+            let persisted = read_persisted_config(&service);
+            assert_eq!(persisted.prompt_cache_ttl_seconds, ttl_seconds);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_global_config_prompt_cache_ttl_rejects_unsupported_value() {
+        let service = create_test_service();
+
+        let initial_req = super::super::types::UpdateGlobalConfigRequest {
+            region: None,
+            credential_rpm: None,
+            credential_daily_max_requests: None,
+            prompt_cache_ttl_seconds: Some(3600),
+            prompt_cache_accounting_enabled: None,
+            default_endpoint: None,
+            compression: None,
+        };
+        assert!(service.update_global_config(initial_req).await.is_ok());
+
+        let req = super::super::types::UpdateGlobalConfigRequest {
+            region: None,
+            credential_rpm: None,
+            credential_daily_max_requests: None,
+            prompt_cache_ttl_seconds: Some(1234),
+            prompt_cache_accounting_enabled: None,
+            default_endpoint: None,
+            compression: None,
+        };
+
+        let result = service.update_global_config(req).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Prompt Cache TTL 仅支持")
+        );
+
+        let config = service.get_global_config();
+        assert_eq!(config.prompt_cache_ttl_seconds, 3600);
+        assert_eq!(
+            service.prompt_cache_runtime.read().snapshot().ttl_seconds,
+            3600
+        );
+
+        let persisted = read_persisted_config(&service);
+        assert_eq!(persisted.prompt_cache_ttl_seconds, 3600);
     }
 
     #[test]

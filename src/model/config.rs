@@ -136,7 +136,7 @@ pub struct Config {
     #[serde(default)]
     pub compression: CompressionConfig,
 
-    /// Prompt Cache TTL（秒），默认 300 秒
+    /// Prompt Cache TTL（秒），默认 300 秒。对外协议仍按最多 1 小时上报。
     #[serde(default = "default_prompt_cache_ttl_seconds")]
     pub prompt_cache_ttl_seconds: u64,
 
@@ -306,8 +306,23 @@ fn default_auto_apply_time() -> String {
     "03:00".to_string()
 }
 
+pub const PROMPT_CACHE_TTL_5M_SECONDS: u64 = 300;
+pub const PROMPT_CACHE_TTL_1H_SECONDS: u64 = 3600;
+pub const PROMPT_CACHE_TTL_2H_SECONDS: u64 = 7200;
+pub const PROMPT_CACHE_TTL_5H_SECONDS: u64 = 18000;
+
+pub fn is_supported_prompt_cache_ttl_seconds(ttl_seconds: u64) -> bool {
+    matches!(
+        ttl_seconds,
+        PROMPT_CACHE_TTL_5M_SECONDS
+            | PROMPT_CACHE_TTL_1H_SECONDS
+            | PROMPT_CACHE_TTL_2H_SECONDS
+            | PROMPT_CACHE_TTL_5H_SECONDS
+    )
+}
+
 fn default_prompt_cache_ttl_seconds() -> u64 {
-    300
+    PROMPT_CACHE_TTL_5M_SECONDS
 }
 
 fn default_metrics_ring_buffer_size() -> usize {

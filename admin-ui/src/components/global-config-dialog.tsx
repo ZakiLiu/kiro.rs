@@ -229,8 +229,10 @@ export function GlobalConfigDialog({ open, onOpenChange }: GlobalConfigDialogPro
                 >
                   <option value="300">5 分钟</option>
                   <option value="3600">1 小时</option>
+                  <option value="7200">2 小时</option>
+                  <option value="18000">5 小时</option>
                 </select>
-                <p className="text-xs text-muted-foreground">仅支持 5 分钟和 1 小时两档，保存后立即生效</p>
+                <p className="text-xs text-muted-foreground">本地缓存可选 5 分钟 / 1 小时 / 2 小时 / 5 小时；对客户端协议仍最多按 1 小时上报</p>
               </div>
               <div className="flex items-center justify-between">
                 <div className="space-y-1">

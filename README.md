@@ -196,7 +196,7 @@ curl http://127.0.0.1:8990/v1/messages \
 | `credentialRpm` | number | - | 单凭据目标 RPM；`0` 禁用本地节流 |
 | `credentialDailyMaxRequests` | number | - | 单凭据每日最大请求数；`0` 禁用 |
 | `keepaliveIdleThresholdSeconds` | number | `7200` | 凭据保活探测空闲阈值（秒） |
-| `promptCacheTtlSeconds` | number | `300` | 本地 Prompt Cache TTL（秒） |
+| `promptCacheTtlSeconds` | number | `300` | 本地 Prompt Cache TTL（秒），支持 `300` / `3600` / `7200` / `18000`；对客户端协议仍最多按 1 小时上报 |
 | `promptCacheAccountingEnabled` | bool | `true` | 是否启用 cache usage 记账 |
 | `loadBalancingMode` | string | `priority` | `priority` 或 `balanced` |
 | `traceEnabled` | bool | `false` | 请求追踪（SQLite） |
