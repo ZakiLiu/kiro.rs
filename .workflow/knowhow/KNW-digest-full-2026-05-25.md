@@ -1,8 +1,8 @@
 ---
 related:
   - project-project
-  - knowhow-digest-full-2026-05-24
-  - knowhow-periodic-recovery-2026-05-25
+  - knowhow-knw-digest-full-2026-05-24
+  - knowhow-knw-periodic-recovery-2026-05-25
 ---
 # Knowledge Digest: Full Wiki (all entries)
 **Generated:** 2026-05-25 | **Entries:** 91 | **Health:** 99/100

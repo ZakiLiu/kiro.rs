@@ -55,3 +55,4 @@ tmp/
 .workflow/kg/
 .workflow/specs/.hit-log.jsonl
 .workflow/milestones/M-adhoc-*/
+.workflow/state.json.backup-*

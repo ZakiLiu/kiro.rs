@@ -12,8 +12,8 @@ keywords:
   - formatting
 related:
   - "spec:project:architecture-constraints"
-  - knowhow-decompose-src-2026-05-24
-  - knowhow-follow-provider-2026-05-24
+  - knowhow-knw-decompose-src-2026-05-24
+  - knowhow-knw-follow-provider-2026-05-24
 ---
 
 
@@ -80,5 +80,53 @@ Auto-generated from project analysis. Update manually as patterns evolve.
 ### estimate_tokens 启发式精度限制
 
 estimate_tokens() 使用简单字符分类估算（CJK ~0.67 tok/char, ASCII ~0.25 tok/char），无法对照真实值验证精度。input_tokens 有 contextUsagePercentage 交叉校准（context.rs:182），output/thinking 完全依赖估算。改进方向：可利用 MeteringEvent.usage(credit) 反推总 token 做一致性检查，但需要 credit→token 换算公式。参考：src/anthropic/stream/usage.rs:34-52。
+
+</spec-entry>
+
+<spec-entry category="coding" keywords="429,阈值,backoff,限流,重试策略,总计数器" date="2026-06-23" source="harvest:analyze-kiro-429-500-root-cause">
+
+### 429 重试策略：backoff + 固定阈值 + 总计数器
+
+429 处理三件套：(1) 429 路径添加 backoff（与 5xx 一致 `sleep(retry_delay(attempt))`）；(2) 连续 429 阈值固定为 3（3 个不同凭据连续返回 429 = 全局限流的确证）；(3) 新增不重置的 total_429_count，阈值 5（捕获 500/网络错误与 429 交替的边缘场景）。consecutive 计数沿用现有逻辑，total 计数跨凭据累计不重置。参考来源：.workflow/scratch/20260609-analyze-kiro-429-500-root-cause/。
+
+</spec-entry>
+
+<spec-entry category="coding" keywords="pdf,lopdf,feature-gated,提取,优雅降级,10MB" date="2026-06-23" source="harvest:plan-P1-features-refactoring">
+
+### PDF 提取 feature-gated + 优雅降级
+
+lopdf 依赖通过 Cargo feature `pdf-support` 门控（非默认编译）。PDF 处理在 convert_request 协议转换前执行，将 document 块替换为 text 块。提取失败必须降级为占位文本，不阻断请求。限制：原始 PDF 最大 10MB，提取文本最大 200K 字符。参考来源：.workflow/scratch/20260605-plan-P1-features-refactoring/。
+
+</spec-entry>
+
+<spec-entry category="coding" keywords="重构,mod.rs,re-export,机械化,零功能变更,commit" date="2026-06-23" source="harvest:plan-P1-features-refactoring">
+
+### 模块拆分机械化：mod.rs re-export 保证向后兼容
+
+大文件拆分为子模块：代码移入子模块文件，mod.rs 用 `pub mod` + `pub use` re-export 保持对外接口不变（下游 import 零修改）。约束：每次拆分一个 commit，cargo test 结果必须前后一致（零功能变更）。converter.rs → 6 子模块、stream.rs → 5 子模块、token_manager.rs → 5 子模块。参考来源：.workflow/scratch/20260605-plan-P1-features-refactoring/。
+
+</spec-entry>
+
+<spec-entry category="coding" keywords="preset,system_prompt,x-preset-id,注入顺序,压缩,config" date="2026-06-23" source="harvest:plan-P1-features-refactoring">
+
+### Prompt Preset 机制：x-preset-id 选择 + 压缩前注入
+
+Preset（可配置 system prompt 库）通过请求头 `x-preset-id` 选择，不用 prompt filter（安全审查后延期）。注入顺序：preset system_prompt 在压缩管道**之前** prepend，确保压缩后的请求包含 preset 内容。存储于 config.json 的 `presets` 数组字段。Admin UI 延期，先实现 API-only。参考来源：.workflow/scratch/20260605-plan-P1-features-refactoring/。
+
+</spec-entry>
+
+<spec-entry category="coding" keywords="contextUsageEvent,缓冲,input_tokens,精确计算,StreamContext,buffering" date="2026-06-23" source="harvest:plan-port-ops-frontend">
+
+### contextUsageEvent 缓冲模式实现精确 input_tokens
+
+StreamContext 增加 buffering mode flag，缓存 message_start 事件直到 contextUsageEvent 到达，用其 contextUsagePercentage 精确计算 input_tokens（取代纯启发式估算）。参考来源：.workflow/scratch/20260615-plan-port-ops-frontend/。
+
+</spec-entry>
+
+<spec-entry category="coding" keywords="cli.rs,endpoint,不可修改,防检测,只读约束,ide.rs" date="2026-06-23" source="harvest:analyze-P1-features-refactoring">
+
+### CLI endpoint 文件为只读约束
+
+kiro/endpoint/cli.rs 和 kiro/endpoint/ide.rs 在任何重构中不得修改——CLI endpoint 对反检测至关重要，是项目硬约束。参考来源：.workflow/scratch/20260605-analyze-P1-features-refactoring/。
 
 </spec-entry>

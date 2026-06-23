@@ -1,3 +1,8 @@
+---
+related:
+  - "spec:project:architecture-constraints"
+---
+
 # Roadmap: kiro-rs Fusion
 
 ## Overview

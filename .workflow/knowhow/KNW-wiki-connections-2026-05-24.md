@@ -2,7 +2,7 @@
 related:
   - "spec:project:architecture-constraints"
   - "spec:project:coding-conventions"
-  - knowhow-decompose-src-2026-05-24
+  - knowhow-knw-decompose-src-2026-05-24
 ---
 # Wiki Connections Report
 **Generated:** 2026-05-24 | **Mode:** --fix
@@ -37,10 +37,10 @@ related:
 spec:project:coding-conventions (in-degree: 6) ← 核心 hub
   ↑ test-conventions, quality-rules, ui-conventions, decompose, follow-provider, arch-constraints
 
-knowhow-decompose-src-2026-05-24 (in-degree: 4)
+knowhow-knw-decompose-src-2026-05-24 (in-degree: 4)
   ↑ coding-conventions, arch-constraints, follow-provider, learnings
 
-knowhow-follow-provider-2026-05-24 (in-degree: 3)
+knowhow-knw-follow-provider-2026-05-24 (in-degree: 3)
   ↑ coding-conventions, arch-constraints, learnings
 
 spec:project:architecture-constraints (in-degree: 3)

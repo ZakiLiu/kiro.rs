@@ -12,8 +12,8 @@ keywords:
   - structure
 related:
   - "spec:project:coding-conventions"
-  - knowhow-decompose-src-2026-05-24
-  - knowhow-follow-provider-2026-05-24
+  - knowhow-knw-decompose-src-2026-05-24
+  - knowhow-knw-follow-provider-2026-05-24
 ---
 
 
@@ -88,5 +88,37 @@ output_tokens 不含 thinking 内容。thinking tokens 通过 StreamContext.thin
 ### tokenUsageEvent 上游精确 token 计量
 
 Kiro 后端在流末端下发 tokenUsageEvent 事件，包含精确的 uncachedInputTokens、outputTokens(含thinking)、totalTokens、cacheReadInputTokens、cacheWriteInputTokens。proxy 通过 BillingSplit 转换为 Anthropic 三段不重叠计费口径（fresh 1×、cache_read 0.1×、cache_write 1.25×）。有 tokenUsageEvent 时覆盖本地估算；无此事件时回退到 estimate_tokens 启发式。参考：src/kiro/model/events/token_usage.rs、src/anthropic/stream/context.rs generate_final_events。
+
+</spec-entry>
+
+<spec-entry category="arch" keywords="additionalModelRequestFields,thinking,budget_tokens,effort,KiroRequest,映射" date="2026-06-23" source="harvest:analyze-thinking-profilearn">
+
+### thinking mode 经 additionalModelRequestFields 传递
+
+KiroRequest 需新增 additionalModelRequestFields 字段（类型 Option<serde_json::Value> 保持灵活）传递 thinking mode 配置。budget_tokens → effort 映射：≤4000→low, ≤16000→medium, ≤64000→high, else→xhigh（沿用参考项目 Kiro-account-manager 阈值）。参考来源：.workflow/scratch/20260614-analyze-thinking-profilearn/。
+
+</spec-entry>
+
+<spec-entry category="arch" keywords="THINKING_SIGNATURE_INVALID,自动重试,剥离,reasoningContent,一次性" date="2026-06-23" source="harvest:analyze-thinking-profilearn">
+
+### THINKING_SIGNATURE_INVALID 自动重试一次
+
+遇到 THINKING_SIGNATURE_INVALID 错误时，自动剥离 history 中的 reasoningContent 后重试一次（与参考项目一致），而非直接返回错误给客户端。重试仅执行一次。当前 kiro.rs 会直接返回错误给客户端，是 GAP-3 待补项。参考来源：.workflow/scratch/20260614-analyze-thinking-profilearn/。
+
+</spec-entry>
+
+<spec-entry category="arch" keywords="多格式,API,endpoints,Gemini,OpenAI Responses,模型映射,增量端点" date="2026-06-23" source="harvest:plan-multi-api-endpoints">
+
+### 多格式 API Endpoints 架构：增量端点 + 模型映射
+
+Wave 1：修复 Gemini 模块（阻塞编译）、扩展模型、实现 API 间模型映射。Wave 2：新增 OpenAI Responses 格式端点 + Claude Code alias，作为增量端点与 Wave 1 无交叉依赖。保持现有模块化 converter/stream/token_manager 结构，不回退为单文件。参考来源：.workflow/scratch/20260615-plan-multi-api-endpoints/。
+
+</spec-entry>
+
+<spec-entry category="arch" keywords="运维,前端移植,rusqlite bundled,config merge,recharts,dnd-kit" date="2026-06-23" source="harvest:plan-port-ops-frontend">
+
+### 运维管理 + 前端移植架构决策
+
+后端：rusqlite 用 bundled feature（trace_db）、Config 字段 merge 时带 serde defaults 保向后兼容。前端：新增 recharts + dnd-kit 依赖，保留现有组件结构。移植 admin 模块（trace_db/usage_stats/client_keys/groups/proxy_pool/auth flows）。保持模块化结构不拍平。参考来源：.workflow/scratch/20260615-plan-port-ops-frontend/。
 
 </spec-entry>

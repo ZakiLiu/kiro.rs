@@ -9,9 +9,9 @@ keywords:
   - gotcha
   - learning
 related:
-  - knowhow-decompose-src-2026-05-24
-  - knowhow-follow-provider-2026-05-24
-  - knowhow-periodic-recovery-2026-05-25
+  - knowhow-knw-decompose-src-2026-05-24
+  - knowhow-knw-follow-provider-2026-05-24
+  - knowhow-knw-periodic-recovery-2026-05-25
 ---
 
 
@@ -72,5 +72,13 @@ Milestone: M-adhoc-20260613-001800
 
 额度禁用凭据（QuotaExceeded/InsufficientBalance）的复活条件从『余额恢复 remaining>=1.0』改为『探测成功即复活』（recovery 循环 Ok 分支拍平：recover_credential_inner + update_balance_cache，零/负余额如实写入）。依据：上游允许超额使用，get_usage_limits_for 成功 = token 链路 + 上游 API 双重存活证明；余额仅供 LB 评分排序（select_best_candidate_id max-balance retain）与 TTL 参考，不做可用性过滤。402 信号链完整保留（report_quota_exhausted 再禁用），flapping 预期场景不发生（超额调用会成功），最坏 >=5min/轮且 failover 兜底。关键架构事实：禁用凭据对 balance/keepalive 循环不可见（all_enabled_credential_ids 滤 !disabled），recovery 循环是禁用凭据唯一探测口。测试陷阱：裸 KiroCredentials::default() 过不了 acquire_context（access_token=None → try_ensure_token 因缺 refreshToken 快速失败），acquire 成功路径测试必须显式 access_token + 未来 expires_at。
 Milestone: M-adhoc-20260613-012100
+
+</spec-entry>
+
+<spec-entry category="learning" keywords="output token,增长,正常行为,不可缓存,本地估算" date="2026-06-23" source="harvest:brainstorm-output-token-growth">
+
+### Output token 持续增长是正常行为，非 bug
+
+多轮对话中 output token 持续上升是自然行为——每轮产生新 output。output 永远不可缓存（Anthropic API 仅缓存 input prefix，output 每次新生成）。output token 数为本地估算（Kiro 上游只返回 credit 消耗，不返回 output token 数），不可与真实值精确对照。Non-goals：缓存 output（不可能）、减少生成量（proxy 不可控）、改上游协议（不可控）。
 
 </spec-entry>

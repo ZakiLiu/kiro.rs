@@ -1,7 +1,7 @@
 ---
 related:
-  - knowhow-follow-provider-2026-05-24
-  - knowhow-decompose-src-2026-05-24
+  - knowhow-knw-follow-provider-2026-05-24
+  - knowhow-knw-decompose-src-2026-05-24
   - "spec:project:coding-conventions-002"
   - "spec:project:architecture-constraints"
   - "spec:project:coding-conventions"

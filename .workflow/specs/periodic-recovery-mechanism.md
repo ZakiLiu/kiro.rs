@@ -3,9 +3,9 @@ title: Periodic Credential Recovery & Background Token Refresh
 category: resilience
 createdBy: wiki-digest
 related:
-  - knowhow-periodic-recovery-2026-05-25
+  - knowhow-knw-periodic-recovery-2026-05-25
   - "spec:project:coding-conventions"
-  - knowhow-follow-provider-2026-05-24
+  - knowhow-knw-follow-provider-2026-05-24
 ---
 
 # Periodic Credential Recovery & Background Token Refresh
