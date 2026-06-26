@@ -677,15 +677,15 @@ impl KiroProvider {
 
             // 401/403 凭据问题
             if matches!(status.as_u16(), 401 | 403) {
-                // 账户暂停：渐进式处置（首次冷却 1h，再次永久禁用）
+                // 账户暂停 / TEMPORARILY_SUSPENDED：直接永久禁用
                 if is_suspended_signal(&body) {
                     tracing::warn!(
-                        "凭据 #{} 账户暂停: {} {}",
+                        "凭据 #{} 账户暂停（永久禁用）: {} {}",
                         ctx.id,
                         status,
                         body
                     );
-                    self.token_manager.report_account_suspended(ctx.id);
+                    self.token_manager.mark_authentication_failed(ctx.id);
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "MCP 请求失败（账户暂停）: {} {}",
@@ -1178,17 +1178,17 @@ impl KiroProvider {
                 }
             }
 
-            // 401/403 - 更可能是凭据/权限问题：计入失败并允许故障转移
+            // 401/403 - 凭据/权限问题：直接永久禁用
             if matches!(status.as_u16(), 401 | 403) {
-                // 账户暂停：渐进式处置（首次冷却 1h，再次永久禁用）
+                // 账户暂停 / TEMPORARILY_SUSPENDED：直接永久禁用
                 if is_suspended_signal(&body) {
                     tracing::warn!(
-                        "凭据 #{} 账户暂停: {} {}",
+                        "凭据 #{} 账户暂停（永久禁用）: {} {}",
                         ctx.id,
                         status,
                         body
                     );
-                    self.token_manager.report_account_suspended(ctx.id);
+                    self.token_manager.mark_authentication_failed(ctx.id);
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "{} API 请求失败（账户暂停）: {} {}",

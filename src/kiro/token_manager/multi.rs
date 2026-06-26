@@ -3346,7 +3346,7 @@ impl MultiTokenManager {
                 if is_invalid_grant_error(&err) {
                     self.mark_authentication_failed(id);
                 } else if is_temporarily_suspended_error(&err) {
-                    self.report_account_suspended(id);
+                    self.mark_authentication_failed(id);
                 }
                 Err(err)
             }
@@ -3712,6 +3712,7 @@ impl MultiTokenManager {
     ///
     /// - 第 1 次 suspended 信号：冷却 1 小时后自动回池
     /// - 第 2 次及以上：永久禁用，不参与调度（需通过 Admin API 手动恢复）
+    #[allow(dead_code)]
     pub fn report_account_suspended(&self, id: u64) -> bool {
         let count = {
             let mut entries = self.entries.lock();
