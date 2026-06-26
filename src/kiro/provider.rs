@@ -709,17 +709,16 @@ impl KiroProvider {
                     continue;
                 }
 
-                // bearer token 失效：刷新 token 并标记为已失败（换下个凭据重试）
+                // bearer token 失效：刷新 token 后重试同一凭据
                 if endpoint.is_bearer_token_invalid(&body) && forced_token_refresh.insert(ctx.id) {
                     tracing::warn!(
-                        "MCP 请求失败（Bearer token 无效，触发刷新，尝试 {}/{}）: {} {}",
+                        "MCP 请求失败（Bearer token 无效，触发刷新后重试，尝试 {}/{}）: {} {}",
                         attempt + 1,
                         max_retries,
                         status,
                         body
                     );
                     self.token_manager.invalidate_access_token(ctx.id);
-                    failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
                     continue;
                 }
@@ -1229,17 +1228,16 @@ impl KiroProvider {
                     continue;
                 }
 
-                // bearer token 失效：刷新 token 并标记为已失败（换下个凭据重试）
+                // bearer token 失效：刷新 token 后重试同一凭据（确认是临时过期还是永久失效）
                 if endpoint.is_bearer_token_invalid(&body) && forced_token_refresh.insert(ctx.id) {
                     tracing::warn!(
-                        "API 请求失败（Bearer token 无效，触发刷新，尝试 {}/{}）: {} {}",
+                        "API 请求失败（Bearer token 无效，触发刷新后重试，尝试 {}/{}）: {} {}",
                         attempt + 1,
                         max_retries,
                         status,
                         body
                     );
                     self.token_manager.invalidate_access_token(ctx.id);
-                    failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "{} API 请求失败: {} {}",
                         api_type,
@@ -1249,7 +1247,7 @@ impl KiroProvider {
                     continue;
                 }
 
-                // 鉴权失败：直接永久禁用（不走失败计数，不参与自动恢复）
+                // 鉴权失败（含 bearer 刷新后仍失败）：直接永久禁用
                 tracing::warn!(
                     "凭据 #{} 鉴权失败（永久禁用）: {} {}",
                     ctx.id,
