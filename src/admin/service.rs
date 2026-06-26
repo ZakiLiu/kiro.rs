@@ -2981,7 +2981,7 @@ impl AdminService {
         Ok(ImageUpdateResponse {
             success: true,
             message: format!(
-                "已替换为 v{}，进程将在 2 秒后退出，由容器重启策略接管",
+                "已替换为 v{}，服务将在约 30 秒后完成重启",
                 version
             ),
             output: Some(format!(
@@ -3035,7 +3035,7 @@ impl AdminService {
         Ok(ImageUpdateResponse {
             success: true,
             message: format!(
-                "已回退到 {}，进程将在 2 秒后退出，由容器重启策略接管",
+                "已回退到 {}，服务将在约 30 秒后完成重启",
                 previous_label
             ),
             output: Some(format!("rolled back to: {}", previous_label)),
