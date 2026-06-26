@@ -712,6 +712,7 @@ impl KiroProvider {
                 // bearer token 失效：刷新 token 后重试同一凭据
                 if endpoint.is_bearer_token_invalid(&body) && forced_token_refresh.insert(ctx.id) {
                     tracing::warn!(
+                        credential_id = %ctx.id,
                         "MCP 请求失败（Bearer token 无效，触发刷新后重试，尝试 {}/{}）: {} {}",
                         attempt + 1,
                         max_retries,
@@ -1231,6 +1232,8 @@ impl KiroProvider {
                 // bearer token 失效：刷新 token 后重试同一凭据（确认是临时过期还是永久失效）
                 if endpoint.is_bearer_token_invalid(&body) && forced_token_refresh.insert(ctx.id) {
                     tracing::warn!(
+                        credential_id = %ctx.id,
+                        endpoint = %endpoint_name,
                         "API 请求失败（Bearer token 无效，触发刷新后重试，尝试 {}/{}）: {} {}",
                         attempt + 1,
                         max_retries,
@@ -2873,7 +2876,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(
             parsed["profileArn"].as_str().unwrap(),
-            SOCIAL_PROFILE_ARN
+            BUILDER_ID_PROFILE_ARN
         );
     }
 
