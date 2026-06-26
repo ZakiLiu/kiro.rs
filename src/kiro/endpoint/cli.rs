@@ -266,33 +266,22 @@ impl CliEndpoint {
 
     /// Per-request `profileArn` injection (multi-credential safe).
     ///
-    /// Without this, every request reuses `state.profile_arn` — a snapshot of
-    /// the FIRST credential taken at startup (main.rs). When the pool rotates
-    /// to a different credential, the request would carry credential[i]'s
-    /// bearer token but credential[0]'s ARN — server-side this either 4xx's
-    /// or accounts usage to the wrong tenant.
-    ///
-    /// AWS SSO OIDC (`idc` / `builder-id`) credentials still use the CLI
-    /// endpoint path where profileArn must be stripped. Social / Free
-    /// credentials use `effective_profile_arn()` so the shared Social ARN is
-    /// injected even when old credentials were imported without one.
+    /// 所有凭据类型统一通过 `streaming_profile_arn()` 获取正确的 ARN：
+    /// - Social / Free → SOCIAL_PROFILE_ARN
+    /// - IdC / Builder-ID → 真实 ARN 或 BUILDER_ID_PROFILE_ARN 占位符
+    /// - API Key → 不注入
     fn inject_profile_arn(body: &str, credentials: &KiroCredentials) -> anyhow::Result<String> {
         let mut request: serde_json::Value = serde_json::from_str(body)?;
         let Some(obj) = request.as_object_mut() else {
             return Ok(body.to_string());
         };
-        let is_sso_oidc = matches!(
-            credentials.auth_method.as_deref(),
-            Some("builder-id") | Some("idc")
-        ) || (credentials.client_id.is_some()
-            && credentials.client_secret.is_some());
-        if is_sso_oidc {
-            obj.remove("profileArn");
-        } else if let Some(arn) = credentials.effective_profile_arn() {
+        if let Some(arn) = credentials.streaming_profile_arn() {
             obj.insert(
                 "profileArn".to_string(),
-                serde_json::Value::String(arn.to_string()),
+                serde_json::Value::String(arn),
             );
+        } else {
+            obj.remove("profileArn");
         }
         Ok(serde_json::to_string(&request)?)
     }

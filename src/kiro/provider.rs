@@ -2208,13 +2208,13 @@ mod tests {
 
     /// Round 4 regression: IDC / Builder-ID credentials must NOT send profileArn.
     #[test]
-    fn test_cli_endpoint_strips_profile_arn_for_sso_oidc() {
+    fn test_cli_endpoint_injects_profile_arn_for_sso_oidc() {
         let endpoint = CliEndpoint::new();
         let machine_id = "a".repeat(64);
         let config = Config::default();
         let mut credentials = KiroCredentials::default();
         credentials.auth_method = Some("idc".to_string());
-        credentials.profile_arn = Some("arn:should-be-stripped".to_string());
+        credentials.profile_arn = Some("arn:real-idc-profile".to_string());
         let ctx = RequestContext {
             credentials: &credentials,
             token: "test_token",
@@ -2223,16 +2223,16 @@ mod tests {
         };
         let body = serde_json::json!({
             "conversationState": {"conversationId": "c1", "currentMessage": {"userInputMessage": {"content": "hi"}}},
-            "profileArn": "arn:should-also-be-stripped"
+            "profileArn": "arn:stale-old-value"
         });
         let result = endpoint
             .transform_api_body(&serde_json::to_string(&body).unwrap(), &ctx)
             .unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert!(
-            parsed.get("profileArn").is_none(),
-            "IDC/Builder-ID auth method must strip profileArn (got: {:?})",
-            parsed.get("profileArn")
+        assert_eq!(
+            parsed["profileArn"].as_str().unwrap(),
+            "arn:real-idc-profile",
+            "IdC credentials must inject their own profileArn"
         );
     }
 
