@@ -68,6 +68,8 @@ struct CredentialEntry {
     last_used_at: Option<String>,
     /// refreshToken 的 SHA-256 哈希缓存（避免 snapshot 重复计算）
     refresh_token_hash: Option<String>,
+    /// 累计收到 suspended 信号的次数（第 1 次冷却 1h，第 2 次起永久禁用）
+    suspended_count: u32,
 }
 
 /// 自愈原因（内部使用，用于判断是否可自动恢复）
@@ -507,6 +509,7 @@ impl MultiTokenManager {
                     success_count: 0,
                     last_used_at: None,
                     refresh_token_hash,
+                    suspended_count: 0,
                 }
             })
             .collect();
@@ -2683,6 +2686,7 @@ impl MultiTokenManager {
             entry.refresh_failure_count = 0;
             entry.auto_heal_reason = None;
             entry.disable_reason = None;
+            entry.suspended_count = 0;
             true
         } else {
             false
@@ -2871,6 +2875,7 @@ impl MultiTokenManager {
                         cooldown_remaining_secs: None,
                         rate_limited: false,
                         rate_limit_remaining_secs: None,
+                        suspended_count: e.suspended_count,
                     }
                 })
                 .collect()
@@ -3161,6 +3166,7 @@ impl MultiTokenManager {
             entry.recovery_attempts = 0;
             entry.auto_heal_reason = None;
             entry.disable_reason = None;
+            entry.suspended_count = 0;
         }
         self.cooldown_manager.clear_cooldown(id);
         self.rate_limiter.reset(id);
@@ -3525,6 +3531,7 @@ impl MultiTokenManager {
                 success_count: 0,
                 last_used_at: None,
                 refresh_token_hash: entry_secret_hash,
+                suspended_count: 0,
             });
         }
 
@@ -3700,18 +3707,56 @@ impl MultiTokenManager {
             .set_cooldown_with_duration(id, reason, duration)
     }
 
-    /// 账户暂停：按临时上游状态设置长冷却，并解除亲和绑定。
+    /// 账户暂停：渐进式处置。
     ///
-    /// 上游 `TEMPORARILY_SUSPENDED` / `AccountSuspended` 类信号可能是临时风控，
-    /// 不能持久化禁用凭据；到期后由 cooldown 自动回池。
+    /// - 第 1 次 suspended 信号：冷却 1 小时后自动回池
+    /// - 第 2 次及以上：永久禁用，不参与调度（需通过 Admin API 手动恢复）
     pub fn report_account_suspended(&self, id: u64) -> bool {
-        self.set_credential_cooldown_with_duration(id, CooldownReason::AccountSuspended, None);
+        let count = {
+            let mut entries = self.entries.lock();
+            if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                entry.suspended_count += 1;
+                entry.last_used_at = Some(Utc::now().to_rfc3339());
+                entry.suspended_count
+            } else {
+                return self.available_count() > 0;
+            }
+        };
+
         self.affinity.remove_by_credential(id);
         self.rate_limiter.reset(id);
-        tracing::warn!(
-            "凭据 #{} 收到 suspended 信号，已进入账户暂停冷却（不永久禁用）",
-            id
-        );
+
+        if count >= 2 {
+            // 第 2 次起：永久禁用
+            {
+                let mut entries = self.entries.lock();
+                if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                    entry.disabled = true;
+                    entry.disabled_at = Some(Utc::now());
+                    entry.auto_heal_reason = Some(AutoHealReason::Manual);
+                    entry.disable_reason = Some(DisableReason::AccountSuspended);
+                    entry.failure_count = MAX_FAILURES_PER_CREDENTIAL;
+                }
+            }
+            tracing::error!(
+                "凭据 #{} 第 {} 次收到 suspended 信号，已永久禁用（需手动恢复）",
+                id,
+                count
+            );
+            self.save_stats_debounced();
+        } else {
+            // 第 1 次：冷却 1 小时
+            self.cooldown_manager.set_cooldown_with_duration(
+                id,
+                CooldownReason::AccountSuspended,
+                Some(StdDuration::from_secs(3600)),
+            );
+            tracing::warn!(
+                "凭据 #{} 首次收到 suspended 信号，已进入 1 小时冷却",
+                id
+            );
+        }
+
         self.available_count() > 0
     }
 

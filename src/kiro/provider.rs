@@ -677,10 +677,10 @@ impl KiroProvider {
 
             // 401/403 凭据问题
             if matches!(status.as_u16(), 401 | 403) {
-                // 账户暂停：设长冷却并切换，避免临时风控被误持久化禁用
+                // 账户暂停：渐进式处置（首次冷却 1h，再次永久禁用）
                 if is_suspended_signal(&body) {
                     tracing::warn!(
-                        "凭据 #{} 账户暂停，已进入冷却（不永久禁用）: {} {}",
+                        "凭据 #{} 账户暂停: {} {}",
                         ctx.id,
                         status,
                         body
@@ -1172,10 +1172,10 @@ impl KiroProvider {
 
             // 401/403 - 更可能是凭据/权限问题：计入失败并允许故障转移
             if matches!(status.as_u16(), 401 | 403) {
-                // 账户暂停：设长冷却并切换，避免临时风控被误持久化禁用
+                // 账户暂停：渐进式处置（首次冷却 1h，再次永久禁用）
                 if is_suspended_signal(&body) {
                     tracing::warn!(
-                        "凭据 #{} 账户暂停，已进入冷却（不永久禁用）: {} {}",
+                        "凭据 #{} 账户暂停: {} {}",
                         ctx.id,
                         status,
                         body

@@ -370,6 +370,8 @@ pub struct CredentialEntrySnapshot {
     pub rate_limited: bool,
     /// 本地速率限制剩余秒数（向上取整）
     pub rate_limit_remaining_secs: Option<u64>,
+    /// 累计收到 suspended 信号的次数
+    pub suspended_count: u32,
 }
 
 /// 凭据管理器状态快照

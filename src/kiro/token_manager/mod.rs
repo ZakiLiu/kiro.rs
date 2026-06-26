@@ -529,11 +529,13 @@ mod tests {
         let manager =
             MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
 
+        // 第一次 suspended：冷却 1 小时
         let has_available = manager.report_account_suspended(1);
         assert!(has_available);
         let (reason, remaining) = manager.cooldown_manager().check_cooldown(1).unwrap();
         assert_eq!(reason, CooldownReason::AccountSuspended);
-        assert!(remaining > std::time::Duration::from_secs(23 * 60 * 60));
+        assert!(remaining > std::time::Duration::from_secs(3500));
+        assert!(remaining < std::time::Duration::from_secs(3700));
 
         let snapshot = manager.snapshot();
         let entry1 = snapshot.entries.iter().find(|e| e.id == 1).unwrap();
@@ -541,12 +543,58 @@ mod tests {
         assert_eq!(entry1.disable_reason, None);
         assert!(!entry1.ready);
         assert_eq!(entry1.cooldown_reason.as_deref(), Some("账户暂停"));
+        assert_eq!(entry1.suspended_count, 1);
         assert_eq!(snapshot.available, 2);
         assert_eq!(snapshot.ready, 1);
 
         // acquire 跳过冷却中的凭据 1，选中凭据 2
         let ctx = manager.acquire_context().await.unwrap();
         assert_eq!(ctx.id, 2);
+    }
+
+    #[tokio::test]
+    async fn test_report_account_suspended_second_time_permanently_disables() {
+        let config = Config::default();
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("t1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        cred1.priority = 0;
+
+        let mut cred2 = KiroCredentials::default();
+        cred2.access_token = Some("t2".to_string());
+        cred2.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        cred2.priority = 0;
+
+        let manager =
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap();
+
+        // 第一次：冷却 1h
+        manager.report_account_suspended(1);
+        let snapshot = manager.snapshot();
+        let entry1 = snapshot.entries.iter().find(|e| e.id == 1).unwrap();
+        assert!(!entry1.disabled);
+        assert_eq!(entry1.suspended_count, 1);
+
+        // 第二次：永久禁用
+        let has_available = manager.report_account_suspended(1);
+        assert!(has_available);
+        let snapshot = manager.snapshot();
+        let entry1 = snapshot.entries.iter().find(|e| e.id == 1).unwrap();
+        assert!(entry1.disabled);
+        assert_eq!(entry1.disable_reason, Some(DisableReason::AccountSuspended));
+        assert_eq!(entry1.suspended_count, 2);
+        assert_eq!(snapshot.available, 1);
+
+        // acquire 跳过被永久禁用的凭据 1
+        let ctx = manager.acquire_context().await.unwrap();
+        assert_eq!(ctx.id, 2);
+
+        // reset_and_enable 应重置 suspended_count
+        manager.reset_and_enable(1).unwrap();
+        let snapshot = manager.snapshot();
+        let entry1 = snapshot.entries.iter().find(|e| e.id == 1).unwrap();
+        assert!(!entry1.disabled);
+        assert_eq!(entry1.suspended_count, 0);
     }
 
     #[test]
