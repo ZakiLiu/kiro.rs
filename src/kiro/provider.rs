@@ -2873,7 +2873,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(
             parsed["profileArn"].as_str().unwrap(),
-            BUILDER_ID_PROFILE_ARN
+            SOCIAL_PROFILE_ARN
         );
     }
 

@@ -324,18 +324,18 @@ impl KiroCredentials {
             return false;
         }
 
-        if self.is_social_login()
-            && self
-                .profile_arn
-                .as_deref()
-                .is_some_and(is_placeholder_profile_arn)
+        // 占位符 ARN → 替换为 SOCIAL_PROFILE_ARN（所有凭据类型通用）
+        if self
+            .profile_arn
+            .as_deref()
+            .is_some_and(is_placeholder_profile_arn)
         {
             self.profile_arn = Some(SOCIAL_PROFILE_ARN.to_string());
             return true;
         }
 
         if self.profile_arn.is_none() {
-            self.profile_arn = Some(self.default_profile_arn().to_string());
+            self.profile_arn = Some(SOCIAL_PROFILE_ARN.to_string());
             return true;
         }
 
@@ -375,36 +375,28 @@ impl KiroCredentials {
 
     /// 返回可发送给 REST / MCP 头部类接口的真实 profileArn。
     ///
-    /// BuilderID 占位符不是 REST `ListAvailableModels` / `getUsageLimits` 可接受的真实
-    /// profile，必须跳过；Social / Free 凭据缺失 ARN 或误带 BuilderID 占位符时回退
-    /// 官方 Social 共享 ARN。
+    /// 占位符或缺失时统一回退到 SOCIAL_PROFILE_ARN（所有凭据类型通用）。
     pub fn effective_profile_arn(&self) -> Option<&str> {
         match self.profile_arn.as_deref() {
             Some(arn) if !is_placeholder_profile_arn(arn) => Some(arn),
-            Some(_) if self.is_social_login() => Some(SOCIAL_PROFILE_ARN),
-            Some(_) => None,
-            None if self.is_social_login() => Some(SOCIAL_PROFILE_ARN),
-            None => None,
+            Some(_) => Some(SOCIAL_PROFILE_ARN),
+            None => Some(SOCIAL_PROFILE_ARN),
         }
     }
 
     /// 返回流式聊天端点应发送的 profileArn。
     ///
     /// 新版 `generateAssistantResponse` 对非 API Key 凭据要求请求体携带 profileArn。
-    /// Social / Free 凭据缺失时使用 Social 共享 ARN，BuilderID 缺失时使用占位符。
+    /// 占位符或缺失时统一回退到 SOCIAL_PROFILE_ARN。
     pub fn streaming_profile_arn(&self) -> Option<String> {
         if self.is_api_key_credential() {
             return None;
         }
 
-        if let Some(arn) = self.profile_arn.as_deref() {
-            if self.is_social_login() && is_placeholder_profile_arn(arn) {
-                return Some(SOCIAL_PROFILE_ARN.to_string());
-            }
-            return Some(arn.to_string());
+        match self.profile_arn.as_deref() {
+            Some(arn) if !is_placeholder_profile_arn(arn) => Some(arn.to_string()),
+            _ => Some(SOCIAL_PROFILE_ARN.to_string()),
         }
-
-        Some(self.default_profile_arn().to_string())
     }
 
     /// 检查凭据是否支持 Opus 模型
@@ -517,13 +509,13 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_profile_arn_skips_builder_id_placeholder() {
+    fn test_effective_profile_arn_falls_back_to_social_for_placeholder() {
         let mut cred = KiroCredentials {
             auth_method: Some("idc".to_string()),
             ..Default::default()
         };
         cred.profile_arn = Some(BUILDER_ID_PROFILE_ARN.to_string());
-        assert_eq!(cred.effective_profile_arn(), None);
+        assert_eq!(cred.effective_profile_arn(), Some(SOCIAL_PROFILE_ARN));
 
         cred.profile_arn = Some(SOCIAL_PROFILE_ARN.to_string());
         assert_eq!(cred.effective_profile_arn(), Some(SOCIAL_PROFILE_ARN));
@@ -587,7 +579,7 @@ mod tests {
         };
         assert_eq!(
             builder.streaming_profile_arn().as_deref(),
-            Some(BUILDER_ID_PROFILE_ARN)
+            Some(SOCIAL_PROFILE_ARN)
         );
 
         let api = KiroCredentials {
