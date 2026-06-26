@@ -2826,44 +2826,38 @@ impl MultiTokenManager {
 
         tracing::info!("正在初始化 {} 个凭据的余额...", credential_ids.len());
 
-        let mut success_count = 0;
+        let mut success_count = 0usize;
+        let concurrency = 10;
 
-        // 顺序查询每个凭据的余额，间隔 0.5 秒避免触发限流
-        for (index, &id) in credential_ids.iter().enumerate() {
-            match self.get_usage_limits_for(id).await {
-                Ok(limits) => {
-                    // 计算剩余额度
-                    let used = limits.current_usage();
-                    let limit = limits.usage_limit();
-                    let remaining = (limit - used).max(0.0);
+        for chunk in credential_ids.chunks(concurrency) {
+            let results = futures::future::join_all(chunk.iter().map(|&id| async move {
+                match self.get_usage_limits_for(id).await {
+                    Ok(limits) => {
+                        let used = limits.current_usage();
+                        let limit = limits.usage_limit();
+                        let remaining = (limit - used).max(0.0);
 
-                    self.update_balance_cache(id, remaining);
+                        self.update_balance_cache(id, remaining);
+                        self.check_pro_overuse_disable(id, limits.subscription_title(), used);
+                        self.auto_assign_subscription_group(id, limits.subscription_title());
 
-                    // KIRO PRO 超额检查
-                    self.check_pro_overuse_disable(id, limits.subscription_title(), used);
-                    // 自动按订阅等级归类分组
-                    self.auto_assign_subscription_group(id, limits.subscription_title());
-
-                    if remaining < 1.0 {
-                        tracing::info!(
-                            "凭据 #{} 余额偏低 ({:.2})，保持可用（等待上游 402 判定）",
-                            id,
-                            remaining
-                        );
-                    } else {
-                        tracing::info!("凭据 #{} 余额初始化成功: {:.2}", id, remaining);
+                        if remaining < 1.0 {
+                            tracing::info!(
+                                "凭据 #{} 余额偏低 ({:.2})，保持可用（等待上游 402 判定）",
+                                id,
+                                remaining
+                            );
+                        }
+                        true
                     }
-                    success_count += 1;
+                    Err(e) => {
+                        tracing::warn!("凭据 #{} 余额查询失败: {}", id, e);
+                        false
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("凭据 #{} 余额查询失败: {}", id, e);
-                }
-            }
-
-            // 非最后一个凭据时，间隔 0.5 秒
-            if index < credential_ids.len() - 1 {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
+            }))
+            .await;
+            success_count += results.iter().filter(|&&ok| ok).count();
         }
 
         tracing::info!(
