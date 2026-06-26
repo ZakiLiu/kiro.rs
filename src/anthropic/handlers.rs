@@ -1242,10 +1242,20 @@ pub async fn post_messages(
         .await;
     }
 
-    // 混合工具场景：剔除 web_search 后转发上游
+    // 混合工具场景：路由到 agentic WebSearch 循环
     if websearch::has_web_search_tool(&payload) {
-        tracing::info!("检测到混合工具列表中的 web_search，剔除后转发上游");
+        tracing::info!("检测到混合工具列表中的 web_search，路由到 agentic WebSearch 循环");
+        let is_stream = payload.stream;
         websearch::strip_web_search_tools(&mut payload);
+        let compression = state.compression_config.read().clone();
+        return super::websearch_loop::run_web_search_loop(
+            provider,
+            payload,
+            is_stream,
+            compression,
+            auth.group.as_deref(),
+        )
+        .await;
     }
 
     // 剔除空 text content block（客户端可能将 tool_use-only 响应中的空 text block 写回 history）

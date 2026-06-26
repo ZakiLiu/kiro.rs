@@ -33,5 +33,6 @@ mod tool_compression;
 mod truncation;
 pub mod types;
 mod websearch;
+mod websearch_loop;
 
 pub use middleware::PromptCacheRuntime;

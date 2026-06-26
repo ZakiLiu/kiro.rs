@@ -12,6 +12,7 @@ mod usage;
 pub use context::StreamContext;
 pub use event::SseEvent;
 pub(crate) use usage::CacheUsageBreakdown;
+pub(crate) const THINKING_SIGNATURE_PLACEHOLDER: &str = "kiro-rs-thinking-signature";
 #[cfg(test)]
 mod tests {
     use super::state::SseStateManager;

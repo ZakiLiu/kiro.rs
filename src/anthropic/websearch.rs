@@ -617,7 +617,7 @@ fn generate_websearch_events(
 }
 
 /// 生成搜索结果摘要
-fn generate_search_summary(query: &str, results: &Option<WebSearchResults>) -> String {
+pub(super) fn generate_search_summary(query: &str, results: &Option<WebSearchResults>) -> String {
     let mut summary = format!("Here are the search results for \"{}\":\n\n", query);
 
     if let Some(results) = results {
@@ -799,13 +799,13 @@ pub async fn handle_websearch_request(
     (StatusCode::OK, Json(response_body)).into_response()
 }
 
-struct ParsedMcpCallResult {
-    response: McpResponse,
-    credential_id: u64,
+pub(super) struct ParsedMcpCallResult {
+    pub(super) response: McpResponse,
+    pub(super) credential_id: u64,
 }
 
 /// 调用 Kiro MCP API
-async fn call_mcp_api(
+pub(super) async fn call_mcp_api(
     provider: &crate::kiro::provider::KiroProvider,
     request: &McpRequest,
     group: Option<&str>,
