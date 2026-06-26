@@ -1,5 +1,35 @@
 # Changelog
 
+## [v2.0.24] - 2026-06-27
+
+### Fixed
+- **bearer token 二次验证修复** — 回退 bearer token invalid 路径的 `failed_ids.push`，恢复刷新后重试同一凭据的逻辑，确保永久失效的凭据能被禁用
+- **鉴权失败记录错误详情** — `mark_authentication_failed` 新增 `disableMessage` 字段，存储上游原始错误体，前端凭据卡片直接展示禁用原因
+- **清除已禁用跳过手动禁用和超额凭据** — 删除按钮排除 `Manual` 和 `QuotaExceeded` 凭据
+- **清除已禁用并行化** — 改用 `Promise.allSettled` 并行删除，大量凭据时不再串行等待
+
+### Changed
+- **占位符 ARN 统一替换** — 所有凭据类型的 BuilderID 占位符 ARN 统一替换为 `SOCIAL_PROFILE_ARN`，解决 IdC 凭据在部分端点因无效 ARN 被拒的问题
+- **IdC 凭据注入 profileArn** — CLI 端点不再 strip SSO OIDC 的 profileArn，统一通过 `streaming_profile_arn()` 注入
+- **失败计数补全** — `mark_authentication_failed` / `report_quota_exhausted` 补调 `record_api_fail`
+
+### Performance
+- **启动余额初始化 10x 加速** — 改为 10 并发批量查询，100 个凭据从 2 分钟降到约 10 秒
+
+## [v2.0.18] - 2026-06-26
+
+### Fixed
+- **profileArn 缺失故障转移** — 400 `profileArn is required` 改为永久禁用凭据并故障转移，不再把错误返给用户
+- **QuotaExceeded 禁用到下月 1 号** — `MONTHLY_REQUEST_COUNT` 额度耗尽的凭据禁用到下月 1 号 0 点才允许恢复
+- **更新重启提示修正** — 从「2 秒后退出」改为「约 30 秒后完成重启」
+
+## [v2.0.16] - 2026-06-26
+
+### Fixed
+- **鉴权失败凭据直接永久禁用** — 401/403 非 suspended 鉴权失败直接调 `mark_authentication_failed`，不再走失败计数（避免被自动恢复拉回）
+- **TEMPORARILY_SUSPENDED 直接永久禁用** — suspended 信号不再走渐进式处置（首次冷却 1h → 第 2 次永久禁用），一次即永久禁用
+- **前端禁用原因映射修正** — 补齐 `AuthenticationFailed` / `AccountSuspended`，修正 `FailureLimit` / `RefreshFailureLimit` 与后端 enum 对齐
+
 ## [v2.0.0] - 2026-06-17
 
 ### Added
