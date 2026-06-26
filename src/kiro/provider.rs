@@ -709,12 +709,20 @@ impl KiroProvider {
                     continue;
                 }
 
-                let has_available = self.token_manager.report_failure(ctx.id);
-                if !has_available {
-                    anyhow::bail!("MCP 请求失败（所有凭据已用尽）: {} {}", status, body);
-                }
-                last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
+                // 鉴权失败：直接永久禁用（不走失败计数，不参与自动恢复）
+                tracing::warn!(
+                    "凭据 #{} 鉴权失败（永久禁用）: {} {}",
+                    ctx.id,
+                    status,
+                    body
+                );
+                self.token_manager.mark_authentication_failed(ctx.id);
                 failed_ids.push(ctx.id);
+                last_error = Some(anyhow::anyhow!(
+                    "MCP 请求失败（鉴权失败）: {} {}",
+                    status,
+                    body
+                ));
                 continue;
             }
 
@@ -1210,32 +1218,21 @@ impl KiroProvider {
                     continue;
                 }
 
+                // 鉴权失败：直接永久禁用（不走失败计数，不参与自动恢复）
                 tracing::warn!(
-                    "API 请求失败（可能为凭据错误，尝试 {}/{}）: {} {}",
-                    attempt + 1,
-                    max_retries,
+                    "凭据 #{} 鉴权失败（永久禁用）: {} {}",
+                    ctx.id,
                     status,
                     body
                 );
-
-                let has_available = self.token_manager.report_failure(ctx.id);
-                if !has_available {
-                    anyhow::bail!(
-                        "{} API 请求失败（所有凭据已用尽）: {} {}",
-                        api_type,
-                        status,
-                        body
-                    );
-                }
-
+                self.token_manager.mark_authentication_failed(ctx.id);
+                failed_ids.push(ctx.id);
                 last_error = Some(anyhow::anyhow!(
-                    "{} API 请求失败: {} {}",
+                    "{} API 请求失败（鉴权失败）: {} {}",
                     api_type,
                     status,
                     body
                 ));
-                // P0#1：401/403 是凭据级真错误，必须切换避免再撞同一个
-                failed_ids.push(ctx.id);
                 continue;
             }
 

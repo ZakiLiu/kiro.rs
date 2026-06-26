@@ -2269,6 +2269,7 @@ impl MultiTokenManager {
     ///
     /// # Arguments
     /// * `id` - 凭据 ID（来自 CallContext）
+    #[allow(dead_code)]
     pub fn report_failure(&self, id: u64) -> bool {
         let result = {
             let mut entries = self.entries.lock();
@@ -2577,10 +2578,10 @@ impl MultiTokenManager {
         }
     }
 
-    /// 标记凭据为认证失败（如 invalid_grant）
+    /// 标记凭据为认证失败（invalid_grant / 401 / 403 鉴权拒绝）
     ///
-    /// invalid_grant 代表 refresh token 已被上游明确拒绝，按终态问题处理：
-    /// 立即禁用、解除亲和绑定、写回 credentials，避免重启后反复回池触发 429/401 噪声。
+    /// 按终态问题处理：立即永久禁用、解除亲和绑定、写回 credentials，
+    /// 不参与自动恢复（需通过 Admin API 手动恢复）。
     pub fn mark_authentication_failed(&self, id: u64) {
         let mut entries = self.entries.lock();
         if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
@@ -2592,7 +2593,7 @@ impl MultiTokenManager {
             entry.last_used_at = Some(Utc::now().to_rfc3339());
             entry.failure_count = MAX_FAILURES_PER_CREDENTIAL;
             tracing::warn!(
-                "凭据 #{} 已标记为认证失败（invalid_grant，已禁用，需人工处理）",
+                "凭据 #{} 鉴权失败，已永久禁用（需手动恢复）",
                 id
             );
         }

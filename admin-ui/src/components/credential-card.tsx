@@ -167,16 +167,16 @@ function getDisabledReasonStyle(reason?: string | null): {
 } | null {
   if (!reason) return null;
   switch (reason) {
+    case "AuthenticationFailed":
+      return { label: "鉴权失败", variant: "destructive" };
+    case "AccountSuspended":
+      return { label: "账户暂停", variant: "destructive" };
     case "QuotaExceeded":
       return { label: "已超额", variant: "warning" };
-    case "TooManyFailures":
+    case "FailureLimit":
       return { label: "失败过多", variant: "destructive" };
-    case "TooManyRefreshFailures":
+    case "RefreshFailureLimit":
       return { label: "刷新失败过多", variant: "destructive" };
-    case "InvalidRefreshToken":
-      return { label: "Token 失效", variant: "destructive" };
-    case "InvalidConfig":
-      return { label: "配置无效", variant: "destructive" };
     case "Manual":
       return { label: "手动禁用", variant: "secondary" };
     default:
