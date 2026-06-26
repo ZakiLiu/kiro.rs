@@ -1,6 +1,6 @@
 //! 多凭据 Token 管理器
 
-use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use chrono::{DateTime, Datelike, Duration, SecondsFormat, Timelike, Utc};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -2498,8 +2498,9 @@ impl MultiTokenManager {
         let mut recovery_time = self.global_recovery_time.lock();
         let mut recovered_count = 0;
 
+        let now = Utc::now();
         for entry in entries.iter_mut() {
-            // 恢复所有自动禁用的凭据（Manual、AuthenticationFailed 和 AccountSuspended 除外）
+            // 恢复所有自动禁用的凭据（Manual、AuthenticationFailed、AccountSuspended 除外）
             if entry.disabled
                 && !matches!(
                     entry.disable_reason,
@@ -2508,6 +2509,35 @@ impl MultiTokenManager {
                         | Some(DisableReason::AccountSuspended)
                 )
             {
+                // QuotaExceeded：等到下月 1 号 0 点再恢复
+                if entry.disable_reason == Some(DisableReason::QuotaExceeded) {
+                    if let Some(disabled_at) = entry.disabled_at {
+                        let next_month_first = if disabled_at.month() == 12 {
+                            disabled_at
+                                .with_year(disabled_at.year() + 1)
+                                .unwrap()
+                                .with_month(1)
+                                .unwrap()
+                                .with_day(1)
+                                .unwrap()
+                        } else {
+                            disabled_at
+                                .with_month(disabled_at.month() + 1)
+                                .unwrap()
+                                .with_day(1)
+                                .unwrap()
+                        }
+                        .with_hour(0)
+                        .unwrap()
+                        .with_minute(0)
+                        .unwrap()
+                        .with_second(0)
+                        .unwrap();
+                        if now < next_month_first {
+                            continue;
+                        }
+                    }
+                }
                 entry.disabled = false;
                 entry.disabled_at = None;
                 entry.recovery_attempts = 0;
@@ -2646,6 +2676,35 @@ impl MultiTokenManager {
                     }
                     None => return false,
                     _ => {}
+                }
+                // QuotaExceeded：等到下月 1 号 0 点再恢复
+                if e.disable_reason == Some(DisableReason::QuotaExceeded) {
+                    if let Some(disabled_at) = e.disabled_at {
+                        let next_month_first = if disabled_at.month() == 12 {
+                            disabled_at
+                                .with_year(disabled_at.year() + 1)
+                                .unwrap()
+                                .with_month(1)
+                                .unwrap()
+                                .with_day(1)
+                                .unwrap()
+                        } else {
+                            disabled_at
+                                .with_month(disabled_at.month() + 1)
+                                .unwrap()
+                                .with_day(1)
+                                .unwrap()
+                        }
+                        .with_hour(0)
+                        .unwrap()
+                        .with_minute(0)
+                        .unwrap()
+                        .with_second(0)
+                        .unwrap();
+                        if now < next_month_first {
+                            return false;
+                        }
+                    }
                 }
                 // 指数退避：5min * 2^attempts，最大 30min
                 let base_minutes: i64 = 5;

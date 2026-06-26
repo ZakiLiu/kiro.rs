@@ -623,6 +623,20 @@ impl KiroProvider {
 
             // 400 Bad Request
             if status.as_u16() == 400 {
+                // profileArn 缺失：凭据级配置错误，永久禁用并故障转移
+                if body.contains("profileArn is required") {
+                    tracing::warn!(
+                        "凭据 #{} 缺少 profileArn（永久禁用）: {} {}",
+                        ctx.id, status, body
+                    );
+                    self.token_manager.mark_authentication_failed(ctx.id);
+                    failed_ids.push(ctx.id);
+                    last_error = Some(anyhow::anyhow!(
+                        "MCP 请求失败（profileArn 缺失）: {} {}", status, body
+                    ));
+                    continue;
+                }
+
                 let is_too_long = Self::is_input_too_long(&body);
                 // 输入过长错误：只记录请求体大小，不输出完整内容（太占空间且无调试价值）
                 if is_too_long {
@@ -1087,8 +1101,23 @@ impl KiroProvider {
             // 非 429 响应说明上游在处理请求（非全局限流），重置连续 429 计数
             let _ = std::mem::replace(&mut consecutive_429_count, 0);
 
-            // 400 Bad Request - 请求问题，重试/切换凭据无意义
+            // 400 Bad Request
             if status.as_u16() == 400 {
+                // profileArn 缺失：凭据级配置错误，永久禁用并故障转移
+                if body.contains("profileArn is required") {
+                    tracing::warn!(
+                        "凭据 #{} 缺少 profileArn（永久禁用）: {} {}",
+                        ctx.id, status, body
+                    );
+                    self.token_manager.mark_authentication_failed(ctx.id);
+                    failed_ids.push(ctx.id);
+                    last_error = Some(anyhow::anyhow!(
+                        "{} API 请求失败（profileArn 缺失）: {} {}",
+                        api_type, status, body
+                    ));
+                    continue;
+                }
+
                 // THINKING_SIGNATURE_INVALID: 模型更新导致 history 中的 thinking
                 // signature 失效。自动剥离 reasoningContent 后重试一次（与官方 IDE 策略一致）。
                 if body.contains("THINKING_SIGNATURE_INVALID") {
