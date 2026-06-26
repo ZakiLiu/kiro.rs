@@ -34,9 +34,7 @@ pub(super) fn is_invalid_grant_error(err: &anyhow::Error) -> bool {
 }
 
 pub(super) fn is_temporarily_suspended_error(err: &anyhow::Error) -> bool {
-    err.to_string()
-        .to_ascii_lowercase()
-        .contains("temporarily_suspended")
+    crate::kiro::provider::is_suspended_signal(&err.to_string())
 }
 
 /// 刷新 Token

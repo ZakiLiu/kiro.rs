@@ -6,11 +6,13 @@ mod context;
 mod event;
 mod state;
 mod thinking;
+pub(crate) mod tool_json;
 mod usage;
 
 // Re-export public API
 pub use context::StreamContext;
 pub use event::SseEvent;
+pub(crate) use tool_json::ToolJsonAccumulator;
 pub(crate) use usage::CacheUsageBreakdown;
 pub(crate) const THINKING_SIGNATURE_PLACEHOLDER: &str = "kiro-rs-thinking-signature";
 #[cfg(test)]

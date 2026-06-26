@@ -26,7 +26,7 @@ use crate::model::config::CompressionConfig;
 use crate::token;
 
 use super::converter::convert_request;
-use super::stream::{SseEvent, THINKING_SIGNATURE_PLACEHOLDER};
+use super::stream::{SseEvent, ToolJsonAccumulator, THINKING_SIGNATURE_PLACEHOLDER};
 use super::types::{ErrorResponse, Message, MessagesRequest};
 use super::websearch::{self, WebSearchResults};
 
@@ -152,8 +152,7 @@ async fn decode_round(
     let mut text = String::new();
     let mut reasoning = String::new();
     let mut redacted_reasoning = String::new();
-    let mut tool_json_buffers: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut tool_accumulator = ToolJsonAccumulator::new();
     let mut tool_uses: Vec<DecodedToolUse> = Vec::new();
     let mut context_input_tokens: Option<i32> = None;
     let mut credits = 0.0;
@@ -198,40 +197,19 @@ async fn decode_round(
                     }
                 }
                 Event::ToolUse(tu) => {
-                    let buffer = tool_json_buffers
-                        .entry(tu.tool_use_id.clone())
-                        .or_default();
-                    buffer.push_str(&tu.input);
-
-                    if tu.stop {
-                        let input: Value = if buffer.trim().is_empty() {
-                            json!({})
-                        } else {
-                            serde_json::from_str(buffer).unwrap_or_else(|e| {
-                                tracing::warn!(
-                                    tool_use_id = %tu.tool_use_id,
-                                    "工具输入 JSON 解析失败: {e}"
-                                );
-                                tool_json_error = Some(format!(
-                                    "tool {} ({}): invalid JSON: {}",
-                                    tu.name, tu.tool_use_id, e
-                                ));
-                                json!({})
-                            })
-                        };
-
-                        tool_json_buffers.remove(&tu.tool_use_id);
-
-                        let original_name = tool_name_map
-                            .get(&tu.name)
-                            .cloned()
-                            .unwrap_or_else(|| tu.name.clone());
-
-                        tool_uses.push(DecodedToolUse {
-                            id: tu.tool_use_id,
-                            name: original_name,
-                            input,
-                        });
+                    match tool_accumulator.push(&tu, tool_name_map) {
+                        Ok(Some(completed)) => {
+                            tool_uses.push(DecodedToolUse {
+                                id: completed.id,
+                                name: completed.name,
+                                input: completed.input,
+                            });
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::error!("{}", e);
+                            tool_json_error = Some(e.message());
+                        }
                     }
                 }
                 Event::ContextUsage(cu) => {
@@ -251,6 +229,14 @@ async fn decode_round(
                 }
                 _ => {}
             }
+        }
+    }
+
+    // 检测未完成的工具 JSON
+    if tool_json_error.is_none() {
+        if let Err(e) = tool_accumulator.finish() {
+            tracing::error!("{}", e);
+            tool_json_error = Some(e.message());
         }
     }
 
