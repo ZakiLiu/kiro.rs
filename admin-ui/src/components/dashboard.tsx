@@ -306,7 +306,9 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
     },
   });
   const disabledCredentialCount =
-    data?.credentials.filter((c) => c.disabled).length || 0;
+    data?.credentials.filter(
+      (c) => c.disabled && c.disabledReason !== "QuotaExceeded",
+    ).length || 0;
 
   // 已超额且尚未禁用的数量（用于一键超额按钮）
   const quotaExceededCount = (data?.credentials || []).filter((c) => {
@@ -528,7 +530,9 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
       toast.error("没有可清除的凭据");
       return;
     }
-    const disabled = data.credentials.filter((c) => c.disabled);
+    const disabled = data.credentials.filter(
+      (c) => c.disabled && c.disabledReason !== "QuotaExceeded",
+    );
     if (disabled.length === 0) {
       toast.error("没有可清除的已禁用凭据");
       return;
