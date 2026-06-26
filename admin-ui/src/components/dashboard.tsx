@@ -552,24 +552,19 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
       }))
     )
       return;
-    let s = 0,
-      f = 0;
-    for (const c of disabled) {
-      try {
-        await new Promise<void>((resolve, reject) => {
-          deleteCredential(c.id, {
-            onSuccess: () => {
-              s++;
-              resolve();
-            },
-            onError: (err) => {
-              f++;
-              reject(err);
-            },
-          });
-        });
-      } catch {}
-    }
+    const results = await Promise.allSettled(
+      disabled.map(
+        (c) =>
+          new Promise<void>((resolve, reject) => {
+            deleteCredential(c.id, {
+              onSuccess: () => resolve(),
+              onError: (err) => reject(err),
+            });
+          }),
+      ),
+    );
+    const s = results.filter((r) => r.status === "fulfilled").length;
+    const f = results.length - s;
     if (f === 0) toast.success(`成功清除所有 ${s} 个已禁用凭据`);
     else toast.warning(`清除已禁用凭据：成功 ${s} 个，失败 ${f} 个`);
     deselectAll();

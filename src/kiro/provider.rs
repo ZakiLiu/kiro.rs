@@ -709,16 +709,17 @@ impl KiroProvider {
                     continue;
                 }
 
-                // bearer token 失效：优先触发刷新再重试（避免因 expiresAt 不准导致误判/误禁用）
+                // bearer token 失效：刷新 token 并标记为已失败（换下个凭据重试）
                 if endpoint.is_bearer_token_invalid(&body) && forced_token_refresh.insert(ctx.id) {
                     tracing::warn!(
-                        "MCP 请求失败（Bearer token 无效，触发刷新后重试，尝试 {}/{}）: {} {}",
+                        "MCP 请求失败（Bearer token 无效，触发刷新，尝试 {}/{}）: {} {}",
                         attempt + 1,
                         max_retries,
                         status,
                         body
                     );
                     self.token_manager.invalidate_access_token(ctx.id);
+                    failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
                     continue;
                 }
@@ -1228,16 +1229,17 @@ impl KiroProvider {
                     continue;
                 }
 
-                // bearer token 失效：优先触发刷新再重试（避免因 expiresAt 不准导致误判/误禁用）
+                // bearer token 失效：刷新 token 并标记为已失败（换下个凭据重试）
                 if endpoint.is_bearer_token_invalid(&body) && forced_token_refresh.insert(ctx.id) {
                     tracing::warn!(
-                        "API 请求失败（Bearer token 无效，触发刷新后重试，尝试 {}/{}）: {} {}",
+                        "API 请求失败（Bearer token 无效，触发刷新，尝试 {}/{}）: {} {}",
                         attempt + 1,
                         max_retries,
                         status,
                         body
                     );
                     self.token_manager.invalidate_access_token(ctx.id);
+                    failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "{} API 请求失败: {} {}",
                         api_type,
