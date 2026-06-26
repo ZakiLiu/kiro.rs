@@ -2430,6 +2430,7 @@ impl MultiTokenManager {
 
             entries.iter().any(|e| !e.disabled)
         };
+        self.record_api_fail(id);
         self.save_stats_debounced();
         result
     }
@@ -2631,6 +2632,7 @@ impl MultiTokenManager {
         self.affinity.remove_by_credential(id);
         self.cooldown_manager.clear_cooldown(id);
         self.rate_limiter.reset(id);
+        self.record_api_fail(id);
         self.save_stats_debounced();
         if let Err(e) = self.persist_credentials() {
             tracing::warn!("认证失败凭据禁用状态持久化失败: {}", e);
