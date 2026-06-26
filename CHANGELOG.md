@@ -1,5 +1,13 @@
 # Changelog
 
+## [v2.0.26] - 2026-06-27
+
+### Fixed
+- **IdC profileArn 身份错配修复** — 回退 v2.0.22 将 IdC 凭据 profileArn 改为 SOCIAL_PROFILE_ARN 的变更，IdC 恢复使用 BUILDER_ID_PROFILE_ARN，解决 IdC bearer token 与 Social profileArn 身份不匹配导致的 `bearer token invalid` 403 错误
+- **启动迁移清理** — 已被错误持久化为 SOCIAL_PROFILE_ARN 的 IdC 凭据在启动时自动清理回 BUILDER_ID
+- **bearer invalid 日志增强** — 补充 `credential_id` 和 `endpoint` 字段，便于排障定位
+- **bearer token 二次验证修复** — 回退 `failed_ids.push` 优化，恢复刷新后重试同一凭据的逻辑，确保永久失效的凭据能被禁用（v2.0.25）
+
 ## [v2.0.25] - 2026-06-27
 
 ### Docs
