@@ -428,6 +428,16 @@ export function CredentialCard({
                 {credential.disabled && !reasonStyle && (
                   <Badge variant="destructive">已禁用</Badge>
                 )}
+                {credential.disabled && credential.disableMessage && (
+                  <span
+                    className="text-[10px] text-muted-foreground max-w-[260px] truncate"
+                    title={credential.disableMessage}
+                  >
+                    {credential.disableMessage.length > 80
+                      ? credential.disableMessage.slice(0, 80) + "…"
+                      : credential.disableMessage}
+                  </span>
+                )}
                 {/* 仍启用但已经达到上限：黄色"已超额"徽章 */}
                 {!credential.disabled && isQuotaExceeded && (
                   <Badge variant="warning">已超额</Badge>

@@ -70,6 +70,8 @@ struct CredentialEntry {
     refresh_token_hash: Option<String>,
     /// 累计收到 suspended 信号的次数（第 1 次冷却 1h，第 2 次起永久禁用）
     suspended_count: u32,
+    /// 禁用时的错误详情（上游返回的原始消息）
+    disable_message: Option<String>,
 }
 
 /// 自愈原因（内部使用，用于判断是否可自动恢复）
@@ -510,6 +512,7 @@ impl MultiTokenManager {
                     last_used_at: None,
                     refresh_token_hash,
                     suspended_count: 0,
+                    disable_message: None,
                 }
             })
             .collect();
@@ -1790,6 +1793,7 @@ impl MultiTokenManager {
                                         entry.recovery_attempts = 0;
                                         entry.auto_heal_reason = None;
                                         entry.disable_reason = None;
+                entry.disable_message = None;
                                     }
                                 }
                                 creds
@@ -2543,6 +2547,7 @@ impl MultiTokenManager {
                 entry.disabled_at = None;
                 entry.recovery_attempts = 0;
                 entry.disable_reason = None;
+                entry.disable_message = None;
                 entry.failure_count = 0;
                 recovered_count += 1;
             }
@@ -2596,6 +2601,7 @@ impl MultiTokenManager {
                     entry.refresh_failure_count = 0;
                     entry.auto_heal_reason = None;
                     entry.disable_reason = None;
+                entry.disable_message = None;
                 }
             }
         }
@@ -2614,6 +2620,10 @@ impl MultiTokenManager {
     /// 按终态问题处理：立即永久禁用、解除亲和绑定、写回 credentials，
     /// 不参与自动恢复（需通过 Admin API 手动恢复）。
     pub fn mark_authentication_failed(&self, id: u64) {
+        self.mark_authentication_failed_with_message(id, None);
+    }
+
+    pub fn mark_authentication_failed_with_message(&self, id: u64, message: Option<String>) {
         let mut entries = self.entries.lock();
         if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
             entry.disabled = true;
@@ -2621,6 +2631,7 @@ impl MultiTokenManager {
             entry.recovery_attempts = 0;
             entry.auto_heal_reason = None;
             entry.disable_reason = Some(DisableReason::AuthenticationFailed);
+            entry.disable_message = message;
             entry.last_used_at = Some(Utc::now().to_rfc3339());
             entry.failure_count = MAX_FAILURES_PER_CREDENTIAL;
             tracing::warn!(
@@ -2932,6 +2943,7 @@ impl MultiTokenManager {
                         rate_limited: false,
                         rate_limit_remaining_secs: None,
                         suspended_count: e.suspended_count,
+                        disable_message: e.disable_message.clone(),
                     }
                 })
                 .collect()
@@ -2991,6 +3003,7 @@ impl MultiTokenManager {
                 entry.recovery_attempts = 0;
                 entry.auto_heal_reason = None;
                 entry.disable_reason = None;
+                entry.disable_message = None;
             } else {
                 entry.disabled_at = Some(Utc::now());
                 entry.recovery_attempts = 0;
@@ -3279,6 +3292,7 @@ impl MultiTokenManager {
                     entry.recovery_attempts = 0;
                     entry.auto_heal_reason = None;
                     entry.disable_reason = None;
+                entry.disable_message = None;
                 }
             }
         }
@@ -3588,6 +3602,7 @@ impl MultiTokenManager {
                 last_used_at: None,
                 refresh_token_hash: entry_secret_hash,
                 suspended_count: 0,
+                disable_message: None,
             });
         }
 

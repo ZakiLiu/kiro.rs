@@ -629,7 +629,7 @@ impl KiroProvider {
                         "凭据 #{} 缺少 profileArn（永久禁用）: {} {}",
                         ctx.id, status, body
                     );
-                    self.token_manager.mark_authentication_failed(ctx.id);
+                    self.token_manager.mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "MCP 请求失败（profileArn 缺失）: {} {}", status, body
@@ -699,7 +699,7 @@ impl KiroProvider {
                         status,
                         body
                     );
-                    self.token_manager.mark_authentication_failed(ctx.id);
+                    self.token_manager.mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "MCP 请求失败（账户暂停）: {} {}",
@@ -731,7 +731,7 @@ impl KiroProvider {
                     status,
                     body
                 );
-                self.token_manager.mark_authentication_failed(ctx.id);
+                self.token_manager.mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
                 failed_ids.push(ctx.id);
                 last_error = Some(anyhow::anyhow!(
                     "MCP 请求失败（鉴权失败）: {} {}",
@@ -1110,7 +1110,7 @@ impl KiroProvider {
                         "凭据 #{} 缺少 profileArn（永久禁用）: {} {}",
                         ctx.id, status, body
                     );
-                    self.token_manager.mark_authentication_failed(ctx.id);
+                    self.token_manager.mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "{} API 请求失败（profileArn 缺失）: {} {}",
@@ -1218,7 +1218,7 @@ impl KiroProvider {
                         status,
                         body
                     );
-                    self.token_manager.mark_authentication_failed(ctx.id);
+                    self.token_manager.mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "{} API 请求失败（账户暂停）: {} {}",
@@ -1256,7 +1256,7 @@ impl KiroProvider {
                     status,
                     body
                 );
-                self.token_manager.mark_authentication_failed(ctx.id);
+                self.token_manager.mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
                 failed_ids.push(ctx.id);
                 last_error = Some(anyhow::anyhow!(
                     "{} API 请求失败（鉴权失败）: {} {}",

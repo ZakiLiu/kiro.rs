@@ -451,6 +451,7 @@ impl AdminService {
                     failure_count: entry.failure_count,
                     refresh_failure_count: entry.refresh_failure_count,
                     disabled_reason: entry.disable_reason.map(|reason| format!("{:?}", reason)),
+                    disable_message: entry.disable_message,
                     ready: entry.ready,
                     cooldown_reason: entry.cooldown_reason,
                     cooldown_remaining_secs: entry.cooldown_remaining_secs,

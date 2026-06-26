@@ -41,6 +41,9 @@ pub struct CredentialStatusItem {
     pub refresh_failure_count: u32,
     /// 禁用原因
     pub disabled_reason: Option<String>,
+    /// 禁用时的错误详情
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_message: Option<String>,
     /// 是否可立即承接请求（未禁用、未冷却、未触发本地速率限制）
     pub ready: bool,
     /// 冷却原因

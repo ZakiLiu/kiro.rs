@@ -372,6 +372,9 @@ pub struct CredentialEntrySnapshot {
     pub rate_limit_remaining_secs: Option<u64>,
     /// 累计收到 suspended 信号的次数
     pub suspended_count: u32,
+    /// 禁用时的错误详情（上游返回的原始消息）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_message: Option<String>,
 }
 
 /// 凭据管理器状态快照
