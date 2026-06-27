@@ -562,11 +562,9 @@ fn minimum_cacheable_tokens_for_model(model: &str) -> i32 {
     let model_lower = model.to_lowercase();
 
     if model_lower.contains("opus") {
-        4096
-    } else if model_lower.contains("haiku-3") || model_lower.contains("haiku_3") {
-        2048
+        200
     } else {
-        1024
+        100
     }
 }
 
