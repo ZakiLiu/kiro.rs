@@ -1625,6 +1625,11 @@ async fn handle_stream_request(
         let duration_ms = stream_start.elapsed().as_millis() as u64;
         let snap = usage_snapshot.lock().take().unwrap_or_default();
         let total_output = snap.output_tokens + snap.thinking_tokens;
+        let billed_input = billed_input_tokens(
+            stream_input_tokens,
+            snap.cache_creation,
+            snap.cache_read,
+        );
         record_request_telemetry(
             &stream_state,
             &stream_auth,
@@ -1632,7 +1637,7 @@ async fn handle_stream_request(
                 model: &stream_model,
                 is_stream: true,
                 credential_id: stream_credential_id,
-                input_tokens: stream_input_tokens,
+                input_tokens: billed_input,
                 output_tokens: total_output,
                 cache_creation_tokens: snap.cache_creation,
                 cache_read_tokens: snap.cache_read,
