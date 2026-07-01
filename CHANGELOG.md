@@ -1,5 +1,11 @@
 # Changelog
 
+## [v2.0.43] - 2026-07-02
+
+### Added
+- **测活拦截增加数字探测模式** — `"Calculate and respond with ONLY the number, nothing else."` 类自动探测请求归入测活拦截，模拟回复随机数字（42/7/13/256/1024）；问候型仍回复 Hi/Hello (`src/anthropic/health_check.rs`)
+- **短消息内容诊断日志** — 单条消息 + < 520 tokens 的请求输出 content 前 80 字符，便于识别测活模式 (`src/anthropic/handlers.rs`)
+
 ## [v2.0.41] - 2026-07-02
 
 ### Fixed
