@@ -57,3 +57,4 @@ tmp/
 .workflow/milestones/M-adhoc-*/
 .workflow/state.json.backup-*
 .workflow/embedding-index.bin
+.workflow/embedding.zvec/
