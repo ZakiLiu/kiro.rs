@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.35] - 2026-07-02
+
+### Fixed
+- **缓存命中率公式修正** — 命中率从 `cache_read / (billed_input + cache_creation + cache_read)` 修正为 `cache_read / (cache_read + cache_creation)`。旧公式把不可缓存的输入（每次不同的用户消息）算进分母，导致显示 ~50% 而实际缓存效率 >90%。后端 `usage_stats.rs` 和前端 `time-series-chart.tsx` 同步修正
+
 ## [v2.0.34] - 2026-07-02
 
 ### Fixed

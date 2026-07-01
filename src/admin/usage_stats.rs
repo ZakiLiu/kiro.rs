@@ -209,9 +209,8 @@ impl BucketStats {
 
     fn cache_hit_rate(&self) -> f64 {
         let denominator = self
-            .input_tokens
-            .saturating_add(self.cache_creation_tokens)
-            .saturating_add(self.cache_read_tokens);
+            .cache_read_tokens
+            .saturating_add(self.cache_creation_tokens);
         if denominator == 0 {
             return 0.0;
         }
@@ -780,7 +779,7 @@ mod tests {
             model: "claude-sonnet-4-6".to_string(),
             input_tokens: 5,
             output_tokens: 20,
-            cache_creation_tokens: 0,
+            cache_creation_tokens: 5,
             cache_read_tokens: 95,
             credits: 0.01,
             duration_ms: 100,
@@ -795,6 +794,7 @@ mod tests {
             .find(|p| p.calls > 0)
             .expect("expected non-empty stats bucket");
 
+        // 命中率 = cache_read / (cache_read + cache_creation) = 95 / (95 + 5) = 95%
         assert!((point.cache_hit_rate - 95.0).abs() < f64::EPSILON);
     }
 
