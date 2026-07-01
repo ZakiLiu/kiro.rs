@@ -46,6 +46,7 @@ pub(super) const TOOL_NAME_MAX_LEN: usize = 63;
 /// Kiro 上游使用的规范模型 ID
 pub(super) const KIRO_MODEL_SONNET_4_5: &str = "claude-sonnet-4.5";
 pub(super) const KIRO_MODEL_SONNET_4_6: &str = "claude-sonnet-4.6";
+pub(super) const KIRO_MODEL_SONNET_5: &str = "claude-sonnet-5";
 pub(super) const KIRO_MODEL_OPUS_4_5: &str = "claude-opus-4.5";
 pub(super) const KIRO_MODEL_OPUS_4_6: &str = "claude-opus-4.6";
 pub(super) const KIRO_MODEL_OPUS_4_7: &str = "claude-opus-4.7";
@@ -75,6 +76,9 @@ pub fn map_model(model: &str) -> Option<String> {
 
     // Claude 家族
     if normalized_model.contains("sonnet") {
+        if normalized_model.contains("sonnet-5") || normalized_model.contains("sonnet-5-") {
+            return Some(KIRO_MODEL_SONNET_5.to_string());
+        }
         if normalized_model.contains("4-6") || normalized_model.contains("4.6") {
             return Some(KIRO_MODEL_SONNET_4_6.to_string());
         }

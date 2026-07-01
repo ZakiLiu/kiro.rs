@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.32] - 2026-07-02
+
+### Added
+- **Claude Sonnet 5 模型支持** — `/v1/models` 新增 `claude-sonnet-5` / `claude-sonnet-5-thinking` / `claude-sonnet-5-agentic`（1M context），模型映射、thinking config、context window 同步更新 (`src/anthropic/converter/model.rs`, `src/anthropic/converter/system.rs`, `src/anthropic/types.rs`, `src/anthropic/handlers.rs`)
+
 ## [v2.0.31] - 2026-07-02
 
 ### Fixed

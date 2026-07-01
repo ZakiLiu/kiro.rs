@@ -346,7 +346,8 @@ pub fn get_context_window_size(model: &str) -> i32 {
     let is_4_6 = model_lower.contains("4-6") || model_lower.contains("4.6");
     let is_4_7 = model_lower.contains("4-7") || model_lower.contains("4.7");
     let is_4_8 = model_lower.contains("4-8") || model_lower.contains("4.8");
-    if ((is_opus || is_sonnet) && is_4_6) || (is_opus && (is_4_7 || is_4_8)) {
+    let is_sonnet_5 = is_sonnet && model_lower.contains("sonnet-5");
+    if is_sonnet_5 || ((is_opus || is_sonnet) && is_4_6) || (is_opus && (is_4_7 || is_4_8)) {
         1_000_000
     } else {
         200_000

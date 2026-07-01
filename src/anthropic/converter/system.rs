@@ -124,7 +124,8 @@ fn enum_values_to_strings(values: &[Value]) -> Vec<String> {
 /// `additionalModelRequestFieldsSchema` 调 `extract_thinking_config_from_schema`。
 pub fn thinking_config_for_model(model: &str) -> Option<ThinkingConfig> {
     let normalized = model.to_ascii_lowercase().replace('.', "-");
-    if normalized.contains("claude-sonnet-4-6")
+    if normalized.contains("claude-sonnet-5")
+        || normalized.contains("claude-sonnet-4-6")
         || normalized.contains("claude-opus-4-6")
         || normalized.contains("claude-opus-4-7")
         || normalized.contains("claude-opus-4-8")
