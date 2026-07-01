@@ -233,11 +233,11 @@ async fn decode_round(
     }
 
     // 检测未完成的工具 JSON
-    if tool_json_error.is_none() {
-        if let Err(e) = tool_accumulator.finish() {
-            tracing::error!("{}", e);
-            tool_json_error = Some(e.message());
-        }
+    if tool_json_error.is_none()
+        && let Err(e) = tool_accumulator.finish()
+    {
+        tracing::error!("{}", e);
+        tool_json_error = Some(e.message());
     }
 
     // XML 泄漏过滤

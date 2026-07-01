@@ -132,6 +132,15 @@ pub struct AddCredentialRequest {
     /// Kiro API Key（API Key 凭据必填）
     pub kiro_api_key: Option<String>,
 
+    /// 访问令牌（可选；导入已有登录态时可直接携带，跳过首次刷新）
+    pub access_token: Option<String>,
+
+    /// Profile ARN（企业 IdC 等场景的真实 profile 绑定；留空或占位符视为未提供）
+    pub profile_arn: Option<String>,
+
+    /// 访问令牌过期时间（RFC3339 字符串）
+    pub expires_at: Option<String>,
+
     /// 认证方式（可选，默认 social）
     #[serde(default = "default_auth_method")]
     pub auth_method: String,
@@ -148,6 +157,8 @@ pub struct AddCredentialRequest {
 
     /// 凭据级 Region 配置（用于 Token 刷新）
     /// 未配置时回退到 config.json 的全局 region
+    /// `authRegion` 为兼容旧调用方保留的别名
+    #[serde(alias = "authRegion")]
     pub region: Option<String>,
 
     /// 凭据级 API Region（用于 API 调用）
@@ -311,6 +322,8 @@ pub struct TokenJsonItem {
     pub region: Option<String>,
     pub api_region: Option<String>,
     pub machine_id: Option<String>,
+    /// Profile ARN（企业 IdC 等场景的真实 profile 绑定；留空或占位符视为未提供）
+    pub profile_arn: Option<String>,
 }
 
 /// 批量导入请求

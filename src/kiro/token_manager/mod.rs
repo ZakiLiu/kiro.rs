@@ -24,7 +24,7 @@ pub use types::{CachedBalanceInfo, DisableReason};
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
-    use super::multi::MAX_FAILURES_PER_CREDENTIAL;
+    use super::multi::{MAX_FAILURES_PER_CREDENTIAL, apply_caller_profile_arn_override};
     use super::refresh::{build_idc_refresh_user_agents, sha256_hex};
     use super::single::{
         TokenManager, is_token_expired, is_token_expiring_soon, validate_refresh_token,
@@ -739,6 +739,96 @@ mod tests {
 
         assert_eq!(ctx.id, 1);
         assert!(elapsed >= std::time::Duration::from_millis(120));
+    }
+
+    #[tokio::test]
+    async fn test_retry_context_for_credential_bypasses_local_rate_limiter() {
+        let config = Config::default();
+        let mut cred = KiroCredentials::default();
+        cred.access_token = Some("t1".to_string());
+        cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
+
+        // 第一次正常获取，占用该凭据本地 RateLimiter 的请求间隔窗口（模拟一次真实请求）。
+        let first = manager.acquire_context().await.unwrap();
+        assert_eq!(first.id, 1);
+
+        // bearer-invalid 触发的补救性重试应豁免本地 RateLimiter，直接拿到同一凭据、
+        // 几乎瞬间返回——而不是像常规选号那样因为唯一候选仍在限速窗口内而等待/失败。
+        // 这正是「单凭据分组下 bearer-invalid 重试被误判为所有凭据冷却」的根因修复点。
+        let started = std::time::Instant::now();
+        let retry_ctx = manager.retry_context_for_credential(1).await.unwrap();
+        assert_eq!(retry_ctx.id, 1);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "retry_context_for_credential 不应等待本地 RateLimiter 窗口"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_retry_context_for_credential_respects_real_cooldown() {
+        let config = Config::default();
+        let mut cred = KiroCredentials::default();
+        cred.access_token = Some("t1".to_string());
+        cred.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
+
+        // 真实冷却代表上游明确信号（如 429/5xx），不应被补救性重试路径绕过——
+        // 只有本地 RateLimiter 的请求间隔节流才应该被豁免。
+        manager.set_credential_cooldown_with_duration(
+            1,
+            CooldownReason::RateLimitExceeded,
+            Some(std::time::Duration::from_millis(200)),
+        );
+
+        let result = manager.retry_context_for_credential(1).await;
+        assert!(
+            result.is_err(),
+            "真实 cooldown 不应被 retry_context_for_credential 绕过"
+        );
+    }
+
+    #[test]
+    fn test_apply_caller_profile_arn_override_trusts_real_arn() {
+        let mut validated = KiroCredentials {
+            auth_method: Some("idc".to_string()),
+            ..Default::default()
+        };
+        // 模拟 refresh_idc_token 返回后的状态：不含真实 profile。
+        validated.profile_arn = None;
+
+        let real_arn = "arn:aws:codewhisperer:us-east-1:759416136509:profile/9UY4QCHRCR4V";
+        apply_caller_profile_arn_override(&mut validated, Some(real_arn));
+        assert_eq!(validated.profile_arn.as_deref(), Some(real_arn));
+
+        // fill_default_profile_arn 只在缺失/占位符时才动手，真实值不应被冲掉。
+        validated.fill_default_profile_arn();
+        assert_eq!(validated.profile_arn.as_deref(), Some(real_arn));
+    }
+
+    #[test]
+    fn test_apply_caller_profile_arn_override_noop_for_missing_or_placeholder() {
+        let mut validated = KiroCredentials {
+            auth_method: Some("idc".to_string()),
+            ..Default::default()
+        };
+
+        // 不提供时保持现状。
+        apply_caller_profile_arn_override(&mut validated, None);
+        assert_eq!(validated.profile_arn, None);
+
+        // 提供占位符时视为未提供，等同不传。
+        apply_caller_profile_arn_override(&mut validated, Some(BUILDER_ID_PROFILE_ARN));
+        assert_eq!(validated.profile_arn, None);
+
+        // 行为与现状一致：随后 fill_default_profile_arn 正常兜底。
+        validated.fill_default_profile_arn();
+        assert_eq!(
+            validated.profile_arn.as_deref(),
+            Some(BUILDER_ID_PROFILE_ARN)
+        );
     }
 
     #[tokio::test]

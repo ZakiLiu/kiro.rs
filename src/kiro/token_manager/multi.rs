@@ -18,7 +18,7 @@ use crate::kiro::background_refresh::{
 use crate::kiro::cooldown::{CooldownManager, CooldownReason};
 use crate::kiro::fingerprint::Fingerprint;
 use crate::kiro::machine_id;
-use crate::kiro::model::credentials::KiroCredentials;
+use crate::kiro::model::credentials::{KiroCredentials, is_placeholder_profile_arn};
 use crate::kiro::rate_limiter::{RateLimitConfig, RateLimiter};
 use crate::model::config::Config;
 
@@ -305,6 +305,23 @@ fn credential_matches_request(
     }
 
     credential_matches_group(credentials, group)
+}
+
+/// 若调用方提供了非占位符的真实 profileArn（如从 KAM/官方客户端导入的已知值），
+/// 优先采用，不被 refresh_token 各分支的响应覆盖——refresh 本身不会返回企业级
+/// 真实 profile，某些分支（如 Social）甚至会用响应里的占位符/空值覆盖掉调用方
+/// 传入的真实值。不提供或提供的是占位符时保持现状，交给 fill_default_profile_arn
+/// 走原有兜底逻辑，不影响设备授权/社交登录等现有路径的行为。
+pub(super) fn apply_caller_profile_arn_override(
+    validated_cred: &mut KiroCredentials,
+    caller_profile_arn: Option<&str>,
+) {
+    if let Some(trimmed) = caller_profile_arn
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !is_placeholder_profile_arn(s))
+    {
+        validated_cred.profile_arn = Some(trimmed.to_string());
+    }
 }
 
 fn cooldown_wait_source(reason: CooldownReason) -> &'static str {
@@ -967,6 +984,41 @@ impl MultiTokenManager {
         exclude_ids: &[u64],
     ) -> anyhow::Result<CallContext> {
         self.acquire_context_inner(exclude_ids, None, None).await
+    }
+
+    /// 针对「bearer token invalid → 刷新后重试同一凭据」场景的补救性重试。
+    ///
+    /// 与 `acquire_context_*` 系列不同，本方法**不参与候选选择/负载均衡，也不检查
+    /// 本地 `RateLimiter`**——因为这不是一次新到达的请求，而是同一逻辑请求内、针对
+    /// 已知凭据的补救重试。若仍然经过 `RateLimiter.try_acquire`，该凭据几乎必然因为
+    /// 刚被使用过而命中最小请求间隔，导致重试永远无法真正发出第二次网络请求
+    /// （在候选池只有 1 个凭据的分组中尤为致命：会被误判为"所有凭据均处于冷却"）。
+    ///
+    /// 仍然尊重 `cooldown_manager`：若该凭据同时因上游明确信号（429/5xx 等）处于冷却，
+    /// 说明这不只是本地节流问题，不应绕过。
+    pub async fn retry_context_for_credential(&self, id: u64) -> anyhow::Result<CallContext> {
+        if let Some((reason, remaining)) = self.cooldown_manager.check_cooldown(id) {
+            anyhow::bail!(
+                "凭据 #{} 正处于冷却（{}，剩余 {}ms），暂不豁免重试",
+                id,
+                reason.description(),
+                remaining.as_millis()
+            );
+        }
+
+        let credentials = {
+            let entries = self.entries.lock();
+            entries
+                .iter()
+                .find(|e| e.id == id)
+                .filter(|e| !e.disabled)
+                .map(|e| e.credentials.clone())
+                .ok_or_else(|| anyhow::anyhow!("凭据 #{} 不存在或已禁用", id))?
+        };
+
+        let ctx = self.try_ensure_token(id, &credentials).await?;
+        self.record_usage(id);
+        Ok(ctx)
     }
 
     /// 带分组过滤的凭据获取：仅选择 `groups` 包含 `group` 的凭据。
@@ -2515,32 +2567,32 @@ impl MultiTokenManager {
                 )
             {
                 // QuotaExceeded：等到下月 1 号 0 点再恢复
-                if entry.disable_reason == Some(DisableReason::QuotaExceeded) {
-                    if let Some(disabled_at) = entry.disabled_at {
-                        let next_month_first = if disabled_at.month() == 12 {
-                            disabled_at
-                                .with_year(disabled_at.year() + 1)
-                                .unwrap()
-                                .with_month(1)
-                                .unwrap()
-                                .with_day(1)
-                                .unwrap()
-                        } else {
-                            disabled_at
-                                .with_month(disabled_at.month() + 1)
-                                .unwrap()
-                                .with_day(1)
-                                .unwrap()
-                        }
-                        .with_hour(0)
-                        .unwrap()
-                        .with_minute(0)
-                        .unwrap()
-                        .with_second(0)
-                        .unwrap();
-                        if now < next_month_first {
-                            continue;
-                        }
+                if entry.disable_reason == Some(DisableReason::QuotaExceeded)
+                    && let Some(disabled_at) = entry.disabled_at
+                {
+                    let next_month_first = if disabled_at.month() == 12 {
+                        disabled_at
+                            .with_year(disabled_at.year() + 1)
+                            .unwrap()
+                            .with_month(1)
+                            .unwrap()
+                            .with_day(1)
+                            .unwrap()
+                    } else {
+                        disabled_at
+                            .with_month(disabled_at.month() + 1)
+                            .unwrap()
+                            .with_day(1)
+                            .unwrap()
+                    }
+                    .with_hour(0)
+                    .unwrap()
+                    .with_minute(0)
+                    .unwrap()
+                    .with_second(0)
+                    .unwrap();
+                    if now < next_month_first {
+                        continue;
                     }
                 }
                 entry.disabled = false;
@@ -2691,32 +2743,32 @@ impl MultiTokenManager {
                     _ => {}
                 }
                 // QuotaExceeded：等到下月 1 号 0 点再恢复
-                if e.disable_reason == Some(DisableReason::QuotaExceeded) {
-                    if let Some(disabled_at) = e.disabled_at {
-                        let next_month_first = if disabled_at.month() == 12 {
-                            disabled_at
-                                .with_year(disabled_at.year() + 1)
-                                .unwrap()
-                                .with_month(1)
-                                .unwrap()
-                                .with_day(1)
-                                .unwrap()
-                        } else {
-                            disabled_at
-                                .with_month(disabled_at.month() + 1)
-                                .unwrap()
-                                .with_day(1)
-                                .unwrap()
-                        }
-                        .with_hour(0)
-                        .unwrap()
-                        .with_minute(0)
-                        .unwrap()
-                        .with_second(0)
-                        .unwrap();
-                        if now < next_month_first {
-                            return false;
-                        }
+                if e.disable_reason == Some(DisableReason::QuotaExceeded)
+                    && let Some(disabled_at) = e.disabled_at
+                {
+                    let next_month_first = if disabled_at.month() == 12 {
+                        disabled_at
+                            .with_year(disabled_at.year() + 1)
+                            .unwrap()
+                            .with_month(1)
+                            .unwrap()
+                            .with_day(1)
+                            .unwrap()
+                    } else {
+                        disabled_at
+                            .with_month(disabled_at.month() + 1)
+                            .unwrap()
+                            .with_day(1)
+                            .unwrap()
+                    }
+                    .with_hour(0)
+                    .unwrap()
+                    .with_minute(0)
+                    .unwrap()
+                    .with_second(0)
+                    .unwrap();
+                    if now < next_month_first {
+                        return false;
                     }
                 }
                 // 指数退避：5min * 2^attempts，最大 30min
@@ -3412,9 +3464,7 @@ impl MultiTokenManager {
                 Ok(usage)
             }
             Err(err) => {
-                if is_invalid_grant_error(&err) {
-                    self.mark_authentication_failed(id);
-                } else if is_temporarily_suspended_error(&err) {
+                if is_invalid_grant_error(&err) || is_temporarily_suspended_error(&err) {
                     self.mark_authentication_failed(id);
                 }
                 Err(err)
@@ -3571,6 +3621,7 @@ impl MultiTokenManager {
         validated_cred.proxy_username = new_cred.proxy_username;
         validated_cred.proxy_password = new_cred.proxy_password;
         validated_cred.kiro_api_key = new_cred.kiro_api_key;
+        apply_caller_profile_arn_override(&mut validated_cred, new_cred.profile_arn.as_deref());
         validated_cred.fill_default_profile_arn();
 
         // 为新凭据生成设备指纹

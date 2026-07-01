@@ -1,5 +1,11 @@
 # Changelog
 
+## [v2.0.29] - 2026-07-01
+
+### Fixed
+- **bearer token invalid 补救重试豁免本地 RateLimiter** — 新增 `retry_context_for_credential()`，bearer-invalid 触发的下一轮重试直接对同一凭据强制刷新重试，不再经过 `RateLimiter` 的最小请求间隔节流（单凭据分组下曾因此被误判为"所有凭据均处于冷却"）；仍尊重上游明确信号（429/5xx 等）触发的真实冷却，不会绕过
+- **KAM 导入保留真实凭据信息** — 新增 `apply_caller_profile_arn_override()`，KAM/官方客户端导入时携带的真实 `profileArn`（以及 `accessToken`/`expiresAt`）不再被置空或被 refresh 响应覆盖；同时修复前端 KAM 导入弹窗字段名错误（`authRegion` → `region`），后端 `region` 字段新增 `authRegion` 别名保持向后兼容
+
 ## [v2.0.28] - 2026-06-28
 
 ### Fixed

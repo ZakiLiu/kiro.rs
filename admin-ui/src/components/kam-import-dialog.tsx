@@ -389,7 +389,7 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
             expiresAt: normalizeExpiresAt(cred.expiresAt),
             authMethod,
             provider,
-            authRegion: cred.region?.trim() || undefined,
+            region: cred.region?.trim() || undefined,
             startUrl: cred.startUrl?.trim() || undefined,
             clientId,
             clientSecret,

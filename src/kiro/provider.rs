@@ -491,6 +491,9 @@ impl KiroProvider {
         let mut last_error: Option<anyhow::Error> = None;
         let mut forced_token_refresh: HashSet<u64> = HashSet::new();
         let mut failed_ids: Vec<u64> = Vec::new();
+        // bearer-invalid 触发的补救性重试：下一轮循环应豁免本地 RateLimiter，直接
+        // 对这个凭据强制刷新 + 重试，而非走常规选号（见 retry_context_for_credential 注释）。
+        let mut pending_retry_id: Option<u64> = None;
         // 连续 429 计数器：连续 N 个不同凭据都返回 429 → 判定全局限流。
         let mut consecutive_429_count: usize = 0;
         let max_consecutive_429: usize = (available / 2).max(MIN_TOTAL_RETRIES);
@@ -499,12 +502,26 @@ impl KiroProvider {
         const MAX_GLOBAL_RATE_LIMIT_WAITS: usize = 2;
 
         for attempt in 0..max_retries {
+            // 若上一轮触发了 bearer-invalid 补救重试，优先豁免 RateLimiter 直接重试同一凭据；
+            // 该路径不可用时（已被禁用/真实冷却）回退到常规选号。
+            let acquire_result = if let Some(id) = pending_retry_id.take() {
+                match self.token_manager.retry_context_for_credential(id).await {
+                    Ok(c) => Ok(c),
+                    Err(e) => {
+                        tracing::debug!("凭据 #{} 重试豁免路径不可用，回退常规选号: {}", id, e);
+                        self.token_manager
+                            .acquire_context_with_group(&failed_ids, group)
+                            .await
+                    }
+                }
+            } else {
+                self.token_manager
+                    .acquire_context_with_group(&failed_ids, group)
+                    .await
+            };
+
             // 获取调用上下文（支持排除已失败凭据）
-            let ctx = match self
-                .token_manager
-                .acquire_context_with_group(&failed_ids, group)
-                .await
-            {
+            let ctx = match acquire_result {
                 Ok(c) => c,
                 Err(e) => {
                     // 所有凭据均处于冷却 → 不再重试，直接返回（handlers.rs 会转为 429）
@@ -720,6 +737,9 @@ impl KiroProvider {
                         body
                     );
                     self.token_manager.invalidate_access_token(ctx.id);
+                    // 下一轮豁免 RateLimiter，直接重试这个凭据（而非被本地限速拦截，
+                    // 见 retry_context_for_credential 注释）。
+                    pending_retry_id = Some(ctx.id);
                     last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
                     continue;
                 }
@@ -875,6 +895,9 @@ impl KiroProvider {
         // P0#1 修复：retry 链路必须排除上次失败的凭据，否则 acquire_context_for_user
         // 会因 affinity 命中而反复返回同一个绑定凭据。实测未修前 100 burst 切换率 0%。
         let mut failed_ids: Vec<u64> = Vec::new();
+        // bearer-invalid 触发的补救性重试：下一轮循环应豁免本地 RateLimiter，直接
+        // 对这个凭据强制刷新 + 重试，而非走常规选号（见 retry_context_for_credential 注释）。
+        let mut pending_retry_id: Option<u64> = None;
         let api_type = if is_stream { "流式" } else { "非流式" };
         let mut consecutive_429_count: usize = 0;
         let max_consecutive_429: usize = (available / 2).max(MIN_TOTAL_RETRIES);
@@ -884,17 +907,36 @@ impl KiroProvider {
         let requested_model = Self::extract_model_id(request_body);
 
         for attempt in 0..max_retries {
+            // 若上一轮触发了 bearer-invalid 补救重试，优先豁免 RateLimiter 直接重试同一凭据；
+            // 该路径不可用时（已被禁用/真实冷却）回退到常规选号（含用户亲和性）。
+            let acquire_result = if let Some(id) = pending_retry_id.take() {
+                match self.token_manager.retry_context_for_credential(id).await {
+                    Ok(c) => Ok(c),
+                    Err(e) => {
+                        tracing::debug!("凭据 #{} 重试豁免路径不可用，回退常规选号: {}", id, e);
+                        self.token_manager
+                            .acquire_context_for_user_with_model_and_group(
+                                user_id,
+                                &failed_ids,
+                                requested_model.as_deref(),
+                                group,
+                            )
+                            .await
+                    }
+                }
+            } else {
+                self.token_manager
+                    .acquire_context_for_user_with_model_and_group(
+                        user_id,
+                        &failed_ids,
+                        requested_model.as_deref(),
+                        group,
+                    )
+                    .await
+            };
+
             // 获取调用上下文（绑定 index、credentials、token），支持用户亲和性
-            let ctx = match self
-                .token_manager
-                .acquire_context_for_user_with_model_and_group(
-                    user_id,
-                    &failed_ids,
-                    requested_model.as_deref(),
-                    group,
-                )
-                .await
-            {
+            let ctx = match acquire_result {
                 Ok(c) => c,
                 Err(e) => {
                     // 所有凭据均处于冷却 → 不再重试，直接返回（handlers.rs 会转为 429）
@@ -1241,6 +1283,9 @@ impl KiroProvider {
                         body
                     );
                     self.token_manager.invalidate_access_token(ctx.id);
+                    // 下一轮豁免 RateLimiter，直接重试这个凭据（而非被本地限速拦截，
+                    // 见 retry_context_for_credential 注释）。
+                    pending_retry_id = Some(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "{} API 请求失败: {} {}",
                         api_type,

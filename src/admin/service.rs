@@ -747,13 +747,17 @@ impl AdminService {
                 known, name
             )));
         }
+        let profile_arn = req
+            .profile_arn
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let new_cred = KiroCredentials {
             id: None,
-            access_token: None,
+            access_token: req.access_token,
             refresh_token: req.refresh_token,
             kiro_api_key: req.kiro_api_key,
-            profile_arn: None,
-            expires_at: None,
+            profile_arn,
+            expires_at: req.expires_at,
             auth_method: Some(effective_auth_method),
             client_id: req.client_id,
             client_secret: req.client_secret,
@@ -1073,12 +1077,16 @@ impl AdminService {
             .api_region
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        let profile_arn = item
+            .profile_arn
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let new_cred = KiroCredentials {
             id: None,
             access_token: None,
             refresh_token: Some(refresh_token),
             kiro_api_key: None,
-            profile_arn: None,
+            profile_arn,
             expires_at: None,
             auth_method: Some(auth_method),
             client_id: item.client_id,

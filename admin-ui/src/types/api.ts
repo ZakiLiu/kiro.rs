@@ -110,6 +110,8 @@ export interface AddCredentialRequest {
   clientSecret?: string
   startUrl?: string
   priority?: number
+  /** 凭据级 Region（用于 Token 刷新）；authRegion 为兼容旧调用方保留的别名，后端两者等效 */
+  region?: string
   authRegion?: string
   apiRegion?: string
   machineId?: string
