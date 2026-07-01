@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.41] - 2026-07-02
+
+### Fixed
+- **流式和非流式响应 usage 格式对齐 Anthropic 标准** — 非流式 usage 移除 `credit_usage`/`credit_unit`/`credit_unit_plural` 和 `cache_creation` 嵌套对象（非 Anthropic 标准字段）；流式 `message_delta.usage` 只保留 `output_tokens`（Anthropic 规范），移除 `input_tokens`、`cache_*`、`credit_*`。计费数据仍通过 telemetry/trace 记录 (`src/anthropic/handlers.rs`, `src/anthropic/stream/state.rs`)
+
 ## [v2.0.40] - 2026-07-02
 
 ### Fixed
