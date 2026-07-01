@@ -148,6 +148,18 @@ impl KiroProvider {
         Ok(())
     }
 
+    /// 清除指定凭据的 HTTP Client 缓存（代理变更后必须调用，否则旧 Client 继续走旧代理）
+    pub fn invalidate_client_cache_for(&self, ids: &[u64]) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut cache = self.client_cache.lock();
+        for id in ids {
+            cache.remove(id);
+        }
+        tracing::info!("已清除 {} 个凭据的 HTTP Client 缓存", ids.len());
+    }
+
     /// 热更新默认 endpoint
     pub fn update_default_endpoint(&self, default_endpoint: String) -> anyhow::Result<()> {
         if !self.endpoints.contains_key(&default_endpoint) {

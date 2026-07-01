@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.34] - 2026-07-02
+
+### Fixed
+- **凭据代理变更后失效 HTTP Client 缓存** — `KiroProvider.client_cache` 按凭据 ID 缓存 reqwest::Client，代理删除/变更后旧 Client 继续走已失效的代理导致 `SocksConnect(Auth(Failed))`。现在删除代理池代理、分配代理给凭据时自动清除对应凭据的 Client 缓存 (`src/kiro/provider.rs`, `src/admin/service.rs`)
+
 ## [v2.0.33] - 2026-07-02
 
 ### Fixed

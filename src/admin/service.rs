@@ -1740,7 +1740,7 @@ impl AdminService {
         }
     }
 
-    /// 删除代理（级联清除引用该代理的凭据）
+    /// 删除代理（级联清除引用该代理的凭据 + 失效 HTTP Client 缓存）
     pub fn delete_proxy(&self, id: u64) -> Result<(), AdminServiceError> {
         let deleted_url = self
             .proxy_pool
@@ -1748,13 +1748,17 @@ impl AdminService {
             .map_err(|e| self.classify_proxy_error(e))?;
 
         // 级联清除：将引用该代理 URL 的凭据的 proxyUrl 置空
-        let affected = self.token_manager.clear_credentials_with_proxy(&deleted_url);
-        if affected > 0 {
+        let affected_ids = self.token_manager.clear_credentials_with_proxy(&deleted_url);
+        if !affected_ids.is_empty() {
             tracing::info!(
                 "代理 #{} 已删除，级联清除了 {} 个凭据的代理配置",
                 id,
-                affected
+                affected_ids.len()
             );
+            // 失效这些凭据的 HTTP Client 缓存，否则旧 Client 继续走已删除的代理
+            if let Some(provider) = &self.kiro_provider {
+                provider.invalidate_client_cache_for(&affected_ids);
+            }
         }
 
         Ok(())
@@ -1792,7 +1796,12 @@ impl AdminService {
         };
         self.token_manager
             .set_credential_proxy(id, proxy_url)
-            .map_err(|e| self.classify_proxy_error(e))
+            .map_err(|e| self.classify_proxy_error(e))?;
+        // 代理变更后失效 HTTP Client 缓存
+        if let Some(provider) = &self.kiro_provider {
+            provider.invalidate_client_cache_for(&[id]);
+        }
+        Ok(())
     }
 
     /// 探测代理连通性
