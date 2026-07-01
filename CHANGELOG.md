@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.37] - 2026-07-02
+
+### Fixed
+- **测活拦截支持 content block 数组格式** — 部分客户端（如 device_id 测活）发送 `[{"type":"text","text":"Hi"}]` 数组格式而非纯字符串，导致拦截器未命中。修复后同时支持字符串和单 text block 数组两种格式 (`src/anthropic/health_check.rs`)
+
 ## [v2.0.36] - 2026-07-02
 
 ### Added

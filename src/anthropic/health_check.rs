@@ -47,6 +47,23 @@ pub fn is_health_check_request(payload: &MessagesRequest) -> bool {
     }
     let text = match &msg.content {
         serde_json::Value::String(s) => s.trim().to_string(),
+        serde_json::Value::Array(blocks) => {
+            // content block 数组：提取唯一 text block 的文本
+            let texts: Vec<&str> = blocks
+                .iter()
+                .filter_map(|b| {
+                    if b.get("type")?.as_str()? == "text" {
+                        b.get("text")?.as_str()
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if texts.len() != 1 {
+                return false;
+            }
+            texts[0].trim().to_string()
+        }
         _ => return false,
     };
     if text.len() > 20 {
