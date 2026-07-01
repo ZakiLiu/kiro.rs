@@ -291,10 +291,7 @@ fn resolved_cache_usage(
 fn inject_cache_usage_fields(usage: &mut serde_json::Value, cache_context: CacheUsageContext) {
     usage["cache_creation_input_tokens"] = json!(cache_context.cache_creation_input_tokens);
     usage["cache_read_input_tokens"] = json!(cache_context.cache_read_input_tokens);
-    usage["cache_creation"] = json!({
-        "ephemeral_5m_input_tokens": cache_context.cache_creation_5m_input_tokens,
-        "ephemeral_1h_input_tokens": cache_context.cache_creation_1h_input_tokens
-    });
+    // cache_creation 嵌套对象为非 Anthropic 标准字段，不注入
 }
 
 fn billed_input_tokens(
@@ -324,10 +321,9 @@ fn stream_telemetry_input_tokens(ctx: &StreamContext) -> i32 {
         .unwrap_or(ctx.input_tokens)
 }
 
-fn inject_credit_usage_fields(usage: &mut serde_json::Value, metering: &MeteringEvent) {
-    usage["credit_usage"] = json!(metering.usage);
-    usage["credit_unit"] = json!(metering.unit);
-    usage["credit_unit_plural"] = json!(metering.unit_plural);
+fn inject_credit_usage_fields(_usage: &mut serde_json::Value, _metering: &MeteringEvent) {
+    // credit 字段不注入到 Anthropic 标准 usage（非标准字段会导致 API 兼容性检测失败）
+    // 计费数据通过 telemetry/trace 记录，不暴露给客户端
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -2628,7 +2624,7 @@ mod tests {
     }
 
     #[test]
-    fn test_inject_cache_usage_fields_only_for_cc_usage() {
+    fn test_inject_cache_usage_fields_standard_only() {
         let mut usage = serde_json::json!({
             "input_tokens": 123,
             "output_tokens": 45
@@ -2646,17 +2642,15 @@ mod tests {
 
         assert_eq!(usage["cache_creation_input_tokens"], 7);
         assert_eq!(usage["cache_read_input_tokens"], 8);
-        assert_eq!(usage["cache_creation"]["ephemeral_5m_input_tokens"], 3);
-        assert_eq!(usage["cache_creation"]["ephemeral_1h_input_tokens"], 4);
+        // cache_creation 嵌套对象不再注入（非 Anthropic 标准）
+        assert!(usage.get("cache_creation").is_none());
     }
 
     #[test]
-    fn test_inject_credit_usage_fields_appends_metering_usage() {
+    fn test_inject_credit_usage_fields_no_longer_injected() {
         let mut usage = serde_json::json!({
             "input_tokens": 123,
-            "output_tokens": 45,
-            "cache_creation_input_tokens": 7,
-            "cache_read_input_tokens": 8
+            "output_tokens": 45
         });
 
         inject_credit_usage_fields(
@@ -2668,12 +2662,9 @@ mod tests {
             },
         );
 
-        assert_eq!(usage["input_tokens"], 123);
-        assert_eq!(usage["cache_creation_input_tokens"], 7);
-        assert_eq!(usage["cache_read_input_tokens"], 8);
-        assert_eq!(usage["credit_usage"], json!(0.5));
-        assert_eq!(usage["credit_unit"], json!("credit"));
-        assert_eq!(usage["credit_unit_plural"], json!("credits"));
+        // credit 字段不再注入到标准 usage
+        assert!(usage.get("credit_usage").is_none());
+        assert!(usage.get("credit_unit").is_none());
     }
 
     #[test]

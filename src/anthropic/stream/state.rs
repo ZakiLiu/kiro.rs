@@ -259,29 +259,14 @@ impl SseStateManager {
             }
         }
 
-        // 发送 message_delta
+        // 发送 message_delta（Anthropic 规范：usage 只含 output_tokens）
         if !self.message_delta_sent {
             self.message_delta_sent = true;
             let mut usage_json = json!({
-                "input_tokens": usage.input_tokens,
                 "output_tokens": usage.output_tokens,
             });
             if usage.thinking_tokens > 0 {
                 usage_json["thinking_tokens"] = json!(usage.thinking_tokens);
-            }
-            if let Some(cache_usage) = usage.cache_usage {
-                usage_json["cache_creation_input_tokens"] =
-                    json!(cache_usage.cache_creation_input_tokens);
-                usage_json["cache_read_input_tokens"] = json!(cache_usage.cache_read_input_tokens);
-                usage_json["cache_creation"] = json!({
-                    "ephemeral_5m_input_tokens": cache_usage.cache_creation_5m_input_tokens,
-                    "ephemeral_1h_input_tokens": cache_usage.cache_creation_1h_input_tokens
-                });
-            }
-            if let Some(metering) = usage.metering {
-                usage_json["credit_usage"] = json!(metering.usage);
-                usage_json["credit_unit"] = json!(metering.unit);
-                usage_json["credit_unit_plural"] = json!(metering.unit_plural);
             }
             events.push(SseEvent::new(
                 "message_delta",

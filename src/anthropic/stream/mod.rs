@@ -212,12 +212,9 @@ mod tests {
         assert_eq!(message_start_usage["input_tokens"], json!(123));
         assert_eq!(message_start_usage["cache_creation_input_tokens"], json!(0));
         assert_eq!(message_start_usage["cache_read_input_tokens"], json!(0));
-        assert_eq!(message_delta_usage["input_tokens"], json!(123));
-        assert_eq!(message_delta_usage["cache_creation_input_tokens"], json!(0));
-        assert_eq!(message_delta_usage["cache_read_input_tokens"], json!(0));
-        assert_eq!(message_delta_usage["credit_usage"], json!(0.75));
-        assert_eq!(message_delta_usage["credit_unit"], json!("credit"));
-        assert_eq!(message_delta_usage["credit_unit_plural"], json!("credits"));
+        // message_delta.usage 只含 output_tokens（Anthropic 标准）
+        assert!(message_delta_usage.get("input_tokens").is_none());
+        assert!(message_delta_usage.get("credit_usage").is_none());
     }
 
     #[test]
@@ -265,9 +262,9 @@ mod tests {
             .expect("message_delta should exist");
 
         assert_eq!(message_start_usage["input_tokens"], json!(306));
-        assert_eq!(message_delta_usage["input_tokens"], json!(306));
-        assert_eq!(message_delta_usage["cache_creation_input_tokens"], json!(7));
-        assert_eq!(message_delta_usage["cache_read_input_tokens"], json!(8));
+        // message_delta.usage 只含 output_tokens（Anthropic 标准）
+        assert!(message_delta_usage.get("input_tokens").is_none());
+        assert!(message_delta_usage.get("cache_creation_input_tokens").is_none());
     }
     #[test]
     fn test_stream_context_omits_cache_usage_fields_when_disabled() {
@@ -288,19 +285,11 @@ mod tests {
             .expect("message_delta should exist");
 
         assert_eq!(message_start_usage["input_tokens"], json!(321));
-        assert!(
-            message_start_usage
-                .get("cache_creation_input_tokens")
-                .is_none()
-        );
+        assert!(message_start_usage.get("cache_creation_input_tokens").is_none());
         assert!(message_start_usage.get("cache_read_input_tokens").is_none());
-        assert_eq!(message_delta_usage["input_tokens"], json!(321));
-        assert!(
-            message_delta_usage
-                .get("cache_creation_input_tokens")
-                .is_none()
-        );
-        assert!(message_delta_usage.get("cache_read_input_tokens").is_none());
+        // message_delta.usage 只含 output_tokens
+        assert!(message_delta_usage.get("input_tokens").is_none());
+        assert!(message_delta_usage.get("cache_creation_input_tokens").is_none());
         assert!(message_delta_usage.get("cache_creation").is_none());
     }
 
@@ -327,20 +316,12 @@ mod tests {
             .map(|e| e.data["usage"].clone())
             .expect("message_delta should exist");
 
-        assert_eq!(message_delta_usage["cache_read_input_tokens"], json!(800));
-        assert_eq!(
-            message_delta_usage["cache_creation_input_tokens"],
-            json!(50)
-        );
-        assert_eq!(
-            message_delta_usage["cache_creation"]["ephemeral_5m_input_tokens"],
-            json!(30)
-        );
-        assert_eq!(
-            message_delta_usage["cache_creation"]["ephemeral_1h_input_tokens"],
-            json!(20)
-        );
-        assert_eq!(message_delta_usage["input_tokens"], json!(150));
+        // message_delta.usage 只含 output_tokens（Anthropic 标准）
+        assert!(message_delta_usage.get("input_tokens").is_none());
+        assert!(message_delta_usage.get("cache_read_input_tokens").is_none());
+        assert!(message_delta_usage.get("cache_creation").is_none());
+        assert!(message_delta_usage.get("credit_usage").is_none());
+        assert!(message_delta_usage["output_tokens"].is_number());
     }
 
     #[test]
