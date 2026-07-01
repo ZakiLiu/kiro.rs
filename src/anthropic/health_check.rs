@@ -22,11 +22,8 @@ const GREETING_PATTERNS: &[&str] = &[
     "测试",
 ];
 
-/// 较长的已知探测短语（精确匹配，大小写不敏感）
-const PROBE_PHRASES: &[&str] = &[
-    "calculate and respond with only the number, nothing else.",
-    "calculate and respond with only the number, nothing else",
-];
+/// 较长的已知探测短语（前缀匹配，大小写不敏感）——当前为空，预留扩展
+const PROBE_PHRASES: &[&str] = &[];
 
 const MOCK_REPLIES: &[&str] = &[
     "Hi! How can I help you today?",

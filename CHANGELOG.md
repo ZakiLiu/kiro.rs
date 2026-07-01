@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.46] - 2026-07-02
+
+### Changed
+- **取消 Calculate 数字探测拦截** — "Calculate and respond with ONLY the number" 请求不再拦截，恢复走上游 (`src/anthropic/health_check.rs`)
+
 ## [v2.0.45] - 2026-07-02
 
 ### Fixed
