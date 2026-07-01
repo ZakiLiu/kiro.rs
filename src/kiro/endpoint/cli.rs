@@ -172,6 +172,16 @@ impl CliEndpoint {
         {
             return; // already wrapped
         }
+        // tool_result-only 消息（content 为空白）不包装——包装后 auto 模型会忽略 toolResults
+        if let Some(ctx) = uim
+            .get("userInputMessageContext")
+            .and_then(|v| v.get("toolResults"))
+            .and_then(|v| v.as_array())
+            && !ctx.is_empty()
+            && content.trim().is_empty()
+        {
+            return;
+        }
         let now = chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false);
         // kiro-cli format: "Tuesday, 2026-05-12T20:25:05.551+08:00"
         let weekday = chrono::Local::now().format("%A").to_string();

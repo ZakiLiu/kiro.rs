@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.40] - 2026-07-02
+
+### Fixed
+- **CLI 端点 tool_result 多轮调用修复** — tool_result-only 消息（content 为空白）被 `wrap_current_message_content` 用 `--- USER MESSAGE ---` 标记包装后，`auto` 模型忽略了 `toolResults` 上下文导致回复"your message was empty"。修复后当 currentMessage 有 toolResults 且 content 为空白时跳过包装 (`src/kiro/endpoint/cli.rs`)
+
 ## [v2.0.39] - 2026-07-02
 
 ### Fixed
