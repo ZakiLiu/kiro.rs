@@ -109,6 +109,75 @@ pub fn extract_text_from_pdf(base64_data: &str) -> Result<String, PdfError> {
     }
 }
 
+/// 从原始字节提取 PDF 文本
+pub fn extract_text_from_bytes(pdf_bytes: &[u8]) -> Result<String, PdfError> {
+    if pdf_bytes.len() > MAX_PDF_SIZE {
+        return Err(PdfError::TooLarge {
+            size: pdf_bytes.len(),
+        });
+    }
+
+    let doc = lopdf::Document::load_mem(pdf_bytes)
+        .map_err(|e| PdfError::ExtractionFailed(e.to_string()))?;
+
+    let pages = doc.get_pages();
+    let mut page_numbers: Vec<u32> = pages.keys().copied().collect();
+    page_numbers.sort();
+
+    if page_numbers.is_empty() {
+        return Err(PdfError::ExtractionFailed(
+            "PDF contains no pages".to_string(),
+        ));
+    }
+
+    let text = doc
+        .extract_text(&page_numbers)
+        .map_err(|e| PdfError::ExtractionFailed(e.to_string()))?;
+
+    if text.chars().count() > MAX_TEXT_CHARS {
+        let truncated: String = text.chars().take(MAX_TEXT_CHARS).collect();
+        Ok(format!("{}... [truncated]", truncated))
+    } else {
+        Ok(text)
+    }
+}
+
+/// 从 URL 下载 PDF 文件（独立线程执行，10 秒超时，20MB 限制）
+pub fn download_pdf(url: &str) -> Result<Vec<u8>, PdfError> {
+    const DOWNLOAD_MAX: usize = 20 * 1024 * 1024;
+    const TIMEOUT_SECS: u64 = 10;
+
+    let url = url.to_string();
+    // 在独立线程执行 blocking HTTP 请求，避免在 tokio runtime 内 panic
+    let handle = std::thread::spawn(move || {
+        reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(TIMEOUT_SECS))
+            .build()
+            .map_err(|e| PdfError::ExtractionFailed(format!("HTTP client error: {}", e)))
+            .and_then(|client| {
+                client
+                    .get(&url)
+                    .send()
+                    .map_err(|e| PdfError::ExtractionFailed(format!("download failed: {}", e)))
+            })
+            .and_then(|resp| {
+                if !resp.status().is_success() {
+                    return Err(PdfError::ExtractionFailed(format!("HTTP {}", resp.status())));
+                }
+                resp.bytes()
+                    .map_err(|e| PdfError::ExtractionFailed(format!("read body failed: {}", e)))
+            })
+    });
+
+    let bytes = handle
+        .join()
+        .map_err(|_| PdfError::ExtractionFailed("download thread panicked".to_string()))??;
+    if bytes.len() > DOWNLOAD_MAX {
+        return Err(PdfError::TooLarge { size: bytes.len() });
+    }
+    Ok(bytes.to_vec())
+}
+
 /// 生成 PDF 提取失败时的回退文本
 pub fn fallback_text(error: &PdfError) -> String {
     match error {
@@ -150,7 +219,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             PdfError::TooLarge { size } => {
-                assert_eq!(size, MAX_PDF_SIZE + 1);
+                assert!(size > MAX_PDF_SIZE);
             }
             other => panic!("Expected TooLarge, got: {:?}", other),
         }

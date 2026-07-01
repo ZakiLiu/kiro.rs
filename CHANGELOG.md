@@ -1,5 +1,15 @@
 # Changelog
 
+## [v2.0.38] - 2026-07-02
+
+### Added
+- **PDF 文档 URL 下载支持** — `document` content block 现在支持 `source.type: "url"`，代理会自动下载 PDF 并提取文本（10 秒超时、20MB 限制），与 base64 内嵌方式一起支持完整的 Anthropic 文档 API (`src/pdf.rs`, `src/anthropic/converter/content.rs`)
+
+### Changed
+- **Makefile release 构建默认启用 pdf-support** — `make release` 自动加 `--features pdf-support`，生产构建原生支持 PDF 文本提取 (`Makefile`)
+- **reqwest 启用 blocking feature** — 支持 PDF URL 下载的同步 HTTP 请求 (`Cargo.toml`)
+- **ImageSource 增加可选 url 字段** — 兼容 Anthropic API 的 `source.type: "url"` 格式 (`src/anthropic/types.rs`)
+
 ## [v2.0.37] - 2026-07-02
 
 ### Fixed

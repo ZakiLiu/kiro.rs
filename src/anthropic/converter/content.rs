@@ -204,30 +204,58 @@ pub(super) fn process_message_content(
                             // tool_use 在 assistant 消息中处理，这里忽略
                         }
                         "document" => {
-                            // PDF 文档块：提取文本并替换为 text block
                             #[cfg(feature = "pdf-support")]
                             {
-                                if let Some(ref source) = block.source
-                                    && source.media_type == "application/pdf"
-                                {
-                                    match crate::pdf::extract_text_from_pdf(&source.data) {
-                                        Ok(text) => {
-                                            tracing::info!(
-                                                text_chars = text.chars().count(),
-                                                "PDF 文本提取成功"
-                                            );
-                                            text_parts.push(text);
+                                if let Some(ref source) = block.source {
+                                    let pdf_bytes = if source.source_type == "url" {
+                                        source.url.as_deref().and_then(|url| {
+                                            match crate::pdf::download_pdf(url) {
+                                                Ok(bytes) => Some(bytes),
+                                                Err(e) => {
+                                                    tracing::warn!("PDF 下载失败: {}", e);
+                                                    text_parts.push(format!("[PDF 下载失败: {}]", e));
+                                                    None
+                                                }
+                                            }
+                                        })
+                                    } else if source.source_type == "base64"
+                                        && (source.media_type == "application/pdf"
+                                            || source.media_type.is_empty())
+                                    {
+                                        match base64::Engine::decode(
+                                            &base64::engine::general_purpose::STANDARD,
+                                            &source.data,
+                                        ) {
+                                            Ok(bytes) => Some(bytes),
+                                            Err(e) => {
+                                                tracing::warn!("PDF base64 解码失败: {}", e);
+                                                text_parts.push(format!("[PDF 解码失败: {}]", e));
+                                                None
+                                            }
                                         }
-                                        Err(e) => {
-                                            tracing::warn!("PDF 文本提取失败: {}", e);
-                                            text_parts.push(crate::pdf::fallback_text(&e));
+                                    } else {
+                                        None
+                                    };
+
+                                    if let Some(bytes) = pdf_bytes {
+                                        match crate::pdf::extract_text_from_bytes(&bytes) {
+                                            Ok(text) => {
+                                                tracing::info!(
+                                                    text_chars = text.chars().count(),
+                                                    "PDF 文本提取成功"
+                                                );
+                                                text_parts.push(text);
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!("PDF 文本提取失败: {}", e);
+                                                text_parts.push(format!("[PDF 文本提取失败: {}]", e));
+                                            }
                                         }
                                     }
                                 }
                             }
                             #[cfg(not(feature = "pdf-support"))]
                             {
-                                // pdf-support 未启用时，document block 被静默跳过
                                 tracing::debug!("跳过 document block：pdf-support feature 未启用");
                             }
                         }

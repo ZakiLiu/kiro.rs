@@ -54,7 +54,7 @@ build: ui
 	cargo build
 
 release: ui
-	cargo build --release
+	cargo build --release --features pdf-support
 
 # --- 质量 ---
 

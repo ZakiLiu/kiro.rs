@@ -303,13 +303,17 @@ pub struct ContentBlock {
     pub source: Option<ImageSource>,
 }
 
-/// 图片数据源
+/// 图片/文档数据源
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ImageSource {
     #[serde(rename = "type")]
     pub source_type: String,
+    #[serde(default)]
     pub media_type: String,
+    #[serde(default)]
     pub data: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 // === Count Tokens 端点类型 ===
