@@ -1130,6 +1130,7 @@ mod tests {
                 input_schema: HashMap::new(),
                 max_uses: Some(8),
                 cache_control: None,
+                function: None,
             },
             AnthropicTool {
                 tool_type: None,
@@ -1142,6 +1143,7 @@ mod tests {
                 },
                 max_uses: None,
                 cache_control: None,
+                function: None,
             },
         ];
 
@@ -1167,6 +1169,7 @@ mod tests {
                 input_schema: HashMap::new(),
                 max_uses: Some(8),
                 cache_control: None,
+                function: None,
             },
             AnthropicTool {
                 tool_type: Some("web_search_20260101".to_string()),
@@ -1175,6 +1178,7 @@ mod tests {
                 input_schema: HashMap::new(),
                 max_uses: Some(10),
                 cache_control: None,
+                function: None,
             },
         ];
 
@@ -1207,6 +1211,7 @@ mod tests {
                 input_schema,
                 max_uses: None,
                 cache_control: None,
+                function: None,
             }]),
             tool_choice: None,
             thinking: None,
@@ -1385,6 +1390,7 @@ mod tests {
                 input_schema: HashMap::new(),
                 max_uses: None,
                 cache_control: None,
+                function: None,
             }]),
             tool_choice: None,
             thinking: None,
@@ -1669,6 +1675,7 @@ mod tests {
                 input_schema: HashMap::new(),
                 max_uses: None,
                 cache_control: None,
+                function: None,
             }]),
             tool_choice: None,
             thinking: None,
@@ -1705,6 +1712,7 @@ mod tests {
                 input_schema: HashMap::new(),
                 max_uses: None,
                 cache_control: None,
+                function: None,
             }]),
             tool_choice: None,
             thinking: None,

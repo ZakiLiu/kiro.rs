@@ -2550,6 +2550,7 @@ mod tests {
                 input_schema: std::collections::HashMap::new(),
                 max_uses: Some(1),
                 cache_control: None,
+                function: None,
             }]),
             tool_choice: None,
             thinking: None,

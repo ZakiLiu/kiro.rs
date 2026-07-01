@@ -613,6 +613,7 @@ mod tests {
                 input_schema: Default::default(),
                 max_uses: None,
                 cache_control: None,
+                function: None,
             }]),
             tool_choice: None,
             thinking: None,
@@ -1027,6 +1028,7 @@ mod tests {
             input_schema: Default::default(),
             max_uses: None,
             cache_control: None,
+                function: None,
         });
         let total1 = estimate_input_tokens(&req1);
         let profile1 = tracker.build_profile(&req1, total1);
@@ -1040,6 +1042,7 @@ mod tests {
             input_schema: Default::default(),
             max_uses: None,
             cache_control: None,
+                function: None,
         });
         let total2 = estimate_input_tokens(&req2);
         let profile2 = tracker.build_profile(&req2, total2);

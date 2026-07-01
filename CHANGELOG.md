@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.48] - 2026-07-02
+
+### Fixed
+- **OpenAI 函数调用格式兼容** — 客户端发 `{"type":"function","function":{"name":"xxx",...}}` 格式（OpenAI 函数调用）时，从 `function.name/description/parameters` 提取工具定义，不再全部变成空名或 "function" 重名 (`src/anthropic/types.rs`, `src/anthropic/converter/tools.rs`)
+
 ## [v2.0.47] - 2026-07-02
 
 ### Fixed

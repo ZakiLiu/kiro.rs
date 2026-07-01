@@ -243,12 +243,13 @@ pub struct SystemMessage {
 
 /// 工具定义
 ///
-/// 支持两种格式：
-/// 1. 普通工具：{ name, description, input_schema }
+/// 支持三种格式：
+/// 1. Anthropic 工具：{ name, description, input_schema }
 /// 2. WebSearch 工具：{ type: "web_search_20250305", name: "web_search", max_uses: 8 }
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// 3. OpenAI 函数：{ type: "function", function: { name, description, parameters } }
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Tool {
-    /// 工具类型，如 "web_search_20250305"（可选，仅 WebSearch 工具）
+    /// 工具类型，如 "web_search_20250305" 或 "function"（可选）
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub tool_type: Option<String>,
     /// 工具名称
@@ -266,6 +267,20 @@ pub struct Tool {
     /// 缓存控制
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
+    /// OpenAI 函数调用格式的嵌套定义
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<OpenAIFunction>,
+}
+
+/// OpenAI 函数定义（嵌套在 Tool.function 中）
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OpenAIFunction {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub parameters: HashMap<String, serde_json::Value>,
 }
 
 impl Tool {

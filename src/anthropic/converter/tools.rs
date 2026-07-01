@@ -117,17 +117,48 @@ pub(super) fn convert_tools(
             !dominated
         })
         .map(|t| {
-            // name 为空时用 tool_type 作为 name（Anthropic 内建工具如 computer_20250124）
-            let effective_name = if t.name.is_empty() {
-                t.tool_type.as_deref().unwrap_or("unnamed_tool").to_string()
-            } else {
-                t.name.clone()
-            };
+            // 提取工具名称/描述/schema，兼容三种格式：
+            // 1. Anthropic: { name, description, input_schema }
+            // 2. 内建工具: { type: "computer_20250124" }（无 name）
+            // 3. OpenAI: { type: "function", function: { name, description, parameters } }
+            let (effective_name, effective_description, effective_schema) =
+                if let Some(func) = &t.function
+                    && !func.name.is_empty()
+                {
+                    (
+                        func.name.clone(),
+                        if func.description.is_empty() {
+                            t.description.clone()
+                        } else {
+                            func.description.clone()
+                        },
+                        if func.parameters.is_empty() {
+                            serde_json::json!(t.input_schema)
+                        } else {
+                            serde_json::json!(func.parameters)
+                        },
+                    )
+                } else if t.name.is_empty() {
+                    (
+                        t.tool_type
+                            .as_deref()
+                            .unwrap_or("unnamed_tool")
+                            .to_string(),
+                        t.description.clone(),
+                        serde_json::json!(t.input_schema),
+                    )
+                } else {
+                    (
+                        t.name.clone(),
+                        t.description.clone(),
+                        serde_json::json!(t.input_schema),
+                    )
+                };
 
-            let mut description = if t.description.trim().is_empty() {
+            let mut description = if effective_description.trim().is_empty() {
                 format!("Tool: {}", effective_name)
             } else {
-                t.description.clone()
+                effective_description
             };
 
             // 对 Write/Edit 工具追加自定义描述后缀
@@ -151,7 +182,7 @@ pub(super) fn convert_tools(
                 description
             };
 
-            let schema = normalize_json_schema(serde_json::json!(t.input_schema));
+            let schema = normalize_json_schema(effective_schema);
 
             KiroTool {
                 tool_specification: ToolSpecification {
