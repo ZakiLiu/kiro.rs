@@ -85,8 +85,8 @@ pub fn detect_health_check(payload: &MessagesRequest) -> HealthCheckKind {
     if text.len() <= 20 && GREETING_PATTERNS.iter().any(|p| lower == *p) {
         return HealthCheckKind::Greeting;
     }
-    // 较长的已知探测短语
-    if PROBE_PHRASES.iter().any(|p| lower == *p) {
+    // 较长的已知探测短语（前缀匹配，可能包含附带的示例数据）
+    if PROBE_PHRASES.iter().any(|p| lower.starts_with(p)) {
         return HealthCheckKind::NumberProbe;
     }
     HealthCheckKind::None

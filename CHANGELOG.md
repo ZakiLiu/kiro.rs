@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.45] - 2026-07-02
+
+### Fixed
+- **数字探测拦截改为前缀匹配** — "Calculate and respond with ONLY the number" 探测请求实际内容含附带示例（`Q: 3+5=? A: 8`），精确匹配失败。改为 `starts_with` 前缀匹配 (`src/anthropic/health_check.rs`)
+
 ## [v2.0.44] - 2026-07-02
 
 ### Fixed
