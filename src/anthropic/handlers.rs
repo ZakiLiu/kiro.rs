@@ -1227,6 +1227,28 @@ pub async fn post_messages(
         "Received request"
     );
 
+    // 短消息内容诊断（单条消息 + < 520 tokens → 可能是测活请求）
+    if payload.messages.len() == 1
+        && estimated_input_tokens < 520
+        && payload.tools.as_ref().map_or(true, |t| t.is_empty())
+    {
+        let content_preview = match &payload.messages[0].content {
+            serde_json::Value::String(s) => s.chars().take(80).collect::<String>(),
+            serde_json::Value::Array(blocks) => {
+                blocks.iter().filter_map(|b| b.get("text")?.as_str()).take(1)
+                    .map(|s| s.chars().take(80).collect::<String>())
+                    .next().unwrap_or_default()
+            }
+            _ => String::new(),
+        };
+        if !content_preview.is_empty() {
+            tracing::info!(
+                content = %content_preview,
+                "短消息内容诊断"
+            );
+        }
+    }
+
     // 记录 RequestReceived 指标
     if let Some(metrics) = &state.metrics {
         metrics
