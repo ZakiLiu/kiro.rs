@@ -347,6 +347,12 @@ fn norm_subscription_type(title: Option<&str>) -> String {
         return "Free".to_string();
     };
     let up = t.to_uppercase();
+    if up.contains("POWER") {
+        return "Power".to_string();
+    }
+    if up.contains("MAX") {
+        return "Max".to_string();
+    }
     if up.contains("PRO") {
         return "Pro".to_string();
     }

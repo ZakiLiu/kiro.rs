@@ -1793,6 +1793,91 @@ pub async fn delete_group(
     .into_response()
 }
 
+// ============ 分组配置 ============
+
+/// GET /api/admin/groups/:name/config
+pub async fn get_group_config(
+    State(state): State<AdminState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let groups = match require_groups(&state) {
+        Ok(g) => g,
+        Err(resp) => return *resp,
+    };
+    match groups.get_config(&name) {
+        Ok(config) => {
+            let global = state.service.get_global_config();
+            let overrides = config.unwrap_or_default();
+            let resolved_compression = overrides
+                .compression
+                .as_ref()
+                .map(|gc| {
+                    let global_config = state.service.token_manager().config();
+                    gc.resolve(&global_config.compression)
+                })
+                .unwrap_or_else(|| state.service.token_manager().config().compression.clone());
+            Json(serde_json::json!({
+                "groupName": name,
+                "overrides": overrides,
+                "resolved": {
+                    "credentialRpm": overrides.credential_rpm.or(global.credential_rpm),
+                    "credentialDailyMaxRequests": overrides.credential_daily_max_requests.or(global.credential_daily_max_requests),
+                    "defaultEndpoint": overrides.default_endpoint.clone().unwrap_or(global.default_endpoint),
+                    "promptCacheTtlSeconds": overrides.prompt_cache_ttl_seconds.unwrap_or(global.prompt_cache_ttl_seconds),
+                    "compression": {
+                        "enabled": resolved_compression.enabled,
+                        "whitespaceCompression": resolved_compression.whitespace_compression,
+                        "thinkingStrategy": resolved_compression.thinking_strategy,
+                        "toolResultMaxChars": resolved_compression.tool_result_max_chars,
+                        "toolResultHeadLines": resolved_compression.tool_result_head_lines,
+                        "toolResultTailLines": resolved_compression.tool_result_tail_lines,
+                        "toolUseInputMaxChars": resolved_compression.tool_use_input_max_chars,
+                        "toolDescriptionMaxChars": resolved_compression.tool_description_max_chars,
+                        "maxHistoryTurns": resolved_compression.max_history_turns,
+                        "maxHistoryChars": resolved_compression.max_history_chars,
+                        "maxRequestBodyBytes": resolved_compression.max_request_body_bytes,
+                    }
+                }
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(super::types::AdminErrorResponse::not_found(e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+/// PUT /api/admin/groups/:name/config
+pub async fn update_group_config(
+    State(state): State<AdminState>,
+    Path(name): Path<String>,
+    Json(payload): Json<super::groups::GroupConfig>,
+) -> impl IntoResponse {
+    let groups = match require_groups(&state) {
+        Ok(g) => g,
+        Err(resp) => return *resp,
+    };
+    let config = if payload.is_empty() {
+        None
+    } else {
+        Some(payload)
+    };
+    match groups.update_config(&name, config) {
+        Ok(_) => Json(SuccessResponse::new(format!(
+            "分组 {} 配置已更新",
+            name
+        )))
+        .into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(super::types::AdminErrorResponse::not_found(e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
 // ============ 在线更新 ============
 
 pub async fn get_update_config(State(state): State<AdminState>) -> impl IntoResponse {

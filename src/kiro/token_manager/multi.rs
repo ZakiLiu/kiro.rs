@@ -41,6 +41,9 @@ use super::types::{
     USAGE_API_KIRO_VERSION, get_usage_limits, mask_user_id,
 };
 
+/// 默认订阅分组名（启动时自动注册，auto_assign 时互斥替换）
+pub const DEFAULT_SUBSCRIPTION_GROUPS: &[&str] = &["Free", "Pro", "Power", "Max"];
+
 struct CredentialEntry {
     /// 凭据唯一 ID
     id: u64,
@@ -2375,11 +2378,13 @@ impl MultiTokenManager {
             return;
         };
         let upper = title.to_uppercase();
+        // POWER/MAX 必须在 PRO 之前匹配（避免 "POWER" 被 PRO 的子串吃掉）
         let group_name = if upper.contains("FREE") {
             "Free"
-        } else if upper.contains("PRO+") || upper.contains("PRO_PLUS") || upper.contains("PRO PLUS")
-        {
-            "Pro+"
+        } else if upper.contains("POWER") {
+            "Power"
+        } else if upper.contains("MAX") {
+            "Max"
         } else if upper.contains("PRO") {
             "Pro"
         } else {
@@ -2393,11 +2398,11 @@ impl MultiTokenManager {
         if entry.credentials.groups.iter().any(|g| g == group_name) {
             return;
         }
-        // 移除旧的订阅分组（Free/Pro/Pro+），避免重复
+        // 移除旧的订阅分组，避免重复
         entry
             .credentials
             .groups
-            .retain(|g| g != "Free" && g != "Pro" && g != "Pro+");
+            .retain(|g| !DEFAULT_SUBSCRIPTION_GROUPS.contains(&g.as_str()));
         entry.credentials.groups.push(group_name.to_string());
         drop(entries);
 

@@ -26,6 +26,86 @@ pub struct Group {
     pub description: Option<String>,
     /// 创建时间（ISO8601）
     pub created_at: String,
+    /// 分组级配置覆盖（未设置的字段回退到全局配置）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<GroupConfig>,
+}
+
+/// 分组级配置覆盖（所有字段 Option，None 表示继承全局配置）
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_rpm: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_daily_max_requests: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_ttl_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<GroupCompressionConfig>,
+}
+
+/// 分组级压缩配置覆盖（所有字段 Option，None 表示继承全局配置）
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupCompressionConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whitespace_compression: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_strategy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result_max_chars: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result_head_lines: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result_tail_lines: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_use_input_max_chars: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_description_max_chars: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_history_turns: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_history_chars: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_request_body_bytes: Option<usize>,
+}
+
+impl GroupConfig {
+    pub fn is_empty(&self) -> bool {
+        self.credential_rpm.is_none()
+            && self.credential_daily_max_requests.is_none()
+            && self.default_endpoint.is_none()
+            && self.prompt_cache_ttl_seconds.is_none()
+            && self.compression.is_none()
+    }
+}
+
+impl GroupCompressionConfig {
+    /// 将分组覆盖合并到全局压缩配置上，返回最终生效值
+    pub fn resolve(&self, global: &crate::model::config::CompressionConfig) -> crate::model::config::CompressionConfig {
+        crate::model::config::CompressionConfig {
+            enabled: self.enabled.unwrap_or(global.enabled),
+            whitespace_compression: self.whitespace_compression.unwrap_or(global.whitespace_compression),
+            thinking_strategy: self.thinking_strategy.clone().unwrap_or_else(|| global.thinking_strategy.clone()),
+            tool_result_max_chars: self.tool_result_max_chars.unwrap_or(global.tool_result_max_chars),
+            tool_result_head_lines: self.tool_result_head_lines.unwrap_or(global.tool_result_head_lines),
+            tool_result_tail_lines: self.tool_result_tail_lines.unwrap_or(global.tool_result_tail_lines),
+            tool_use_input_max_chars: self.tool_use_input_max_chars.unwrap_or(global.tool_use_input_max_chars),
+            tool_description_max_chars: self.tool_description_max_chars.unwrap_or(global.tool_description_max_chars),
+            max_history_turns: self.max_history_turns.unwrap_or(global.max_history_turns),
+            max_history_chars: self.max_history_chars.unwrap_or(global.max_history_chars),
+            image_max_long_edge: global.image_max_long_edge,
+            image_max_pixels_single: global.image_max_pixels_single,
+            image_max_pixels_multi: global.image_max_pixels_multi,
+            image_multi_threshold: global.image_multi_threshold,
+            max_request_body_bytes: self.max_request_body_bytes.unwrap_or(global.max_request_body_bytes),
+        }
+    }
 }
 
 /// 分组管理器（线程安全 + 自动持久化）
@@ -139,6 +219,7 @@ impl GroupManager {
                 .map(|d| d.trim().to_string())
                 .filter(|d| !d.is_empty()),
             created_at: Utc::now().to_rfc3339(),
+            config: None,
         };
         inner.entries.insert(group.name.clone(), group.clone());
         self.save_locked(&inner);
@@ -192,6 +273,33 @@ impl GroupManager {
         Ok(group)
     }
 
+    /// 获取分组配置覆盖
+    pub fn get_config(&self, name: &str) -> anyhow::Result<Option<GroupConfig>> {
+        let inner = self.inner.read();
+        let entry = inner
+            .entries
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("分组不存在: {}", name))?;
+        Ok(entry.config.clone())
+    }
+
+    /// 更新分组配置覆盖（整体替换；传 None 清除覆盖）
+    pub fn update_config(
+        &self,
+        name: &str,
+        config: Option<GroupConfig>,
+    ) -> anyhow::Result<Group> {
+        let mut inner = self.inner.write();
+        let entry = inner
+            .entries
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("分组不存在: {}", name))?;
+        entry.config = config.filter(|c| !c.is_empty());
+        let cloned = entry.clone();
+        self.save_locked(&inner);
+        Ok(cloned)
+    }
+
     /// 删除分组。调用方应先确认无引用（或显式接受级联清理）。
     /// 返回 `true` 表示真的删了；返回 `false` 表示原本就不存在。
     pub fn delete(&self, name: &str) -> bool {
@@ -221,6 +329,7 @@ impl GroupManager {
                         name: trimmed.to_string(),
                         description: None,
                         created_at: now.clone(),
+                        config: None,
                     },
                 );
                 added += 1;

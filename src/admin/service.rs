@@ -2669,7 +2669,8 @@ fn credential_to_export_account(cred: KiroCredentials) -> Option<super::types::E
 
     let subscription_type = match cred.subscription_title.as_deref() {
         Some(t) if t.to_uppercase().contains("FREE") => "Free",
-        Some(t) if t.to_uppercase().contains("PRO+") => "Pro_Plus",
+        Some(t) if t.to_uppercase().contains("POWER") => "Power",
+        Some(t) if t.to_uppercase().contains("MAX") => "Max",
         Some(t) if t.to_uppercase().contains("PRO") => "Pro",
         _ => "Free",
     };

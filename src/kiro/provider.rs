@@ -585,7 +585,7 @@ impl KiroProvider {
                 Ok(resp) => resp,
                 Err(e) => {
                     tracing::warn!(
-                        "MCP 请求发送失败（尝试 {}/{}）: {}",
+                        "MCP 请求发送失败（尝试 {}/{}）: {:?}",
                         attempt + 1,
                         max_retries,
                         e
@@ -1019,7 +1019,7 @@ impl KiroProvider {
                 Err(e) => {
                     let duration_ms = attempt_start.elapsed().as_millis() as u64;
                     tracing::warn!(
-                        "API 请求发送失败（尝试 {}/{}）: {}",
+                        "API 请求发送失败（尝试 {}/{}）: {:?}",
                         attempt + 1,
                         max_retries,
                         e

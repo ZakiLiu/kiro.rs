@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
 import {
-  Plus, FolderTree, Trash2, Pencil, Users, KeyRound, RefreshCw,
+  Plus, FolderTree, Trash2, Pencil, Users, KeyRound, RefreshCw, Settings,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,7 @@ import {
   useGroups, useCreateGroup, useUpdateGroup, useDeleteGroup,
 } from '@/hooks/use-groups'
 import { useConfirm } from '@/components/ui/confirm-dialog'
+import { GroupConfigDialog } from '@/components/group-config-dialog'
 import { extractErrorMessage } from '@/lib/utils'
 import type { GroupItem } from '@/types/api'
 
@@ -41,6 +42,10 @@ export function GroupsPage() {
   const [editTarget, setEditTarget] = useState<GroupItem | null>(null)
   const [editNewName, setEditNewName] = useState('')
   const [editDesc, setEditDesc] = useState('')
+
+  const [configOpen, setConfigOpen] = useState(false)
+  const [configGroupName, setConfigGroupName] = useState<string | null>(null)
+  const openConfig = (g: GroupItem) => { setConfigGroupName(g.name); setConfigOpen(true) }
 
   const groups = data?.groups ?? []
 
@@ -178,6 +183,9 @@ export function GroupsPage() {
                     )}
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
+                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openConfig(g)} title="配置">
+                      <Settings className="h-3.5 w-3.5" />
+                    </Button>
                     <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEdit(g)} title="编辑">
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
@@ -253,6 +261,13 @@ export function GroupsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 分组配置弹框 */}
+      <GroupConfigDialog
+        groupName={configGroupName}
+        open={configOpen}
+        onOpenChange={setConfigOpen}
+      />
 
       {/* 编辑分组弹框 */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>

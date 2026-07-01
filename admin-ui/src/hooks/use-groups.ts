@@ -4,7 +4,10 @@ import {
   createGroup,
   deleteGroup,
   updateGroup,
+  fetchGroupConfig,
+  updateGroupConfig,
 } from '@/api/groups'
+import type { GroupConfigOverrides } from '@/api/groups'
 import type { CreateGroupRequest, UpdateGroupRequest } from '@/types/api'
 
 export function useGroups() {
@@ -57,6 +60,27 @@ export function useDeleteGroup() {
       qc.invalidateQueries({ queryKey: ['groups'] })
       qc.invalidateQueries({ queryKey: ['credentials'] })
       qc.invalidateQueries({ queryKey: ['client-keys'] })
+    },
+  })
+}
+
+export function useGroupConfig(name: string | null) {
+  return useQuery({
+    queryKey: ['group-config', name],
+    queryFn: () => fetchGroupConfig(name!),
+    enabled: !!name,
+    staleTime: 5000,
+  })
+}
+
+export function useUpdateGroupConfig() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, config }: { name: string; config: GroupConfigOverrides }) =>
+      updateGroupConfig(name, config),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['group-config', vars.name] })
+      qc.invalidateQueries({ queryKey: ['groups'] })
     },
   })
 }

@@ -26,7 +26,8 @@ use super::{
         set_log_governance_config, set_proxy_enabled, set_update_config, social_oauth_callback,
         start_idc_login, start_idc_relogin, start_social_login, start_social_relogin,
         stats_by_credential, stats_by_model, stats_overview, stats_timeseries, trace_failure_stats,
-        update_admin_key, update_client_key, update_credential, update_global_config, update_group,
+        update_admin_key, update_client_key, update_credential, update_global_config,
+        update_group, update_group_config, get_group_config,
         update_preset, update_proxy_config, update_refresh_token,
     },
     middleware::{AdminState, admin_auth_middleware},
@@ -166,6 +167,10 @@ pub fn create_admin_router(state: AdminState) -> Router {
         // ---- 账号分组 ----
         .route("/groups", get(list_groups).post(create_group))
         .route("/groups/{name}", delete(delete_group).patch(update_group))
+        .route(
+            "/groups/{name}/config",
+            get(get_group_config).put(update_group_config),
+        )
         // ---- 用量统计 ----
         .route("/stats/overview", get(stats_overview))
         .route("/stats/timeseries", get(stats_timeseries))

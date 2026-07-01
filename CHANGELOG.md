@@ -1,5 +1,19 @@
 # Changelog
 
+## [v2.0.30] - 2026-07-01
+
+### Added
+- **分组级配置** — 每个分组（Free/Pro/Power/Max）可独立覆盖全局配置（credentialRpm、credentialDailyMaxRequests、defaultEndpoint、promptCacheTtlSeconds、压缩参数），未设置的字段自动继承全局配置 (`src/admin/groups.rs`, `src/admin/handlers.rs`)
+- **分组配置 Admin API** — 新增 `GET/PUT /api/admin/groups/:name/config`，返回 `overrides`（分组覆盖值）和 `resolved`（合并全局后最终值） (`src/admin/router.rs`)
+- **分组配置 UI** — 分组管理页每个分组卡片新增⚙️配置按钮，表单 placeholder 显示全局回退值，留空即继承全局 (`admin-ui/src/components/group-config-dialog.tsx`, `admin-ui/src/components/groups-page.tsx`)
+- **Power / Max 默认分组** — 新增 Power（匹配 POWER）和 Max（匹配 MAX）两个订阅分组，启动时自动注册（已存在则跳过）；上游 subscription_title 自动映射到对应分组 (`src/kiro/token_manager/multi.rs`, `src/main.rs`)
+
+### Changed
+- **Pro+ 合并到 Pro** — Pro+/PRO_PLUS/PRO PLUS 不再作为独立分组，统一归入 Pro (`src/kiro/token_manager/multi.rs`, `src/admin/service.rs`, `src/kiro/web_portal.rs`)
+
+### Fixed
+- **reqwest 错误日志暴露完整 error chain** — `provider.rs` 中 API/MCP 请求发送失败的日志格式从 `{}` 改为 `{:?}`，下次遇到 `error sending request` 可看到底层 DNS/TLS/timeout 等具体原因 (`src/kiro/provider.rs`)
+
 ## [v2.0.29] - 2026-07-01
 
 ### Fixed
