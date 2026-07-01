@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.39] - 2026-07-02
+
+### Fixed
+- **测活拦截请求写入 trace 日志** — 拦截的测活请求现在记录到 trace store 和 usage log，`credential_id=0` 时"最终凭据"列显示"模拟回复"以区分正常请求 (`src/anthropic/handlers.rs`, `src/admin/handlers.rs`)
+
 ## [v2.0.38] - 2026-07-02
 
 ### Added

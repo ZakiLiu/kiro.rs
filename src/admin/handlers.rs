@@ -1484,7 +1484,11 @@ pub async fn list_traces(
     let enriched: Vec<serde_json::Value> = records
         .into_iter()
         .map(|r| {
-            let final_email = email_map.get(&r.final_credential_id).cloned().flatten();
+            let final_email = if r.final_credential_id == 0 {
+                Some("模拟回复".to_string())
+            } else {
+                email_map.get(&r.final_credential_id).cloned().flatten()
+            };
             let key_name = key_label(r.key_id);
             let attempts: Vec<serde_json::Value> = r
                 .attempts

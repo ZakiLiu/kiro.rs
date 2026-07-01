@@ -29,10 +29,10 @@ const MOCK_REPLIES: &[&str] = &[
     "Hello! How can I help you?",
 ];
 
-const MOCK_INPUT_TOKENS: i32 = 14;
-const MOCK_OUTPUT_TOKENS: i32 = 7;
-const MOCK_CACHE_READ_TOKENS: i32 = 456;
-const MOCK_CREDIT_USAGE: f64 = 0.0101;
+pub const MOCK_INPUT_TOKENS: i32 = 14;
+pub const MOCK_OUTPUT_TOKENS: i32 = 7;
+pub const MOCK_CACHE_READ_TOKENS: i32 = 456;
+pub const MOCK_CREDIT_USAGE: f64 = 0.0101;
 
 pub fn is_health_check_request(payload: &MessagesRequest) -> bool {
     if payload.messages.len() != 1 {

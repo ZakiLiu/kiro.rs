@@ -1271,6 +1271,24 @@ pub async fn post_messages(
                     .with_latency_ms(0),
             );
         }
+        record_request_telemetry(
+            &state,
+            &auth,
+            TelemetryData {
+                model: &payload.model,
+                is_stream: payload.stream,
+                credential_id: 0,
+                input_tokens: super::health_check::MOCK_INPUT_TOKENS,
+                output_tokens: super::health_check::MOCK_OUTPUT_TOKENS,
+                cache_creation_tokens: 0,
+                cache_read_tokens: super::health_check::MOCK_CACHE_READ_TOKENS,
+                credits: super::health_check::MOCK_CREDIT_USAGE,
+                duration_ms: 0,
+                status: "success",
+                attempts: vec![],
+                first_token_ms: Some(0),
+            },
+        );
         return if payload.stream {
             super::health_check::mock_stream_response(&payload.model)
         } else {
