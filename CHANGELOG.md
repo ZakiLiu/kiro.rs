@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.47] - 2026-07-02
+
+### Fixed
+- **内建工具空名称导致 400 "Invalid tool use format"** — Anthropic 内建工具（`computer_20250124`/`text_editor_20250124`/`bash_20250124`）通过 `type` 字段标识但无 `name`，`serde(default)` 将 `name` 置为空字符串 → 4 个工具全叫 `""` → Kiro API 拒绝。修复后当 `name` 为空时自动用 `tool_type` 作为工具名 (`src/anthropic/converter/tools.rs`)
+
 ## [v2.0.46] - 2026-07-02
 
 ### Changed

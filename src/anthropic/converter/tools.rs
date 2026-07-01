@@ -117,14 +117,21 @@ pub(super) fn convert_tools(
             !dominated
         })
         .map(|t| {
+            // name 为空时用 tool_type 作为 name（Anthropic 内建工具如 computer_20250124）
+            let effective_name = if t.name.is_empty() {
+                t.tool_type.as_deref().unwrap_or("unnamed_tool").to_string()
+            } else {
+                t.name.clone()
+            };
+
             let mut description = if t.description.trim().is_empty() {
-                format!("Tool: {}", t.name)
+                format!("Tool: {}", effective_name)
             } else {
                 t.description.clone()
             };
 
             // 对 Write/Edit 工具追加自定义描述后缀
-            let suffix = match t.name.as_str() {
+            let suffix = match effective_name.as_str() {
                 "Write" => WRITE_TOOL_DESCRIPTION_SUFFIX,
                 "Edit" => EDIT_TOOL_DESCRIPTION_SUFFIX,
                 _ => "",
@@ -148,7 +155,7 @@ pub(super) fn convert_tools(
 
             KiroTool {
                 tool_specification: ToolSpecification {
-                    name: map_tool_name(&t.name, tool_name_map),
+                    name: map_tool_name(&effective_name, tool_name_map),
                     description,
                     input_schema: InputSchema::from_json(schema),
                 },
