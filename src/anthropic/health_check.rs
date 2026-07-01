@@ -22,6 +22,12 @@ const GREETING_PATTERNS: &[&str] = &[
     "测试",
 ];
 
+/// 较长的已知探测短语（精确匹配，大小写不敏感）
+const PROBE_PHRASES: &[&str] = &[
+    "calculate and respond with only the number, nothing else.",
+    "calculate and respond with only the number, nothing else",
+];
+
 const MOCK_REPLIES: &[&str] = &[
     "Hi! How can I help you today?",
     "Hi! How can I help you?",
@@ -29,26 +35,34 @@ const MOCK_REPLIES: &[&str] = &[
     "Hello! How can I help you?",
 ];
 
+const MOCK_NUMBER_REPLIES: &[&str] = &["42", "7", "13", "256", "1024"];
+
 pub const MOCK_INPUT_TOKENS: i32 = 14;
 pub const MOCK_OUTPUT_TOKENS: i32 = 7;
 pub const MOCK_CACHE_READ_TOKENS: i32 = 456;
 pub const MOCK_CREDIT_USAGE: f64 = 0.0101;
 
-pub fn is_health_check_request(payload: &MessagesRequest) -> bool {
+/// 检测结果：不是测活 / 问候型 / 数字探测型
+pub enum HealthCheckKind {
+    None,
+    Greeting,
+    NumberProbe,
+}
+
+pub fn detect_health_check(payload: &MessagesRequest) -> HealthCheckKind {
     if payload.messages.len() != 1 {
-        return false;
+        return HealthCheckKind::None;
     }
     let msg = &payload.messages[0];
     if msg.role != "user" {
-        return false;
+        return HealthCheckKind::None;
     }
     if payload.tools.as_ref().is_some_and(|t| !t.is_empty()) {
-        return false;
+        return HealthCheckKind::None;
     }
     let text = match &msg.content {
         serde_json::Value::String(s) => s.trim().to_string(),
         serde_json::Value::Array(blocks) => {
-            // content block 数组：提取唯一 text block 的文本
             let texts: Vec<&str> = blocks
                 .iter()
                 .filter_map(|b| {
@@ -60,26 +74,37 @@ pub fn is_health_check_request(payload: &MessagesRequest) -> bool {
                 })
                 .collect();
             if texts.len() != 1 {
-                return false;
+                return HealthCheckKind::None;
             }
             texts[0].trim().to_string()
         }
-        _ => return false,
+        _ => return HealthCheckKind::None,
     };
-    if text.len() > 20 {
-        return false;
-    }
     let lower = text.to_lowercase();
-    GREETING_PATTERNS.iter().any(|p| lower == *p)
+    // 短问候词（≤ 20 字符）
+    if text.len() <= 20 && GREETING_PATTERNS.iter().any(|p| lower == *p) {
+        return HealthCheckKind::Greeting;
+    }
+    // 较长的已知探测短语
+    if PROBE_PHRASES.iter().any(|p| lower == *p) {
+        return HealthCheckKind::NumberProbe;
+    }
+    HealthCheckKind::None
 }
 
-fn pick_reply() -> &'static str {
-    let idx = std::time::SystemTime::now()
+pub fn is_health_check_request(payload: &MessagesRequest) -> bool {
+    !matches!(detect_health_check(payload), HealthCheckKind::None)
+}
+
+fn pick_reply(kind: &HealthCheckKind) -> &'static str {
+    let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .subsec_nanos() as usize
-        % MOCK_REPLIES.len();
-    MOCK_REPLIES[idx]
+        .subsec_nanos() as usize;
+    match kind {
+        HealthCheckKind::NumberProbe => MOCK_NUMBER_REPLIES[nanos % MOCK_NUMBER_REPLIES.len()],
+        _ => MOCK_REPLIES[nanos % MOCK_REPLIES.len()],
+    }
 }
 
 fn mock_usage() -> serde_json::Value {
@@ -98,13 +123,13 @@ fn mock_usage() -> serde_json::Value {
     })
 }
 
-pub fn mock_non_stream_response(model: &str) -> Response {
+pub fn mock_non_stream_response(model: &str, kind: &HealthCheckKind) -> Response {
     let msg_id = format!("msg_{}", Uuid::new_v4().to_string().replace('-', ""));
     let body = json!({
         "id": msg_id,
         "type": "message",
         "role": "assistant",
-        "content": [{"type": "text", "text": pick_reply()}],
+        "content": [{"type": "text", "text": pick_reply(kind)}],
         "model": model,
         "stop_reason": "end_turn",
         "stop_sequence": null,
@@ -113,9 +138,9 @@ pub fn mock_non_stream_response(model: &str) -> Response {
     (StatusCode::OK, anthropic_response_headers(), Json(body)).into_response()
 }
 
-pub fn mock_stream_response(model: &str) -> Response {
+pub fn mock_stream_response(model: &str, kind: &HealthCheckKind) -> Response {
     let msg_id = format!("msg_{}", Uuid::new_v4().to_string().replace('-', ""));
-    let reply = pick_reply();
+    let reply = pick_reply(kind);
 
     let message_start = format!(
         "event: message_start\ndata: {}\n\n",

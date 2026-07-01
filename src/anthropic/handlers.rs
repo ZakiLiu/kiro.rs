@@ -1258,8 +1258,9 @@ pub async fn post_messages(
     // 记录请求开始时间（用于计算延迟）
     let request_start = std::time::Instant::now();
 
-    // 测活请求前置过滤：单条问候消息直接模拟回复，不走上游
-    if super::health_check::is_health_check_request(&payload) {
+    // 测活请求前置过滤：单条问候/探测消息直接模拟回复，不走上游
+    let health_check_kind = super::health_check::detect_health_check(&payload);
+    if !matches!(health_check_kind, super::health_check::HealthCheckKind::None) {
         let has_credentials = state
             .kiro_provider
             .as_ref()
@@ -1308,9 +1309,9 @@ pub async fn post_messages(
             },
         );
         return if payload.stream {
-            super::health_check::mock_stream_response(&payload.model)
+            super::health_check::mock_stream_response(&payload.model, &health_check_kind)
         } else {
-            super::health_check::mock_non_stream_response(&payload.model)
+            super::health_check::mock_non_stream_response(&payload.model, &health_check_kind)
         };
     }
 
