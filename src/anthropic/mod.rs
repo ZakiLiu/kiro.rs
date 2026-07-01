@@ -20,6 +20,7 @@
 mod cache_tracker;
 mod compressor;
 pub(crate) mod converter;
+pub(crate) mod health_check;
 pub(crate) mod cross_request_cache;
 pub(crate) mod error_map;
 pub(crate) mod handlers;

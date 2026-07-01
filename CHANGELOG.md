@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.36] - 2026-07-02
+
+### Added
+- **测活请求前置过滤** — 单条问候消息（Hi/Hello/你好/ping/test 等，≤20 字符、无 tools）在到达上游前被拦截，返回模拟的 Anthropic 响应（含逼真 usage/credit 数据），支持流式和非流式。分组无可用凭据时返回 401。节省上游 Credit 和服务器资源 (`src/anthropic/health_check.rs`, `src/anthropic/handlers.rs`)
+
 ## [v2.0.35] - 2026-07-02
 
 ### Fixed

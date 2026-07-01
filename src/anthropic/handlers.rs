@@ -145,7 +145,7 @@ use super::types::{
 use super::websearch;
 
 /// 生成 Anthropic 标准 response headers（完整 rate limit 头集合）
-fn anthropic_response_headers() -> HeaderMap {
+pub(crate) fn anthropic_response_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
     let request_id = format!("req_{}", Uuid::new_v4().to_string().replace('-', ""));
     headers.insert("x-request-id", request_id.parse().unwrap());
@@ -1239,6 +1239,44 @@ pub async fn post_messages(
 
     // 记录请求开始时间（用于计算延迟）
     let request_start = std::time::Instant::now();
+
+    // 测活请求前置过滤：单条问候消息直接模拟回复，不走上游
+    if super::health_check::is_health_check_request(&payload) {
+        let has_credentials = state
+            .kiro_provider
+            .as_ref()
+            .map(|p| p.token_manager().available_count() > 0)
+            .unwrap_or(false);
+
+        if !has_credentials {
+            tracing::info!(
+                model = %payload.model,
+                stream = %payload.stream,
+                "测活请求拦截 → 无可用凭据，返回 401"
+            );
+            return super::health_check::mock_unauthorized_response();
+        }
+
+        tracing::info!(
+            model = %payload.model,
+            stream = %payload.stream,
+            user_id = %mask_user_id(payload.metadata.as_ref().and_then(|m| m.user_id.as_deref())),
+            "测活请求已拦截（模拟回复）"
+        );
+        if let Some(metrics) = &state.metrics {
+            metrics.record(
+                MetricEvent::new(MetricEventType::RequestCompleted)
+                    .with_model(&payload.model)
+                    .with_status("success")
+                    .with_latency_ms(0),
+            );
+        }
+        return if payload.stream {
+            super::health_check::mock_stream_response(&payload.model)
+        } else {
+            super::health_check::mock_non_stream_response(&payload.model)
+        };
+    }
 
     // 检查 KiroProvider 是否可用
     let provider = match &state.kiro_provider {
