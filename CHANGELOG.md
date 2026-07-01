@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.44] - 2026-07-02
+
+### Fixed
+- **测活拦截不再注入虚假缓存数据** — telemetry 的 `cache_read_tokens` 和 `credits` 置零，避免拦截请求的模拟值污染缓存命中率统计 (`src/anthropic/handlers.rs`)
+
 ## [v2.0.43] - 2026-07-02
 
 ### Added
