@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.31] - 2026-07-02
+
+### Fixed
+- **tool_use input null 导致上游 400 "Invalid tool use format"** — 客户端历史消息中的 `tool_use` 块若携带 `input: null`（而非 `{}`），`unwrap_or` 只处理字段缺失（`None`）不处理显式 null（`Some(Null)`），导致非 Object 值原样透传到 Kiro API 触发 REQUEST_BODY_INVALID。修复后所有非 Object 类型的 input 统一规范化为 `{}` (`src/anthropic/converter/history.rs`)
+
 ## [v2.0.30] - 2026-07-01
 
 ### Added

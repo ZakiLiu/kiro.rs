@@ -513,7 +513,14 @@ pub(super) fn convert_assistant_message(
                         }
                         "tool_use" => {
                             if let (Some(id), Some(name)) = (block.id, block.name) {
-                                let input = block.input.unwrap_or(serde_json::json!({}));
+                                // input 必须是 JSON Object；null / string / 其他非对象值
+                                // 会被 Kiro API 拒绝（"Invalid tool use format"）
+                                let input = match block.input {
+                                    Some(serde_json::Value::Object(obj)) => {
+                                        serde_json::Value::Object(obj)
+                                    }
+                                    _ => serde_json::json!({}),
+                                };
                                 let mapped_name = map_tool_name(&name, tool_name_map);
                                 tool_uses
                                     .push(ToolUseEntry::new(id, mapped_name).with_input(input));
