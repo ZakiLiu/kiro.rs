@@ -1,5 +1,11 @@
 # Changelog
 
+## [v2.0.33] - 2026-07-02
+
+### Fixed
+- **删除代理池代理时级联清除凭据引用** — 从代理 IP 池删除代理后，所有引用该代理 URL 的凭据自动清除 `proxyUrl`/`proxyUsername`/`proxyPassword`，避免凭据继续使用已失效的代理导致 `SocksConnect(Auth(Failed))` 等连接错误 (`src/admin/service.rs`, `src/admin/proxy_pool.rs`, `src/kiro/token_manager/multi.rs`)
+- **非流式请求补充 TTFB 日志** — 非流式请求完成日志新增 `ttfb_ms` 字段（provider 返回到请求开始的时间），trace 记录同步写入 `first_token_ms`，与流式请求保持一致 (`src/anthropic/handlers.rs`)
+
 ## [v2.0.32] - 2026-07-02
 
 ### Added

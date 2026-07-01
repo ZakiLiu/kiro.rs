@@ -1740,11 +1740,24 @@ impl AdminService {
         }
     }
 
-    /// 删除代理
+    /// 删除代理（级联清除引用该代理的凭据）
     pub fn delete_proxy(&self, id: u64) -> Result<(), AdminServiceError> {
-        self.proxy_pool
+        let deleted_url = self
+            .proxy_pool
             .delete(id)
-            .map_err(|e| self.classify_proxy_error(e))
+            .map_err(|e| self.classify_proxy_error(e))?;
+
+        // 级联清除：将引用该代理 URL 的凭据的 proxyUrl 置空
+        let affected = self.token_manager.clear_credentials_with_proxy(&deleted_url);
+        if affected > 0 {
+            tracing::info!(
+                "代理 #{} 已删除，级联清除了 {} 个凭据的代理配置",
+                id,
+                affected
+            );
+        }
+
+        Ok(())
     }
 
     /// 设置代理启用/禁用

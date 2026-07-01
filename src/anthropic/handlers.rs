@@ -1903,6 +1903,9 @@ async fn handle_non_stream_request(
         }
     };
 
+    // 非流式 TTFB：provider 返回（HTTP 响应头到达）到请求开始的时间
+    let ttfb_ms = context.request_start.elapsed().as_millis() as u64;
+
     let final_cache_context = match (context.cache_tracker, context.cache_profile) {
         (Some(tracker), Some(profile)) => {
             let resolved = resolved_cache_usage(tracker, api_result.credential_id, profile);
@@ -2184,6 +2187,7 @@ async fn handle_non_stream_request(
     // 记录 RequestCompleted 指标（非流式：完整请求延迟 + token 统计）
     let total_ms = context.request_start.elapsed().as_millis() as u64;
     tracing::info!(
+        ttfb_ms = ttfb_ms,
         total_ms = total_ms,
         credential_id = api_result.credential_id,
         model = %context.model,
@@ -2220,7 +2224,7 @@ async fn handle_non_stream_request(
             duration_ms: total_ms,
             status: "success",
             attempts: api_result.attempts,
-            first_token_ms: None,
+            first_token_ms: Some(ttfb_ms),
         },
     );
 

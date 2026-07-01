@@ -3139,6 +3139,27 @@ impl MultiTokenManager {
         Ok(())
     }
 
+    /// 级联清除引用指定代理 URL 的所有凭据的代理配置，返回受影响凭据数
+    pub fn clear_credentials_with_proxy(&self, proxy_url: &str) -> usize {
+        let mut entries = self.entries.lock();
+        let mut affected = 0usize;
+        for entry in entries.iter_mut() {
+            if entry.credentials.proxy_url.as_deref() == Some(proxy_url) {
+                entry.credentials.proxy_url = None;
+                entry.credentials.proxy_username = None;
+                entry.credentials.proxy_password = None;
+                affected += 1;
+            }
+        }
+        if affected > 0 {
+            drop(entries);
+            if let Err(e) = self.persist_credentials() {
+                tracing::warn!("级联清除代理后持久化失败: {}", e);
+            }
+        }
+        affected
+    }
+
     /// 获取所有凭据的代理配置快照（id → proxy_url）
     pub fn get_credential_proxy_urls(&self) -> Vec<(u64, Option<String>)> {
         self.entries

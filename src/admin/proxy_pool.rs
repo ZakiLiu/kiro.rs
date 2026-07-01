@@ -65,7 +65,6 @@ fn default_true() -> bool {
 }
 
 /// 代理分配结果
-#[allow(dead_code)]
 pub enum GetUrlResult {
     /// 代理存在且已启用，返回 URL
     Ok(String),
@@ -74,6 +73,7 @@ pub enum GetUrlResult {
     /// 代理存在但已被禁用
     Disabled,
 }
+
 
 /// 一次全量健康检查的摘要
 #[derive(Debug, Clone, Default)]
@@ -223,16 +223,17 @@ impl ProxyPoolManager {
         (added, errors)
     }
 
-    pub fn delete(&self, id: u64) -> anyhow::Result<()> {
+    pub fn delete(&self, id: u64) -> anyhow::Result<String> {
         let mut entries = self.entries.lock();
-        let len_before = entries.len();
+        let url = entries
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| e.url.clone())
+            .ok_or_else(|| anyhow::anyhow!("代理不存在: {}", id))?;
         entries.retain(|e| e.id != id);
-        if entries.len() == len_before {
-            anyhow::bail!("代理不存在: {}", id);
-        }
         drop(entries);
         self.persist()?;
-        Ok(())
+        Ok(url)
     }
 
     /// 设置代理启用/禁用状态
