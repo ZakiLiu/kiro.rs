@@ -1039,6 +1039,31 @@ impl AdminService {
         // 映射 authMethod
         let auth_method = Self::map_auth_method(&item);
 
+        // external_idp 需要 clientId 和 tokenEndpoint + SSRF 验证
+        if auth_method == "external_idp" {
+            if item.client_id.is_none() || item.token_endpoint.is_none() {
+                return ImportItemResult {
+                    index,
+                    fingerprint,
+                    action: ImportAction::Invalid,
+                    reason: Some("external_idp 需要 clientId 和 tokenEndpoint".to_string()),
+                    credential_id: None,
+                };
+            }
+            if let Some(ref te) = item.token_endpoint {
+                if let Err(e) = crate::kiro::auth::external_idp::validate_with_default_allowlist(te)
+                {
+                    return ImportItemResult {
+                        index,
+                        fingerprint,
+                        action: ImportAction::Invalid,
+                        reason: Some(e),
+                        credential_id: None,
+                    };
+                }
+            }
+        }
+
         // IdC 需要 clientId 和 clientSecret
         if auth_method == "idc" && (item.client_id.is_none() || item.client_secret.is_none()) {
             return ImportItemResult {
@@ -1151,30 +1176,31 @@ impl AdminService {
             .unwrap_or_else(|| "(empty)".to_string())
     }
 
-    /// 映射 provider/authMethod 到标准 authMethod
+    /// 映射 provider/authMethod 到标准 authMethod（含 external_idp 支持）
     fn map_auth_method(item: &TokenJsonItem) -> String {
-        // 优先使用 authMethod 字段
-        if let Some(auth) = &item.auth_method {
-            let auth_lower = auth.to_lowercase();
-            return match auth_lower.as_str() {
-                "idc" | "builder-id" | "builderid" => "idc".to_string(),
-                "social" => "social".to_string(),
-                _ => auth_lower,
-            };
+        use crate::kiro::auth::external_idp::normalize_import_auth_method;
+
+        let auth_method = item.auth_method.as_deref().unwrap_or("");
+        let client_id = item.client_id.as_deref().unwrap_or("");
+        let client_secret = item.client_secret.as_deref().unwrap_or("");
+        let token_endpoint = item.token_endpoint.as_deref().unwrap_or("");
+
+        let normalized = normalize_import_auth_method(auth_method, client_id, client_secret, token_endpoint);
+
+        // 如果 normalize 未能确定且有 provider，回退到 provider 判断
+        if normalized == "social" && auth_method.is_empty() {
+            if let Some(provider) = &item.provider {
+                let pl = provider.to_lowercase();
+                if pl.contains("external") || pl.contains("azure") || pl.contains("entra") {
+                    return "external_idp".to_string();
+                }
+                if pl == "builderid" || pl == "builder-id" || pl == "idc" {
+                    return "idc".to_string();
+                }
+            }
         }
 
-        // 回退到 provider 字段
-        if let Some(provider) = &item.provider {
-            let provider_lower = provider.to_lowercase();
-            return match provider_lower.as_str() {
-                "builderid" | "builder-id" | "idc" => "idc".to_string(),
-                "social" => "social".to_string(),
-                _ => "social".to_string(), // 默认 social
-            };
-        }
-
-        // 默认 social
-        "social".to_string()
+        normalized
     }
 
     // ============ 指标聚合 ============
