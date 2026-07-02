@@ -153,17 +153,9 @@ pub fn parse_jwt_exp(access_token: &str) -> Option<i64> {
     }
 
     let payload = parts[1];
-    // Base64URL 无填充 → 标准 Base64 需要补 padding
-    let padded = match payload.len() % 4 {
-        2 => format!("{payload}=="),
-        3 => format!("{payload}="),
-        _ => payload.to_string(),
-    };
-    let standard = padded.replace('-', "+").replace('_', "/");
-
     let decoded = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        standard.as_bytes(),
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        payload.as_bytes(),
     )
     .ok()?;
 
