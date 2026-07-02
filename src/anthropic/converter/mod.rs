@@ -1524,12 +1524,13 @@ mod tests {
     #[test]
     fn test_image_wire_shape_matches_kiro_cli_format() {
         use crate::anthropic::types::Message as AnthropicMessage;
+        // 所有测试用例都使用 PNG 数据；实际格式检测会将声明不匹配的纠正为 "png"
         let b64 = "iVBORw0KGgo=";
         for (media_type, expected_format) in &[
             ("image/png", "png"),
-            ("image/jpeg", "jpeg"),
-            ("image/gif", "gif"),
-            ("image/webp", "webp"),
+            ("image/jpeg", "png"),  // PNG 数据 → 实际检测为 png
+            ("image/gif", "png"),   // PNG 数据 → 实际检测为 png
+            ("image/webp", "png"),  // PNG 数据 → 实际检测为 png
         ] {
             let req = MessagesRequest {
                 model: "claude-sonnet-4".to_string(),

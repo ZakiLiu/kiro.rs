@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.51] - 2026-07-02
+
+### Fixed
+- **图片 MIME 类型不匹配修复** — 客户端声明 `image/jpeg` 但实际数据是 PNG 时，上游返回 `IMAGE_MIME_MISMATCH`。修复后从 base64 数据的 magic bytes 检测实际格式，自动纠正声明与实际不匹配 (`src/anthropic/converter/content.rs`)
+
 ## [v2.0.50] - 2026-07-02
 
 ### Fixed
