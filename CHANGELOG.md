@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.52] - 2026-07-02
+
+### Fixed
+- **OpenAI tool_calls/tool 消息格式兼容** — 客户端发 OpenAI 格式的 `tool_calls`（`call_xxx` ID）和 `role: "tool"` 消息时，在反序列化阶段自动转换为 Anthropic 标准的 `tool_use`/`tool_result` content blocks，修复 `TOOL_USE_RESULT_MISMATCH` 400 错误 (`src/anthropic/types.rs`)
+
 ## [v2.0.51] - 2026-07-02
 
 ### Fixed

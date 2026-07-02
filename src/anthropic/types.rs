@@ -224,11 +224,87 @@ where
 }
 
 /// 消息
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Message {
     pub role: String,
     /// 可以是 string 或 ContentBlock 数组
     pub content: serde_json::Value,
+}
+
+impl<'de> serde::Deserialize<'de> for Message {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut raw: serde_json::Map<String, serde_json::Value> =
+            serde::Deserialize::deserialize(deserializer)?;
+
+        let role = raw
+            .remove("role")
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+
+        let mut content = raw.remove("content").unwrap_or(serde_json::Value::Null);
+
+        // OpenAI 兼容：assistant + tool_calls → content 里追加 tool_use blocks
+        if role == "assistant" {
+            if let Some(serde_json::Value::Array(tool_calls)) = raw.remove("tool_calls") {
+                if !tool_calls.is_empty() {
+                    let mut blocks: Vec<serde_json::Value> = match &content {
+                        serde_json::Value::Array(arr) => arr.clone(),
+                        serde_json::Value::String(s) if !s.is_empty() => {
+                            vec![serde_json::json!({"type": "text", "text": s})]
+                        }
+                        _ => Vec::new(),
+                    };
+                    for tc in &tool_calls {
+                        let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let func = tc.get("function");
+                        let name = func
+                            .and_then(|f| f.get("name"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let args = func
+                            .and_then(|f| f.get("arguments"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("{}");
+                        let input: serde_json::Value =
+                            serde_json::from_str(args).unwrap_or(serde_json::json!({}));
+                        blocks.push(serde_json::json!({
+                            "type": "tool_use", "id": id, "name": name, "input": input
+                        }));
+                    }
+                    content = serde_json::Value::Array(blocks);
+                }
+            }
+        }
+
+        // OpenAI 兼容：role=tool + tool_call_id → role=user + tool_result
+        let final_role;
+        if role == "tool" {
+            if let Some(serde_json::Value::String(tool_call_id)) = raw.remove("tool_call_id") {
+                let result_text = match &content {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => serde_json::to_string(other).unwrap_or_default(),
+                };
+                content = serde_json::json!([{
+                    "type": "tool_result",
+                    "tool_use_id": tool_call_id,
+                    "content": result_text
+                }]);
+                final_role = "user".to_string();
+            } else {
+                final_role = role;
+            }
+        } else {
+            final_role = role;
+        }
+
+        Ok(Message {
+            role: final_role,
+            content,
+        })
+    }
 }
 
 /// 系统消息
