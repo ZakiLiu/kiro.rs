@@ -110,10 +110,12 @@ fn pick_reply(kind: &HealthCheckKind) -> String {
 
 /// 简易数学表达式求值（支持 +、-、*、/、带括号）
 fn eval_simple_math(expr: &str) -> Option<String> {
-    // 清理：提取 "Q: ... = ?" 或 "... = ?" 中的算式部分
+    // 提取最后一个 "Q:" 行（未回答的问题）
     let expr = expr
         .lines()
-        .find(|l| l.contains('=') || l.contains('+') || l.contains('-') || l.contains('*') || l.contains('/'))
+        .rev()
+        .find(|l| l.trim_start().starts_with("Q:") || l.contains("= ?") || l.contains("=?"))
+        .or_else(|| expr.lines().find(|l| l.contains('+') || l.contains('*') || l.contains('-') || l.contains('/')))
         .unwrap_or(expr);
     let expr = expr.strip_prefix("Q:").unwrap_or(expr).trim();
     let expr = expr.strip_suffix("= ?").or_else(|| expr.strip_suffix("=?")).unwrap_or(expr).trim();
