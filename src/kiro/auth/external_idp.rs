@@ -421,4 +421,51 @@ mod tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn test_deserialize_ide_format() {
+        let json = std::fs::read_to_string("examples/kiro-auth-token.json").unwrap();
+        let cred: KiroCredentials = serde_json::from_str(&json).unwrap();
+        assert_eq!(cred.auth_method.as_deref(), Some("external_idp"));
+        assert!(cred.access_token.is_some());
+        assert!(cred.refresh_token.is_some());
+        assert!(cred.token_endpoint.is_some());
+        assert!(cred.issuer_url.is_some());
+        assert!(cred.client_id.is_some());
+        assert_eq!(cred.provider.as_deref(), Some("ExternalIdp"));
+        assert!(cred.expires_at.is_some());
+        assert!(
+            cred.token_endpoint.as_deref().unwrap().contains("login.microsoftonline.com"),
+            "tokenEndpoint should contain Microsoft host"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_helper_format() {
+        let json = std::fs::read_to_string(
+            "examples/CLIProxyAPI_licia.anguillara-sharevn.bond.json",
+        )
+        .unwrap();
+        let cred: KiroCredentials = serde_json::from_str(&json).unwrap();
+        assert_eq!(cred.auth_method.as_deref(), Some("external_idp"));
+        assert!(cred.access_token.is_some(), "access_token should be deserialized from snake_case");
+        assert!(cred.refresh_token.is_some(), "refresh_token should be deserialized from snake_case");
+        assert!(cred.token_endpoint.is_some(), "token_endpoint should be deserialized from snake_case");
+        assert!(cred.issuer_url.is_some(), "issuer_url should be deserialized from snake_case");
+        assert!(cred.client_id.is_some());
+        assert!(cred.scopes.is_some(), "scopes should be present");
+        assert!(cred.profile_arn.is_some(), "profile_arn should be present");
+        assert!(cred.region.is_some());
+        // expires_at 来自 "expired" alias
+        assert!(cred.expires_at.is_some(), "expires_at should be deserialized from 'expired' alias");
+    }
+
+    #[test]
+    fn test_parse_jwt_exp_from_real_token() {
+        let json = std::fs::read_to_string("examples/kiro-auth-token.json").unwrap();
+        let cred: KiroCredentials = serde_json::from_str(&json).unwrap();
+        let exp = parse_jwt_exp(cred.access_token.as_deref().unwrap());
+        assert!(exp.is_some(), "should extract exp from real Azure AD JWT");
+        assert!(exp.unwrap() > 1700000000, "exp should be a valid Unix timestamp");
+    }
 }

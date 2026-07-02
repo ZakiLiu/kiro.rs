@@ -28,37 +28,37 @@ pub struct KiroCredentials {
     pub id: Option<u64>,
 
     /// 访问令牌
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", alias = "access_token")]
     pub access_token: Option<String>,
 
     /// 刷新令牌
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", alias = "refresh_token")]
     pub refresh_token: Option<String>,
 
     /// Kiro API Key（headless 模式）
     /// 设置后直接作为 Bearer Token 使用，无需 refreshToken
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", alias = "kiro_api_key")]
     pub kiro_api_key: Option<String>,
 
     /// Profile ARN
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", alias = "profile_arn")]
     pub profile_arn: Option<String>,
 
     /// 过期时间 (RFC3339 格式)
-    /// alias "expired" 兼容 kiro-login-helper 格式
-    #[serde(skip_serializing_if = "Option::is_none", alias = "expired")]
+    /// alias "expired" 兼容 kiro-login-helper 格式，alias "expires_at" 兼容 snake_case
+    #[serde(skip_serializing_if = "Option::is_none", alias = "expired", alias = "expires_at")]
     pub expires_at: Option<String>,
 
-    /// 认证方式 (social / idc / api_key)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// 认证方式 (social / idc / api_key / external_idp)
+    #[serde(skip_serializing_if = "Option::is_none", alias = "auth_method")]
     pub auth_method: Option<String>,
 
-    /// OIDC Client ID (IdC 认证需要)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// OIDC Client ID (IdC / external_idp 认证需要)
+    #[serde(skip_serializing_if = "Option::is_none", alias = "client_id")]
     pub client_id: Option<String>,
 
     /// OIDC Client Secret (IdC 认证需要)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", alias = "client_secret")]
     pub client_secret: Option<String>,
 
     /// 凭据优先级（数字越小优先级越高，默认为 0）
@@ -129,11 +129,11 @@ pub struct KiroCredentials {
     // ── external_idp (Enterprise SSO / Azure AD) 字段 ──
 
     /// External IdP Token 端点 URL（如 https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token）
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "tokenEndpoint")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "token_endpoint")]
     pub token_endpoint: Option<String>,
 
     /// OIDC Issuer URL（如 https://login.microsoftonline.com/{tenant}/v2.0）
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "issuerUrl")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "issuer_url")]
     pub issuer_url: Option<String>,
 
     /// OAuth scope（空格分隔字符串，如 "api://.../codewhisperer:conversations offline_access"）
