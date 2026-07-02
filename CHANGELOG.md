@@ -1,5 +1,23 @@
 # Changelog
 
+## [v2.1.0] - 2026-07-03
+
+### Added
+- **浏览器 SSO 骨架** — OIDC discovery + PKCE + 授权码交换，支持 external_idp 认证方式 (TASK-007)
+- **Admin UI 导入** — external_idp 字段映射 + 别名规范化 (TASK-006)
+- **导入路径集成** — map_auth_method 集成 + external_idp SSRF 验证 (TASK-004)
+- **Token 刷新 + 导入基础 + CLI SQLite** — Wave 2 实现 (TASK-003, TASK-004, TASK-005)
+- **凭据模型扩展 + SSRF 防护** — Wave 1 实现 (TASK-001, TASK-002)
+
+### Fixed
+- **snake_case serde alias 修复** — 真实凭据反序列化兼容
+
+### Refactored
+- **parse_jwt_exp 优化** — 用 URL_SAFE_NO_PAD engine 替代手动 Base64URL 转换
+
+### Tests
+- **live token refresh 验证** — 真实 Microsoft endpoint 测试通过
+
 ## [v2.0.52] - 2026-07-02
 
 ### Fixed

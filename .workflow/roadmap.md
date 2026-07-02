@@ -83,11 +83,69 @@ related:
 
 ---
 
+### Milestone 4: External IdP Support (v1.5.0)
+**Target**: 完整引入 external_idp（Enterprise SSO / Azure AD）凭据支持，覆盖 JSON 导入、token 刷新、浏览器 SSO 登录、CLI 加载、Admin UI 导入
+**Status**: planned
+**Source**: brainstorm:brainstorm-external-idp-porting (2026-07-02)
+
+#### Phases
+
+- [ ] **Phase 1: Full External IdP Integration** — 凭据模型扩展 + SSRF 防护 + token 刷新 + 导入路径 + CLI 加载 + Admin UI + 浏览器 SSO
+
+#### Phase Details
+
+##### Phase 1: Full External IdP Integration
+**Goal**: kiro.rs 完整支持 external_idp 凭据认证，IDE/CLI 等 endpoint 请求可通过 Azure AD 企业 SSO 账号成功
+**Depends on**: Nothing (independent of Milestones 1-3; reuses existing token_manager/auth infrastructure)
+**Requirements**: F-001 (凭据模型), F-002 (token 刷新), F-003 (SSRF 防护), F-004 (导入路径), F-005 (Admin UI), F-006 (CLI SQLite), F-007 (浏览器 SSO)
+**Reference**: Kiro-Go 075df7a..a2b2c4d (14 commits, ~2250 LOC)
+
+**Wave DAG** (task ordering within phase):
+```
+Wave 1 (foundations, parallel):
+  F-001 credential-model — KiroCredentials 扩展 + serde alias
+  F-003 ssrf-validation   — allow-list + validate_external_idp_endpoint()
+
+Wave 2 (core, depends on Wave 1):
+  F-002 token-refresh  — refresh routing + OIDC token endpoint POST
+  F-004 import-path    — Admin API import + normalize + trust-on-import
+  F-006 cli-sqlite     — CLI SQLite external_idp token key
+
+Wave 3 (extended, depends on Wave 1):
+  F-005 admin-ui       — frontend import field mapping
+  F-007 browser-sso    — OIDC discovery + PKCE + callback server
+```
+
+**Success Criteria** (what must be TRUE):
+  1. `auth_method: "external_idp"` 凭据通过 credentials.json 或 Admin API JSON 导入后可成功发起 API 请求
+  2. token 自动刷新（OIDC refresh_token grant）正常工作，过期 token 后台自动续期
+  3. trust-on-import：JWT exp 未过期的凭据可直接导入，无需 Microsoft egress
+  4. SSRF 防护：导入和 refresh 双边界验证 tokenEndpoint（HTTPS + 禁 IP + allow-list）
+  5. CLI SQLite 中的 external_idp 凭据可被自动加载
+  6. Admin UI 可导入 external_idp 凭据（支持 Kiro IDE camelCase 和 helper snake_case 双格式）
+  7. 浏览器 SSO 登录流程可通过 OIDC/Azure AD 完成认证
+  8. 现有 social/idc 凭据行为零回归，`cargo test` 全绿
+
+**Cross-Role Resolutions** (from brainstorm):
+  - C-001: SSRF 验证函数参数化 allow-list（生产常量，测试自定义）
+  - C-002: TokenJsonItem 逐字段加 serde alias（不改 rename_all）
+  - G-001: is_social_login() 增加 external_idp 前置判定
+  - G-002: expires_at 加 `#[serde(alias = "expired")]`
+  - G-003: ExternalIdpRefreshResponse 不用 rename_all camelCase
+  - S-001: 浏览器 SSO 复用 social.rs callback/PKCE 基础设施
+  - S-002: 复用 DisableReason 枚举和冷却机制
+
+**Blocked Items**:
+  - DA-03: CLI SQLite external_idp token key 实际命名（需 dump auth_kv 表确认）
+  - TS-05: examples/ 凭据已过期，手动测试前需重新登录 Kiro IDE/CLI
+
+---
+
 ## Scope Decisions
 
-- **In scope**: F-001 through F-008（8 个 feature），NFR-PERF-001 / NFR-SEC-001 / NFR-REL-001，Admin API 扩展
-- **Deferred**: Prompt filter (prompt_filter.rs) — 需独立安全评估；token_manager.rs 内部拆分（可在 Milestone 3 后续版本进行）
-- **Out of scope**: 前端 UI 重新设计、多区域部署、分布式缓存、多租户 SaaS 化、部署流程变更
+- **In scope**: Milestone 1-3 原有 feature（已完成）；Milestone 4: external_idp 全量支持（F-001~F-007，含浏览器 SSO + trust-on-import + CLI SQLite）
+- **Deferred**: 非 Microsoft IdP 支持（allow-list 扩展）；Prompt filter；token_manager 内部拆分
+- **Out of scope**: SAML 协议支持；多租户 IdP 管理界面；前端 UI 重新设计；多区域部署；分布式缓存
 
 ## Roadmap Decisions
 
@@ -100,6 +158,11 @@ related:
 | 5 | EPIC-004 placement | Milestone 3 (alongside EPIC-003) | user (progressive) |
 | 6 | Prompt filter | Deferred — not in any milestone | brainstorm PM-05, blueprint W-001 |
 | 7 | CLI endpoint | MUST preserve in all milestones (SA-11) | user explicit constraint |
+| 8 | Milestone 4 scope | 全量移植 external_idp（含浏览器 SSO） | user |
+| 9 | Milestone 4 分解 | 单 Phase + Wave DAG（3 waves, 7 features） | user + minimum-phase |
+| 10 | trust-on-import | 包含在 F-004（JWT exp 解析跳过 refresh） | user |
+| 11 | CLI SQLite | 包含在 F-006（external_idp token key） | user |
+| 12 | 参考实现 | Kiro-Go 075df7a..a2b2c4d | code |
 
 ## Progress
 
@@ -108,3 +171,4 @@ related:
 | 1. Foundation (v1.2.0) | 1. Foundation Infrastructure | Completed | 2026-06-05 |
 | 2. Reliability (v1.3.0) | 1. Error & Converter Hardening | Completed | 2026-06-05 |
 | 3. Capability (v1.4.0) | 1. Features & Refactoring | Completed | 2026-06-06 |
+| 4. External IdP (v1.5.0) | 1. Full External IdP Integration | Not started | - |
