@@ -1,8 +1,10 @@
 use anyhow::bail;
 use chrono::{Duration, Utc};
+use serde::Deserialize;
 use url::Url;
 
 use crate::http_client::{ProxyConfig, build_client};
+use crate::model::config::TlsBackend;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model::token_refresh::ExternalIdpRefreshResponse;
 use crate::model::config::Config;
@@ -196,6 +198,114 @@ pub fn normalize_import_auth_method(
             }
         }
     }
+}
+
+// ── Browser SSO Flow (OIDC Authorization Code + PKCE) ──
+
+#[derive(Debug, Deserialize)]
+pub struct OidcDiscoveryConfig {
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+}
+
+pub async fn oidc_discovery(
+    issuer_url: &str,
+    proxy: Option<&ProxyConfig>,
+    tls_backend: TlsBackend,
+) -> anyhow::Result<OidcDiscoveryConfig> {
+    validate_with_default_allowlist(issuer_url)
+        .map_err(|e| anyhow::anyhow!("OIDC discovery blocked: {e}"))?;
+
+    let discovery_url = format!(
+        "{}/.well-known/openid-configuration",
+        issuer_url.trim_end_matches('/')
+    );
+
+    let client = build_client(proxy, 30, tls_backend)?;
+    let response = client.get(&discovery_url).send().await?;
+
+    if !response.status().is_success() {
+        bail!(
+            "OIDC discovery failed: {} {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        );
+    }
+
+    let config: OidcDiscoveryConfig = response.json().await?;
+
+    // SSRF 验证 discovery 返回的端点
+    validate_with_default_allowlist(&config.authorization_endpoint)
+        .map_err(|e| anyhow::anyhow!("discovery authorization_endpoint rejected: {e}"))?;
+    validate_with_default_allowlist(&config.token_endpoint)
+        .map_err(|e| anyhow::anyhow!("discovery token_endpoint rejected: {e}"))?;
+
+    Ok(config)
+}
+
+/// 构建 Azure AD 授权 URL
+pub fn build_authorization_url(
+    authorization_endpoint: &str,
+    client_id: &str,
+    redirect_uri: &str,
+    code_challenge: &str,
+    state: &str,
+    scopes: &str,
+) -> String {
+    format!(
+        "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
+        authorization_endpoint,
+        urlencoding::encode(client_id),
+        urlencoding::encode(redirect_uri),
+        urlencoding::encode(scopes),
+        urlencoding::encode(code_challenge),
+        urlencoding::encode(state),
+    )
+}
+
+/// 用授权码交换 token（Authorization Code Grant）
+pub async fn exchange_code_for_token(
+    token_endpoint: &str,
+    client_id: &str,
+    code: &str,
+    code_verifier: &str,
+    redirect_uri: &str,
+    proxy: Option<&ProxyConfig>,
+    tls_backend: TlsBackend,
+) -> anyhow::Result<ExternalIdpRefreshResponse> {
+    validate_with_default_allowlist(token_endpoint)
+        .map_err(|e| anyhow::anyhow!("token exchange blocked: {e}"))?;
+
+    let client = build_client(proxy, 60, tls_backend)?;
+    let form = [
+        ("grant_type", "authorization_code"),
+        ("client_id", client_id),
+        ("code", code),
+        ("code_verifier", code_verifier),
+        ("redirect_uri", redirect_uri),
+    ];
+
+    let response = client
+        .post(token_endpoint)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .form(&form)
+        .send()
+        .await?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        bail!("external_idp token exchange failed: {} {}", status, body);
+    }
+
+    Ok(response.json().await?)
+}
+
+/// 默认 SSO scope（固定 Kiro scopes + offline_access）
+pub fn default_sso_scopes(client_id: &str) -> String {
+    format!(
+        "api://{client_id}/codewhisperer:conversations api://{client_id}/codewhisperer:completions offline_access"
+    )
 }
 
 #[cfg(test)]
