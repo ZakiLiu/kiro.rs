@@ -104,7 +104,7 @@ export interface AddCredentialRequest {
   accessToken?: string
   profileArn?: string
   expiresAt?: string
-  authMethod?: 'social' | 'idc' | 'api_key'
+  authMethod?: 'social' | 'idc' | 'api_key' | 'external_idp'
   provider?: string
   clientId?: string
   clientSecret?: string
@@ -123,6 +123,9 @@ export interface AddCredentialRequest {
   email?: string
   groups?: string[]
   sourceChannel?: string
+  tokenEndpoint?: string
+  issuerUrl?: string
+  scopes?: string
 }
 
 // 添加凭据响应

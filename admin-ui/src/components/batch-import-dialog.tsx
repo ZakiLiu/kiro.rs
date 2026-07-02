@@ -21,8 +21,13 @@ interface BatchImportDialogProps {
 
 interface CredentialInput {
   refreshToken?: string
+  refresh_token?: string
+  accessToken?: string
+  access_token?: string
   clientId?: string
+  client_id?: string
   clientSecret?: string
+  client_secret?: string
   region?: string
   authRegion?: string
   apiRegion?: string
@@ -30,11 +35,22 @@ interface CredentialInput {
   machineId?: string
   kiroApiKey?: string
   authMethod?: string
+  auth_method?: string
   endpoint?: string
   email?: string
   proxyUrl?: string
   proxyUsername?: string
   proxyPassword?: string
+  tokenEndpoint?: string
+  token_endpoint?: string
+  issuerUrl?: string
+  issuer_url?: string
+  scopes?: string
+  provider?: string
+  profileArn?: string
+  profile_arn?: string
+  expiresAt?: string
+  expired?: string
 }
 
 interface VerificationResult {
@@ -286,14 +302,32 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
             continue
           }
 
-          // OAuth 凭据
-          const token = cred.refreshToken!.trim()
-          const clientId = cred.clientId?.trim() || undefined
-          const clientSecret = cred.clientSecret?.trim() || undefined
-          const authMethod = clientId && clientSecret ? 'idc' : 'social'
+          // OAuth 凭据（兼容 camelCase + snake_case 双格式）
+          const token = (cred.refreshToken || cred.refresh_token || '').trim()
+          const clientId = (cred.clientId || cred.client_id || '').trim() || undefined
+          const clientSecret = (cred.clientSecret || cred.client_secret || '').trim() || undefined
+          const tokenEndpoint = (cred.tokenEndpoint || cred.token_endpoint || '').trim() || undefined
+          const issuerUrl = (cred.issuerUrl || cred.issuer_url || '').trim() || undefined
+          const scopes = cred.scopes?.trim() || undefined
+          const provider = cred.provider?.trim() || undefined
+          const profileArn = (cred.profileArn || cred.profile_arn || '').trim() || undefined
+          const rawAuthMethod = (cred.authMethod || cred.auth_method || '').trim().toLowerCase()
+
+          // external_idp 检测优先于 idc（因 external_idp 有 clientId 无 clientSecret）
+          const EXTERNAL_IDP_ALIASES = ['external_idp', 'azuread', 'azure', 'entra', 'entra-id', 'microsoft', 'm365', 'office365', 'external']
+          let authMethod: 'social' | 'idc' | 'api_key' | 'external_idp'
+          if (EXTERNAL_IDP_ALIASES.includes(rawAuthMethod) || tokenEndpoint) {
+            authMethod = 'external_idp'
+          } else if (clientId && clientSecret) {
+            authMethod = 'idc'
+          } else if (rawAuthMethod === 'idc' || rawAuthMethod === 'builderid' || rawAuthMethod === 'builder-id') {
+            authMethod = 'idc'
+          } else {
+            authMethod = (rawAuthMethod as typeof authMethod) || 'social'
+          }
 
           // idc 模式下必须同时提供 clientId 和 clientSecret
-          if (authMethod === 'social' && (clientId || clientSecret)) {
+          if (authMethod === 'idc' && (!clientId || !clientSecret)) {
             throw new Error('idc 模式需要同时提供 clientId 和 clientSecret')
           }
 
@@ -307,6 +341,11 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
             priority: cred.priority || 0,
             machineId: cred.machineId?.trim() || undefined,
             endpoint: cred.endpoint?.trim() || undefined,
+            ...(tokenEndpoint ? { tokenEndpoint } : {}),
+            ...(issuerUrl ? { issuerUrl } : {}),
+            ...(scopes ? { scopes } : {}),
+            ...(provider ? { provider } : {}),
+            ...(profileArn ? { profileArn } : {}),
             email: cred.email?.trim() || undefined,
             proxyUrl: cred.proxyUrl?.trim() || undefined,
             proxyUsername: cred.proxyUsername?.trim() || undefined,
