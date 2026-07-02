@@ -422,6 +422,48 @@ mod tests {
         .is_err());
     }
 
+    #[tokio::test]
+    #[ignore] // requires network access to Microsoft token endpoint
+    async fn test_live_refresh_external_idp() {
+        let json = std::fs::read_to_string(
+            "examples/CLIProxyAPI_licia.anguillara-sharevn.bond.json",
+        )
+        .unwrap();
+        let cred: KiroCredentials = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(cred.auth_method.as_deref(), Some("external_idp"));
+        assert!(cred.refresh_token.is_some());
+        assert!(cred.token_endpoint.is_some());
+        assert!(cred.client_id.is_some());
+
+        let config = Config::default();
+        let result = refresh_external_idp_token(&cred, &config, None).await;
+
+        match result {
+            Ok(new_cred) => {
+                assert!(new_cred.access_token.is_some(), "should get new access_token");
+                assert!(new_cred.expires_at.is_some(), "should get new expires_at");
+                let new_token = new_cred.access_token.as_deref().unwrap();
+                assert!(new_token.starts_with("eyJ"), "access_token should be a JWT");
+                let exp = parse_jwt_exp(new_token);
+                assert!(exp.is_some(), "new JWT should have exp");
+                eprintln!("✅ Live refresh succeeded! New token exp: {:?}", exp);
+                eprintln!("   New expires_at: {:?}", new_cred.expires_at);
+                if new_cred.refresh_token != cred.refresh_token {
+                    eprintln!("   ⚠️ Refresh token rotated!");
+                }
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("invalid_grant") {
+                    eprintln!("⚠️ Refresh token expired (invalid_grant) — need fresh login");
+                } else {
+                    panic!("❌ Live refresh failed: {}", e);
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_deserialize_ide_format() {
         let json = std::fs::read_to_string("examples/kiro-auth-token.json").unwrap();
