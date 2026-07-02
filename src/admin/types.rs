@@ -189,6 +189,20 @@ pub struct AddCredentialRequest {
 
     /// 账号来源渠道
     pub source_channel: Option<String>,
+
+    /// External IdP Token 端点 URL
+    #[serde(alias = "tokenEndpoint")]
+    pub token_endpoint: Option<String>,
+
+    /// OIDC Issuer URL
+    #[serde(alias = "issuerUrl")]
+    pub issuer_url: Option<String>,
+
+    /// OAuth scope（空格分隔字符串）
+    pub scopes: Option<String>,
+
+    /// 认证提供者标识
+    pub provider: Option<String>,
 }
 
 fn default_auth_method() -> String {
@@ -324,6 +338,17 @@ pub struct TokenJsonItem {
     pub machine_id: Option<String>,
     /// Profile ARN（企业 IdC 等场景的真实 profile 绑定；留空或占位符视为未提供）
     pub profile_arn: Option<String>,
+
+    /// External IdP Token 端点 URL
+    #[serde(alias = "token_endpoint")]
+    pub token_endpoint: Option<String>,
+
+    /// OIDC Issuer URL
+    #[serde(alias = "issuer_url")]
+    pub issuer_url: Option<String>,
+
+    /// OAuth scope（空格分隔字符串）
+    pub scopes: Option<String>,
 }
 
 /// 批量导入请求

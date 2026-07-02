@@ -45,7 +45,8 @@ pub struct KiroCredentials {
     pub profile_arn: Option<String>,
 
     /// 过期时间 (RFC3339 格式)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// alias "expired" 兼容 kiro-login-helper 格式
+    #[serde(skip_serializing_if = "Option::is_none", alias = "expired")]
     pub expires_at: Option<String>,
 
     /// 认证方式 (social / idc / api_key)
@@ -124,6 +125,24 @@ pub struct KiroCredentials {
     /// 禁用原因（持久化，重启后可恢复真实原因）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_reason: Option<String>,
+
+    // ── external_idp (Enterprise SSO / Azure AD) 字段 ──
+
+    /// External IdP Token 端点 URL（如 https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token）
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "tokenEndpoint")]
+    pub token_endpoint: Option<String>,
+
+    /// OIDC Issuer URL（如 https://login.microsoftonline.com/{tenant}/v2.0）
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "issuerUrl")]
+    pub issuer_url: Option<String>,
+
+    /// OAuth scope（空格分隔字符串，如 "api://.../codewhisperer:conversations offline_access"）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<String>,
+
+    /// 认证提供者标识（如 "ExternalIdp"、"AzureAD"）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 /// 判断是否为零（用于跳过序列化）
@@ -132,10 +151,22 @@ fn is_zero(value: &u32) -> bool {
 }
 
 fn canonicalize_auth_method_value(value: &str) -> &str {
-    if value.eq_ignore_ascii_case("builder-id") || value.eq_ignore_ascii_case("iam") {
+    let v = value.trim();
+    if v.eq_ignore_ascii_case("builder-id") || v.eq_ignore_ascii_case("iam") {
         "idc"
-    } else if value.eq_ignore_ascii_case("api_key") || value.eq_ignore_ascii_case("apikey") {
+    } else if v.eq_ignore_ascii_case("api_key") || v.eq_ignore_ascii_case("apikey") {
         "api_key"
+    } else if v.eq_ignore_ascii_case("external_idp")
+        || v.eq_ignore_ascii_case("azuread")
+        || v.eq_ignore_ascii_case("azure")
+        || v.eq_ignore_ascii_case("entra")
+        || v.eq_ignore_ascii_case("entra-id")
+        || v.eq_ignore_ascii_case("microsoft")
+        || v.eq_ignore_ascii_case("m365")
+        || v.eq_ignore_ascii_case("office365")
+        || v.eq_ignore_ascii_case("external")
+    {
+        "external_idp"
     } else {
         value
     }
@@ -501,6 +532,10 @@ mod tests {
             disabled: false,
             disable_reason: None,
             runtime_only: false,
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
+            provider: None,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -712,6 +747,10 @@ mod tests {
             disabled: false,
             disable_reason: None,
             runtime_only: false,
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
+            provider: None,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -747,6 +786,10 @@ mod tests {
             disabled: false,
             disable_reason: None,
             runtime_only: false,
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
+            provider: None,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -868,6 +911,10 @@ mod tests {
             disabled: false,
             disable_reason: None,
             runtime_only: false,
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
+            provider: None,
         };
 
         let json = original.to_pretty_json().unwrap();

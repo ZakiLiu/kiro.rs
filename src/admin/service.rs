@@ -776,6 +776,10 @@ impl AdminService {
             disabled: false,
             disable_reason: None,
             runtime_only: false,
+            token_endpoint: req.token_endpoint,
+            issuer_url: req.issuer_url,
+            scopes: req.scopes,
+            provider: req.provider,
         };
 
         // 调用 token_manager 添加凭据
@@ -1106,6 +1110,10 @@ impl AdminService {
             disabled: false,
             disable_reason: None,
             runtime_only: false,
+            token_endpoint: item.token_endpoint,
+            issuer_url: item.issuer_url,
+            scopes: item.scopes,
+            provider: item.provider,
         };
 
         match self.token_manager.add_credential(new_cred).await {
