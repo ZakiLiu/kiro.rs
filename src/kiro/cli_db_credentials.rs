@@ -17,6 +17,7 @@ use crate::kiro::model::credentials::KiroCredentials;
 pub const KIRO_CLI_DB_FILE_ENV: &str = "KIRO_CLI_DB_FILE";
 
 const TOKEN_KEYS: &[(&str, CliDbAuthKind)] = &[
+    ("kirocli:external_idp:token", CliDbAuthKind::ExternalIdp),
     ("kirocli:social:token", CliDbAuthKind::Social),
     ("kirocli:odic:token", CliDbAuthKind::Oidc),
     ("codewhisperer:odic:token", CliDbAuthKind::Oidc),
@@ -42,6 +43,7 @@ pub struct LoadedCliDbCredentials {
 enum CliDbAuthKind {
     Social,
     Oidc,
+    ExternalIdp,
 }
 
 impl CliDbAuthKind {
@@ -49,6 +51,7 @@ impl CliDbAuthKind {
         match self {
             Self::Social => "social",
             Self::Oidc => "idc",
+            Self::ExternalIdp => "external_idp",
         }
     }
 }
@@ -61,6 +64,10 @@ struct CliTokenRecord {
     region: Option<String>,
     expires_at: Option<String>,
     provider: Option<String>,
+    token_endpoint: Option<String>,
+    issuer_url: Option<String>,
+    scopes: Option<String>,
+    client_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,19 +139,38 @@ pub fn load_from_path(path: &Path) -> anyhow::Result<Option<LoadedCliDbCredentia
     let api_region = profile_arn.as_deref().and_then(region_from_profile_arn);
     let provider = non_empty(token.provider);
 
+    // provider 推断：如果 token 含 external_idp 相关 provider，覆盖 auth_kind
+    let effective_auth_method = if auth_kind == CliDbAuthKind::ExternalIdp {
+        "external_idp"
+    } else if let Some(ref p) = provider {
+        let pl = p.to_lowercase();
+        if pl.contains("external") || pl.contains("azure") || pl.contains("entra") {
+            "external_idp"
+        } else {
+            auth_kind.auth_method()
+        }
+    } else {
+        auth_kind.auth_method()
+    };
+
     let mut credentials = KiroCredentials {
         runtime_only: true,
         access_token: non_empty(token.access_token),
         refresh_token: non_empty(token.refresh_token),
         profile_arn,
         expires_at: non_empty(token.expires_at),
-        auth_method: Some(auth_kind.auth_method().to_string()),
-        client_id: registration
-            .as_ref()
-            .and_then(|registration| non_empty(registration.client_id.clone())),
+        auth_method: Some(effective_auth_method.to_string()),
+        client_id: non_empty(token.client_id).or_else(|| {
+            registration
+                .as_ref()
+                .and_then(|registration| non_empty(registration.client_id.clone()))
+        }),
         client_secret: registration
             .as_ref()
             .and_then(|registration| non_empty(registration.client_secret.clone())),
+        token_endpoint: non_empty(token.token_endpoint),
+        issuer_url: non_empty(token.issuer_url),
+        scopes: non_empty(token.scopes),
         region: non_empty(token.region).or_else(|| {
             registration
                 .as_ref()

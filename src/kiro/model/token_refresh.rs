@@ -41,6 +41,16 @@ pub struct IdcRefreshResponse {
     pub expires_in: Option<i64>,
 }
 
+/// External IdP Token 刷新响应体（Azure AD / OIDC 标准 snake_case）
+#[derive(Debug, Deserialize)]
+pub struct ExternalIdpRefreshResponse {
+    pub access_token: String,
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub expires_in: Option<i64>,
+}
+
 // ============ OIDC 设备授权登录 ============
 
 #[derive(Debug, Serialize)]

@@ -67,7 +67,13 @@ pub(crate) async fn refresh_token_with_id(
         }
     });
 
-    if auth_method.eq_ignore_ascii_case("idc")
+    if auth_method.eq_ignore_ascii_case("external_idp")
+        || auth_method.eq_ignore_ascii_case("azuread")
+        || auth_method.eq_ignore_ascii_case("entra")
+    {
+        crate::kiro::auth::external_idp::refresh_external_idp_token(credentials, config, proxy)
+            .await
+    } else if auth_method.eq_ignore_ascii_case("idc")
         || auth_method.eq_ignore_ascii_case("builder-id")
         || auth_method.eq_ignore_ascii_case("iam")
     {
