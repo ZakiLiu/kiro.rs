@@ -22,8 +22,8 @@ const GREETING_PATTERNS: &[&str] = &[
     "测试",
 ];
 
-/// 较长的已知探测短语（前缀匹配，大小写不敏感）——当前为空，预留扩展
-const PROBE_PHRASES: &[&str] = &[];
+/// 计算探测前缀（前缀匹配，大小写不敏感）
+const CALC_PROBE_PREFIX: &str = "calculate and respond with only the number, nothing else.";
 
 const MOCK_REPLIES: &[&str] = &[
     "Hi! How can I help you today?",
@@ -32,18 +32,17 @@ const MOCK_REPLIES: &[&str] = &[
     "Hello! How can I help you?",
 ];
 
-const MOCK_NUMBER_REPLIES: &[&str] = &["42", "7", "13", "256", "1024"];
-
 pub const MOCK_INPUT_TOKENS: i32 = 14;
 pub const MOCK_OUTPUT_TOKENS: i32 = 7;
 pub const MOCK_CACHE_READ_TOKENS: i32 = 456;
 pub const MOCK_CREDIT_USAGE: f64 = 0.0101;
 
-/// 检测结果：不是测活 / 问候型 / 数字探测型
+/// 检测结果
 pub enum HealthCheckKind {
     None,
     Greeting,
-    NumberProbe,
+    /// 计算探测：携带计算结果
+    CalcProbe(String),
 }
 
 pub fn detect_health_check(payload: &MessagesRequest) -> HealthCheckKind {
@@ -82,9 +81,12 @@ pub fn detect_health_check(payload: &MessagesRequest) -> HealthCheckKind {
     if text.len() <= 20 && GREETING_PATTERNS.iter().any(|p| lower == *p) {
         return HealthCheckKind::Greeting;
     }
-    // 较长的已知探测短语（前缀匹配，可能包含附带的示例数据）
-    if PROBE_PHRASES.iter().any(|p| lower.starts_with(p)) {
-        return HealthCheckKind::NumberProbe;
+    // 计算探测："Calculate and respond with ONLY the number..." + 算式
+    if lower.starts_with(CALC_PROBE_PREFIX) {
+        let remainder = text[CALC_PROBE_PREFIX.len()..].trim();
+        if let Some(answer) = eval_simple_math(remainder) {
+            return HealthCheckKind::CalcProbe(answer);
+        }
     }
     HealthCheckKind::None
 }
@@ -93,15 +95,97 @@ pub fn is_health_check_request(payload: &MessagesRequest) -> bool {
     !matches!(detect_health_check(payload), HealthCheckKind::None)
 }
 
-fn pick_reply(kind: &HealthCheckKind) -> &'static str {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos() as usize;
+fn pick_reply(kind: &HealthCheckKind) -> String {
     match kind {
-        HealthCheckKind::NumberProbe => MOCK_NUMBER_REPLIES[nanos % MOCK_NUMBER_REPLIES.len()],
-        _ => MOCK_REPLIES[nanos % MOCK_REPLIES.len()],
+        HealthCheckKind::CalcProbe(answer) => answer.clone(),
+        _ => {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos() as usize;
+            MOCK_REPLIES[nanos % MOCK_REPLIES.len()].to_string()
+        }
     }
+}
+
+/// 简易数学表达式求值（支持 +、-、*、/、带括号）
+fn eval_simple_math(expr: &str) -> Option<String> {
+    // 清理：提取 "Q: ... = ?" 或 "... = ?" 中的算式部分
+    let expr = expr
+        .lines()
+        .find(|l| l.contains('=') || l.contains('+') || l.contains('-') || l.contains('*') || l.contains('/'))
+        .unwrap_or(expr);
+    let expr = expr.strip_prefix("Q:").unwrap_or(expr).trim();
+    let expr = expr.strip_suffix("= ?").or_else(|| expr.strip_suffix("=?")).unwrap_or(expr).trim();
+    let expr = expr.strip_suffix('=').unwrap_or(expr).trim();
+
+    if expr.is_empty() {
+        return None;
+    }
+
+    // 只允许数字、运算符、空格、括号、小数点
+    if !expr.chars().all(|c| c.is_ascii_digit() || "+-*/().% ".contains(c)) {
+        return None;
+    }
+
+    let result = eval_expr(&mut expr.chars().peekable())?;
+    // 整数结果不带小数点
+    if (result - result.round()).abs() < 1e-9 {
+        Some(format!("{}", result as i64))
+    } else {
+        Some(format!("{:.2}", result))
+    }
+}
+
+fn eval_expr(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<f64> {
+    let mut result = eval_term(chars)?;
+    loop {
+        skip_spaces(chars);
+        match chars.peek() {
+            Some('+') => { chars.next(); result += eval_term(chars)?; }
+            Some('-') => { chars.next(); result -= eval_term(chars)?; }
+            _ => break,
+        }
+    }
+    Some(result)
+}
+
+fn eval_term(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<f64> {
+    let mut result = eval_factor(chars)?;
+    loop {
+        skip_spaces(chars);
+        match chars.peek() {
+            Some('*') => { chars.next(); result *= eval_factor(chars)?; }
+            Some('/') => { chars.next(); let d = eval_factor(chars)?; if d == 0.0 { return None; } result /= d; }
+            Some('%') => { chars.next(); let d = eval_factor(chars)?; if d == 0.0 { return None; } result %= d; }
+            _ => break,
+        }
+    }
+    Some(result)
+}
+
+fn eval_factor(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<f64> {
+    skip_spaces(chars);
+    if chars.peek() == Some(&'(') {
+        chars.next();
+        let result = eval_expr(chars)?;
+        skip_spaces(chars);
+        if chars.peek() == Some(&')') { chars.next(); }
+        return Some(result);
+    }
+    // 负号
+    let neg = if chars.peek() == Some(&'-') { chars.next(); true } else { false };
+    skip_spaces(chars);
+    let mut num = String::new();
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() || c == '.' { num.push(c); chars.next(); } else { break; }
+    }
+    let val: f64 = num.parse().ok()?;
+    Some(if neg { -val } else { val })
+}
+
+fn skip_spaces(chars: &mut std::iter::Peekable<std::str::Chars>) {
+    while chars.peek() == Some(&' ') { chars.next(); }
 }
 
 fn mock_usage() -> serde_json::Value {

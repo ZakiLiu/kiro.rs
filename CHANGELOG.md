@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.0.49] - 2026-07-02
+
+### Added
+- **测活拦截计算式探测** — "Calculate and respond with ONLY the number, nothing else. Q: 3+5=?" 类请求被拦截，内置简易数学求值器（支持 +、-、*、/、%、括号）直接返回计算结果，不走上游 (`src/anthropic/health_check.rs`)
+
 ## [v2.0.48] - 2026-07-02
 
 ### Fixed
