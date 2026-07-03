@@ -1279,13 +1279,18 @@ pub async fn post_messages(
         let has_credentials = state
             .kiro_provider
             .as_ref()
-            .map(|p| p.token_manager().available_count() > 0)
+            .map(|p| {
+                p.token_manager()
+                    .available_count_for_group(auth.group.as_deref())
+                    > 0
+            })
             .unwrap_or(false);
 
         if !has_credentials {
             tracing::info!(
                 model = %payload.model,
                 stream = %payload.stream,
+                group = ?auth.group,
                 "测活请求拦截 → 无可用凭据，返回 401"
             );
             return super::health_check::mock_unauthorized_response();
@@ -2528,10 +2533,16 @@ fn is_likely_base64(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::admin::trace_db::TraceKeySource;
     use crate::anthropic::types::{Message, SystemMessage};
+    use crate::kiro::model::credentials::KiroCredentials;
     use crate::kiro::model::requests::conversation::{
         ConversationState, CurrentMessage, KiroImage, Message as KiroMessage, UserInputMessage,
     };
+    use crate::kiro::provider::KiroProvider;
+    use crate::kiro::token_manager::MultiTokenManager;
+    use crate::model::config::Config;
+    use std::sync::Arc;
 
     fn sample_messages_request() -> MessagesRequest {
         // 生成一个超过 1024 tokens 的 system message 用于测试缓存
@@ -2726,6 +2737,68 @@ mod tests {
             assert!(ids.contains(&expected), "{expected} missing");
         }
         assert!(!ids.contains(&"auto"));
+    }
+
+    #[tokio::test]
+    async fn test_health_check_uses_group_level_credential_availability() {
+        let mut free = KiroCredentials::default();
+        free.groups = vec!["Free".to_string()];
+
+        let mut disabled_power = KiroCredentials::default();
+        disabled_power.groups = vec!["Power".to_string()];
+        disabled_power.disabled = true;
+        disabled_power.disable_reason = Some("Manual".to_string());
+
+        let token_manager = Arc::new(
+            MultiTokenManager::new(
+                Config::default(),
+                vec![free, disabled_power],
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        );
+        let provider = Arc::new(KiroProvider::new(token_manager));
+        let state = AppState::new(
+            "test-api-key",
+            Arc::new(parking_lot::RwLock::new(
+                crate::anthropic::middleware::PromptCacheRuntime::new(300, false),
+            )),
+        )
+        .with_kiro_provider(provider);
+        let auth = AuthIdentity {
+            key_id: 1,
+            key_source: TraceKeySource::MasterApiKey,
+            group: Some("Power".to_string()),
+        };
+        let payload = MessagesRequest {
+            model: "claude-sonnet-4".to_string(),
+            max_tokens: 16,
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: serde_json::json!("ping"),
+            }],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            output_config: None,
+            reasoning_effort: None,
+            metadata: None,
+        };
+
+        let response = post_messages(
+            OriginalUri("/v1/messages".parse().unwrap()),
+            State(state),
+            axum::Extension(auth),
+            HeaderMap::new(),
+            JsonExtractor(payload),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     // 注意：is_no_credentials_error / is_quota_exhausted_error / is_all_credentials_cooling_down_error

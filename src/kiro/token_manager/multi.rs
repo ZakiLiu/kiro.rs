@@ -806,6 +806,15 @@ impl MultiTokenManager {
         self.entries.lock().iter().filter(|e| !e.disabled).count()
     }
 
+    /// 返回指定分组下可用的凭据数量（如果 group 为 None 则返回全局计数）
+    pub fn available_count_for_group(&self, group: Option<&str>) -> usize {
+        self.entries
+            .lock()
+            .iter()
+            .filter(|e| !e.disabled && credential_matches_group(&e.credentials, group))
+            .count()
+    }
+
     /// 输出一份"为什么当前没有可用凭据"的诊断信息（用于排障）
     ///
     /// 注意：该方法只在 DEBUG 日志级别开启时执行，避免给正常路径引入额外开销。
@@ -2340,7 +2349,7 @@ impl MultiTokenManager {
     /// # Arguments
     /// * `id` - 凭据 ID（来自 CallContext）
     #[allow(dead_code)]
-    pub fn report_failure(&self, id: u64) -> bool {
+    pub fn report_failure(&self, id: u64, message: Option<String>) -> bool {
         let result = {
             let mut entries = self.entries.lock();
 
@@ -2366,6 +2375,7 @@ impl MultiTokenManager {
                 entry.recovery_attempts = 0;
                 entry.auto_heal_reason = Some(AutoHealReason::TooManyFailures);
                 entry.disable_reason = Some(DisableReason::FailureLimit);
+                entry.disable_message = message;
                 tracing::error!("凭据 #{} 已连续失败 {} 次，已被禁用", id, failure_count);
 
                 // 移除该凭据的亲和性绑定

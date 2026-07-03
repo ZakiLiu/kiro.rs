@@ -207,20 +207,41 @@ mod tests {
 
         // 凭据会自动分配 ID（从 1 开始）
         // MAX_FAILURES_PER_CREDENTIAL = 3，所以前两次失败不会禁用
-        assert!(manager.report_failure(1));
+        assert!(manager.report_failure(1, None));
         assert_eq!(manager.available_count(), 2);
-        assert!(manager.report_failure(1));
+        assert!(manager.report_failure(1, None));
         assert_eq!(manager.available_count(), 2);
 
         // 第三次失败会禁用第一个凭据
-        assert!(manager.report_failure(1));
+        assert!(manager.report_failure(1, None));
         assert_eq!(manager.available_count(), 1);
 
         // 继续失败第二个凭据（使用 ID 2），需要 3 次才会禁用
-        assert!(manager.report_failure(2));
-        assert!(manager.report_failure(2));
-        assert!(!manager.report_failure(2)); // 所有凭据都禁用了
+        assert!(manager.report_failure(2, None));
+        assert!(manager.report_failure(2, None));
+        assert!(!manager.report_failure(2, None)); // 所有凭据都禁用了
         assert_eq!(manager.available_count(), 0);
+    }
+
+    #[test]
+    fn test_multi_token_manager_report_failure_records_disable_message() {
+        let config = Config::default();
+        let cred = KiroCredentials::default();
+
+        let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
+
+        assert!(manager.report_failure(1, Some("first transient failure".to_string())));
+        assert!(manager.report_failure(1, Some("second transient failure".to_string())));
+        assert!(!manager.report_failure(1, Some("upstream 500: final failure body".to_string())));
+
+        let snapshot = manager.snapshot();
+        let entry = snapshot.entries.iter().find(|e| e.id == 1).unwrap();
+        assert!(entry.disabled);
+        assert_eq!(entry.disable_reason, Some(DisableReason::FailureLimit));
+        assert_eq!(
+            entry.disable_message.as_deref(),
+            Some("upstream 500: final failure body")
+        );
     }
 
     #[test]
@@ -231,14 +252,32 @@ mod tests {
         let manager = MultiTokenManager::new(config, vec![cred], None, None, false).unwrap();
 
         // 失败一次（使用 ID 1）
-        manager.report_failure(1);
+        manager.report_failure(1, None);
 
         // 成功后重置计数（使用 ID 1）
         manager.report_success(1);
 
         // 再失败一次不会禁用（因为计数已重置）
-        manager.report_failure(1);
+        manager.report_failure(1, None);
         assert_eq!(manager.available_count(), 1);
+    }
+
+    #[test]
+    fn test_multi_token_manager_available_count_for_group_filters_disabled_credentials() {
+        let config = Config::default();
+        let mut free = KiroCredentials::default();
+        free.groups = vec!["Free".to_string()];
+        let mut power = KiroCredentials::default();
+        power.groups = vec!["Power".to_string()];
+        power.disabled = true;
+        power.disable_reason = Some("Manual".to_string());
+
+        let manager = MultiTokenManager::new(config, vec![free, power], None, None, false).unwrap();
+
+        assert_eq!(manager.available_count(), 1);
+        assert_eq!(manager.available_count_for_group(None), 1);
+        assert_eq!(manager.available_count_for_group(Some("Free")), 1);
+        assert_eq!(manager.available_count_for_group(Some("Power")), 0);
     }
 
     #[tokio::test]
@@ -256,10 +295,10 @@ mod tests {
 
         // 凭据会自动分配 ID（从 1 开始）
         for _ in 0..MAX_FAILURES_PER_CREDENTIAL {
-            manager.report_failure(1);
+            manager.report_failure(1, None);
         }
         for _ in 0..MAX_FAILURES_PER_CREDENTIAL {
-            manager.report_failure(2);
+            manager.report_failure(2, None);
         }
 
         assert_eq!(manager.available_count(), 0);

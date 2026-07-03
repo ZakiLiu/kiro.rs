@@ -258,7 +258,11 @@ mod tests {
         assert_eq!(message_start_usage["input_tokens"], json!(306));
         // message_delta.usage 只含 output_tokens（Anthropic 标准）
         assert!(message_delta_usage.get("input_tokens").is_none());
-        assert!(message_delta_usage.get("cache_creation_input_tokens").is_none());
+        assert!(
+            message_delta_usage
+                .get("cache_creation_input_tokens")
+                .is_none()
+        );
     }
     #[test]
     fn test_stream_context_omits_cache_usage_fields_when_disabled() {
@@ -279,11 +283,19 @@ mod tests {
             .expect("message_delta should exist");
 
         assert_eq!(message_start_usage["input_tokens"], json!(321));
-        assert!(message_start_usage.get("cache_creation_input_tokens").is_none());
+        assert!(
+            message_start_usage
+                .get("cache_creation_input_tokens")
+                .is_none()
+        );
         assert!(message_start_usage.get("cache_read_input_tokens").is_none());
         // message_delta.usage 只含 output_tokens
         assert!(message_delta_usage.get("input_tokens").is_none());
-        assert!(message_delta_usage.get("cache_creation_input_tokens").is_none());
+        assert!(
+            message_delta_usage
+                .get("cache_creation_input_tokens")
+                .is_none()
+        );
         assert!(message_delta_usage.get("cache_creation").is_none());
     }
 
