@@ -361,7 +361,7 @@ jobs:
               BEGIN { found = 0 }
               /^## \[/ {
                 if (found) exit
-                if (index($0, "[" ver "]") > 0) { found = 1; next }
+                if (index($0, "[v" ver "]") > 0 || index($0, "[" ver "]") > 0) { found = 1; next }
               }
               found { print }
             ' CHANGELOG.md > RELEASE_NOTES.md
