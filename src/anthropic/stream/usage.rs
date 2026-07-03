@@ -1,22 +1,15 @@
 //! Usage 计算
 
-use crate::kiro::model::events::MeteringEvent;
-
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct FinalUsage<'a> {
-    pub input_tokens: i32,
+pub(crate) struct FinalUsage {
     pub output_tokens: i32,
     pub thinking_tokens: i32,
-    pub cache_usage: Option<CacheUsageBreakdown>,
-    pub metering: Option<&'a MeteringEvent>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CacheUsageBreakdown {
     pub cache_creation_input_tokens: i32,
     pub cache_read_input_tokens: i32,
-    pub cache_creation_5m_input_tokens: i32,
-    pub cache_creation_1h_input_tokens: i32,
 }
 
 /// 将总输入 token 转为 Anthropic usage 的 input_tokens 口径（剔除 cache 读写）

@@ -654,6 +654,17 @@ impl MultiTokenManager {
         *self.proxy.write() = proxy;
     }
 
+    /// 清除全局代理配置并持久化
+    pub fn clear_global_proxy_config(&self) {
+        let mut config = self.config.write();
+        config.proxy_url = None;
+        config.proxy_username = None;
+        config.proxy_password = None;
+        if let Err(e) = config.save() {
+            tracing::warn!("自动清除全局代理配置后持久化失败: {}", e);
+        }
+    }
+
     /// 热更新全局 Region
     pub fn update_region(&self, region: String) {
         self.config.write().region = region;

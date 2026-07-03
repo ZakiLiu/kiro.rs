@@ -64,17 +64,6 @@ fn default_true() -> bool {
     true
 }
 
-/// 代理分配结果
-pub enum GetUrlResult {
-    /// 代理存在且已启用，返回 URL
-    Ok(String),
-    /// 代理不存在
-    NotFound,
-    /// 代理存在但已被禁用
-    Disabled,
-}
-
-
 /// 一次全量健康检查的摘要
 #[derive(Debug, Clone, Default)]
 pub struct CheckSummary {
@@ -254,16 +243,6 @@ impl ProxyPoolManager {
         drop(entries);
         self.persist()?;
         Ok(())
-    }
-
-    /// 获取代理 URL，区分"不存在"和"已禁用"两种情况
-    #[allow(dead_code)]
-    pub fn get_url(&self, id: u64) -> GetUrlResult {
-        match self.entries.lock().iter().find(|e| e.id == id) {
-            None => GetUrlResult::NotFound,
-            Some(e) if !e.enabled => GetUrlResult::Disabled,
-            Some(e) => GetUrlResult::Ok(e.url.clone()),
-        }
     }
 
     /// 获取所有「可用于分配」的代理 URL：已启用且非 Unhealthy

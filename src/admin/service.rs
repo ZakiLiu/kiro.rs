@@ -1901,6 +1901,7 @@ impl AdminService {
         };
 
         let mut assigned = 0u32;
+        let mut assigned_ids = Vec::new();
         let mut errors = Vec::new();
         for (i, &cred_id) in target_ids.iter().enumerate() {
             let proxy_url = &available_urls[i % available_urls.len()];
@@ -1908,8 +1909,17 @@ impl AdminService {
                 .token_manager
                 .set_credential_proxy(cred_id, Some(proxy_url.clone()))
             {
-                Ok(()) => assigned += 1,
+                Ok(()) => {
+                    assigned += 1;
+                    assigned_ids.push(cred_id);
+                }
                 Err(e) => errors.push(format!("凭据 #{}: {}", cred_id, e)),
+            }
+        }
+
+        if !assigned_ids.is_empty() {
+            if let Some(provider) = &self.kiro_provider {
+                provider.invalidate_client_cache_for(&assigned_ids);
             }
         }
 

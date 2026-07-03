@@ -1689,8 +1689,6 @@ async fn handle_stream_request(
     let final_cache_usage = final_cache_context.map(|ctx| CacheUsageBreakdown {
         cache_creation_input_tokens: ctx.cache_creation_input_tokens,
         cache_read_input_tokens: ctx.cache_read_input_tokens,
-        cache_creation_5m_input_tokens: ctx.cache_creation_5m_input_tokens,
-        cache_creation_1h_input_tokens: ctx.cache_creation_1h_input_tokens,
     });
 
     // 创建流处理上下文
@@ -1739,11 +1737,11 @@ async fn handle_stream_request(
         let duration_ms = stream_start.elapsed().as_millis() as u64;
         let snap = usage_snapshot.lock().take().unwrap_or_default();
         let total_output = snap.output_tokens + snap.thinking_tokens;
-        let billed_input = billed_input_tokens(
-            stream_input_tokens,
-            snap.cache_creation,
-            snap.cache_read,
-        );
+        let billed_input = if snap.input_tokens > 0 {
+            snap.input_tokens
+        } else {
+            billed_input_tokens(stream_input_tokens, snap.cache_creation, snap.cache_read)
+        };
         record_request_telemetry(
             &stream_state,
             &stream_auth,
@@ -2617,8 +2615,6 @@ mod tests {
             Some(CacheUsageBreakdown {
                 cache_creation_input_tokens: 0,
                 cache_read_input_tokens: 95,
-                cache_creation_5m_input_tokens: 0,
-                cache_creation_1h_input_tokens: 0,
             }),
             false,
             std::collections::HashMap::new(),

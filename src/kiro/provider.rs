@@ -148,6 +148,28 @@ impl KiroProvider {
         Ok(())
     }
 
+    /// 代理隧道故障时自动清除代理配置
+    ///
+    /// 清除全局代理和指定凭据的代理，使后续重试不再走已崩溃的代理隧道。
+    fn auto_clear_proxy_on_tunnel_failure(&self, credential_id: u64) {
+        if self.global_proxy.read().is_some() {
+            if let Err(e) = self.update_global_proxy(None) {
+                tracing::warn!("自动清除全局代理运行时配置失败: {}", e);
+            }
+            self.token_manager.update_proxy(None);
+            self.token_manager.clear_global_proxy_config();
+            crate::token::update_proxy(None);
+            tracing::warn!("代理隧道故障（TunnelUnsuccessful），已自动清除全局代理配置");
+        }
+
+        if let Err(e) = self.token_manager.set_credential_proxy(credential_id, None) {
+            tracing::warn!(credential_id = %credential_id, "自动清除凭据代理失败: {}", e);
+        } else {
+            self.invalidate_client_cache_for(&[credential_id]);
+            tracing::warn!(credential_id = %credential_id, "代理隧道故障，已自动清除凭据代理配置");
+        }
+    }
+
     /// 清除指定凭据的 HTTP Client 缓存（代理变更后必须调用，否则旧 Client 继续走旧代理）
     pub fn invalidate_client_cache_for(&self, ids: &[u64]) {
         if ids.is_empty() {
@@ -1045,6 +1067,11 @@ impl KiroProvider {
                         error_snippet: truncate_snippet(&e.to_string()),
                         duration_ms,
                     });
+                    // 代理隧道故障：自动清除代理配置，使后续重试走直连
+                    if format!("{:?}", e).contains("TunnelUnsuccessful") {
+                        self.auto_clear_proxy_on_tunnel_failure(ctx.id);
+                        pending_retry_id = Some(ctx.id);
+                    }
                     // 网络错误通常是上游/链路瞬态问题，不应导致"禁用凭据"或"切换凭据"
                     // （否则一段时间网络抖动会把所有凭据都误禁用，需要重启才能恢复）
                     last_error = Some(e.into());

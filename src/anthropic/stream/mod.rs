@@ -29,22 +29,16 @@ mod tests {
         Some(CacheUsageBreakdown {
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 0,
-            cache_creation_5m_input_tokens: 0,
-            cache_creation_1h_input_tokens: 0,
         })
     }
 
     fn cache_usage(
         cache_creation_input_tokens: i32,
         cache_read_input_tokens: i32,
-        cache_creation_5m_input_tokens: i32,
-        cache_creation_1h_input_tokens: i32,
     ) -> Option<CacheUsageBreakdown> {
         Some(CacheUsageBreakdown {
             cache_creation_input_tokens,
             cache_read_input_tokens,
-            cache_creation_5m_input_tokens,
-            cache_creation_1h_input_tokens,
         })
     }
 
@@ -222,7 +216,7 @@ mod tests {
         let mut ctx = StreamContext::new_with_thinking(
             "test-model",
             321,
-            cache_usage(7, 8, 0, 0),
+            cache_usage(7, 8),
             false,
             HashMap::new(),
         );
@@ -243,7 +237,7 @@ mod tests {
         let mut ctx = StreamContext::new_with_thinking(
             "test-model",
             321,
-            cache_usage(7, 8, 0, 0),
+            cache_usage(7, 8),
             false,
             HashMap::new(),
         );
@@ -298,7 +292,7 @@ mod tests {
         let mut ctx = StreamContext::new_with_thinking(
             "test-model",
             1000,
-            cache_usage(50, 800, 30, 20),
+            cache_usage(50, 800),
             false,
             HashMap::new(),
         );

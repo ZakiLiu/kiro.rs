@@ -972,19 +972,13 @@ impl StreamContext {
                     .map_or(0, |c| c.cache_creation_input_tokens),
             );
             FinalUsage {
-                input_tokens: split.input_tokens,
                 output_tokens: split.output_tokens,
                 thinking_tokens: self.thinking_tokens,
-                cache_usage: self.cache_usage,
-                metering: self.metering.as_ref(),
             }
         } else {
             FinalUsage {
-                input_tokens: billed_input_tokens,
                 output_tokens: self.output_tokens,
                 thinking_tokens: self.thinking_tokens,
-                cache_usage: self.cache_usage,
-                metering: self.metering.as_ref(),
             }
         };
         events.extend(self.state_manager.generate_final_events(final_usage));

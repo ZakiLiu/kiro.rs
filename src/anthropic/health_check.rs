@@ -91,10 +91,6 @@ pub fn detect_health_check(payload: &MessagesRequest) -> HealthCheckKind {
     HealthCheckKind::None
 }
 
-pub fn is_health_check_request(payload: &MessagesRequest) -> bool {
-    !matches!(detect_health_check(payload), HealthCheckKind::None)
-}
-
 fn pick_reply(kind: &HealthCheckKind) -> String {
     match kind {
         HealthCheckKind::CalcProbe(answer) => answer.clone(),

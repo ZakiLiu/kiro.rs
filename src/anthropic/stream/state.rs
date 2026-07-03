@@ -242,7 +242,7 @@ impl SseStateManager {
     }
 
     /// 生成最终事件序列
-    pub fn generate_final_events(&mut self, usage: FinalUsage<'_>) -> Vec<SseEvent> {
+    pub fn generate_final_events(&mut self, usage: FinalUsage) -> Vec<SseEvent> {
         let mut events = Vec::new();
 
         // 关闭所有未关闭的块
