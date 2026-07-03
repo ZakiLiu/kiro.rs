@@ -93,6 +93,34 @@ async fn main() {
         }
     }
 
+    // 导入额外凭据文件（--import 参数，支持 external_idp 等各种格式）
+    for import_path in &args.import_credentials {
+        match std::fs::read_to_string(import_path) {
+            Ok(json_str) => {
+                match serde_json::from_str::<KiroCredentials>(&json_str) {
+                    Ok(mut cred) => {
+                        cred.canonicalize_auth_method();
+                        tracing::info!(
+                            path = %import_path,
+                            auth_method = ?cred.auth_method.as_deref(),
+                            has_access_token = cred.access_token.is_some(),
+                            has_refresh_token = cred.refresh_token.is_some(),
+                            has_token_endpoint = cred.token_endpoint.is_some(),
+                            "已导入凭据文件"
+                        );
+                        credentials_list.push(cred);
+                    }
+                    Err(e) => {
+                        tracing::warn!(path = %import_path, error = %e, "导入凭据文件解析失败，跳过");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(path = %import_path, error = %e, "导入凭据文件读取失败，跳过");
+            }
+        }
+    }
+
     if let Ok(kiro_api_key) = std::env::var("KIRO_API_KEY")
         && !kiro_api_key.trim().is_empty()
     {
