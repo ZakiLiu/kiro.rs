@@ -1,5 +1,12 @@
 # Changelog
 
+## [v2.1.9] - 2026-07-04
+
+### Fixed
+- **report_failure 记录禁用原因** — 累积失败禁用时保存最后一次错误详情到 disable_message，与鉴权失败路径对齐
+- **测活按分组检查可用凭据** — 测活请求改用 available_count_for_group(group)，指定分组凭据全部禁用时返回 401
+- **测活 401 写入请求日志** — 分组无可用凭据返回 401 时补 record_request_telemetry 和 metrics 记录
+
 ## [v2.1.8] - 2026-07-03
 
 ### Fixed
