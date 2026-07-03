@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.1.3] - 2026-07-03
+
+### Fixed
+- **External IdP 导入 trust-on-import + 文件选择** — 修复 External IdP 凭据导入的信任机制和文件选择功能
+
 ## [v2.1.2] - 2026-07-03
 
 ### Added
