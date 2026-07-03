@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.1.5] - 2026-07-03
+
+### Fixed
+- **External IdP 凭据跳过余额查询** — 修复 external_idp 凭据跳过余额查询，因 Azure AD JWT 不被 Kiro usage API 认可
+
 ## [v2.1.4] - 2026-07-03
 
 ### Fixed
