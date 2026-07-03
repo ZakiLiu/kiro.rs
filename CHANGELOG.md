@@ -1,5 +1,18 @@
 # Changelog
 
+## [v2.1.8] - 2026-07-03
+
+### Fixed
+- **代理故障自愈** — TunnelUnsuccessful 时自动清除全局代理和凭据代理，后续重试走直连；复用 pending_retry_id 保持上游 prompt cache 亲和性
+- **Round-robin 批量分配代理缓存失效** — 修复批量分配代理后内存中 HTTP Client 仍走旧代理的 bug
+- **自适应压缩 token 维度触发** — 新增 maxInputTokens（默认 200K），与 maxRequestBodyBytes 双维度触发自适应压缩，防止超长输入绕过字节阈值直送上游被 400
+- **Stream telemetry input_tokens 精度** — 优先使用 tokenUsageEvent 精确值，fallback 到估算值
+
+### Changed
+- **FinalUsage / CacheUsageBreakdown 瘦身** — 移除不再消费的 input_tokens、cache_usage、metering 等字段
+- **删除 OIDC 授权码预留代码** — 清理 oidc_discovery / build_authorization_url / exchange_code_for_token 等未使用 helper
+- **删除 dead code** — GetUrlResult / get_url()、is_health_check_request() 等历史遗留
+
 ## [v2.1.7] - 2026-07-03
 
 ### Fixed
