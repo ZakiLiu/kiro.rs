@@ -465,17 +465,6 @@ export async function completeSocialLogin(
   return data
 }
 
-// 发起 External IdP (Azure AD) 登录
-export async function startExternalIdpLogin(
-  req: { issuerUrl: string; clientId: string; region?: string; scopes?: string }
-): Promise<StartSocialLoginResponse> {
-  const { data } = await api.post<StartSocialLoginResponse>('/auth/external-idp/start', {
-    callbackBaseUrl: deriveCallbackBaseUrl(),
-    ...req,
-  })
-  return data
-}
-
 // ============ 重新登录（更新已有凭据 Token） ============
 
 // 发起 Social 重新登录

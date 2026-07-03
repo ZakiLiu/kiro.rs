@@ -1009,25 +1009,6 @@ pub struct CompleteSocialLoginRequest {
     pub path: String,
 }
 
-// ============ External IdP 登录（OIDC Authorization Code + PKCE）============
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StartExternalIdpLoginRequest {
-    pub issuer_url: String,
-    pub client_id: String,
-    #[serde(default)]
-    pub scopes: Option<String>,
-    #[serde(default)]
-    pub priority: u32,
-    #[serde(default)]
-    pub region: Option<String>,
-    #[serde(default)]
-    pub proxy_url: Option<String>,
-    #[serde(default)]
-    pub callback_base_url: Option<String>,
-}
-
 fn default_oauth_path() -> String {
     "/oauth/callback".to_string()
 }
