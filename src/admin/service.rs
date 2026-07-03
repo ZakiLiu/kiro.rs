@@ -640,6 +640,23 @@ impl AdminService {
             .await
             .map_err(|e| self.classify_balance_error(e, id))?;
 
+        // external_idp 返回的 usage_breakdown_list 为空 → usage_limit = 0
+        // 用 subscription_title == "External IdP" 判断，返回 -1 表示"不支持查询"
+        if usage.subscription_title() == Some("External IdP") {
+            return Ok(BalanceResponse {
+                id,
+                subscription_title: Some("External IdP".to_string()),
+                current_usage: -1.0,
+                usage_limit: -1.0,
+                remaining: -1.0,
+                usage_percentage: -1.0,
+                next_reset_at: None,
+                overage_enabled: None,
+                overage_capable: None,
+                overage_capability_raw: None,
+            });
+        }
+
         let current_usage = usage.current_usage();
         let usage_limit = usage.usage_limit();
         let remaining = (usage_limit - current_usage).max(0.0);

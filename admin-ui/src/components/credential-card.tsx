@@ -641,6 +641,20 @@ export function CredentialCard({
                 正在查询余额…
               </div>
             ) : balance ? (
+              balance.usageLimit === -1 ? (
+              /* External IdP: 余额查询不支持 */
+              <div className="space-y-2 py-2">
+                <div className="text-center text-sm text-muted-foreground">
+                  <span className="font-medium text-foreground">{balance.subscriptionTitle}</span>
+                </div>
+                <div className="text-center text-xs text-muted-foreground">
+                  余额查询不适用于 External IdP 凭据
+                </div>
+                <div className="text-center text-xs text-muted-foreground">
+                  请在 <a href="https://app.kiro.dev" target="_blank" rel="noreferrer" className="underline">app.kiro.dev</a> 查看用量
+                </div>
+              </div>
+              ) : (
               <div className="space-y-3">
                 <div className="flex min-w-0 items-end justify-between gap-3">
                   <div className="min-w-0">
@@ -691,6 +705,7 @@ export function CredentialCard({
                   </span>
                 </div>
               </div>
+              )
             ) : (
               <div className="flex flex-1 items-center justify-center text-center text-[13px] text-muted-foreground">
                 余额未查询，点击顶部"刷新当前页余额"即可加载。
