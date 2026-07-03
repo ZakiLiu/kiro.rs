@@ -1,5 +1,14 @@
 # Changelog
 
+## [v2.1.2] - 2026-07-03
+
+### Added
+- **--import 参数支持导入额外凭据文件** — 命令行增加 `--import` 参数，支持导入额外凭据文件（含 external_idp 认证方式）
+- **Admin UI External IdP 凭据导入** — 导入菜单增加 External IdP 凭据导入对话框
+
+### Refactored
+- **移除 External IdP 登录功能** — 因 redirect URI 不兼容，移除 Azure AD (External IdP) 浏览器 SSO 登录入口
+
 ## [v2.1.1] - 2026-07-03
 
 ### Added
