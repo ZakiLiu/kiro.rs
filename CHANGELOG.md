@@ -1,5 +1,13 @@
 # Changelog
 
+## [v2.1.7] - 2026-07-03
+
+### Fixed
+- **External IdP 余额卡片显示优化** — `fetch_balance` 对 External IdP 返回 -1 标记值，前端识别后显示友好提示而非误导性的 $0.00 / 0.0%
+
+### Tests
+- **本机 SSO cache 凭据端到端验证** — 新增 External IdP 本机 SSO cache 读取与 refresh 全链路测试
+
 ## [v2.1.6] - 2026-07-03
 
 ### Fixed
