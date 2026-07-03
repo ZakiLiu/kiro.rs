@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.1.6] - 2026-07-03
+
+### Fixed
+- **压缩后 tool_use/tool_result 配对修复** — 修复压缩后 tool_use/tool_result 非相邻导致上游 TOOL_USE_RESULT_MISMATCH 400 错误
+
 ## [v2.1.5] - 2026-07-03
 
 ### Fixed
