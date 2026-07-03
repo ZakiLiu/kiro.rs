@@ -455,6 +455,90 @@ mod tests {
     }
 
     #[test]
+    fn test_deserialize_local_sso_cache() {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap();
+        let path = std::path::PathBuf::from(home)
+            .join(".aws/sso/cache/kiro-auth-token.json");
+        if !path.exists() {
+            eprintln!("⏭️ 跳过：本机无 kiro-auth-token.json");
+            return;
+        }
+        let json = std::fs::read_to_string(&path).unwrap();
+        let cred: KiroCredentials = serde_json::from_str(&json).unwrap();
+        assert_eq!(cred.auth_method.as_deref(), Some("external_idp"));
+        assert!(cred.access_token.is_some());
+        assert!(cred.refresh_token.is_some());
+        assert!(cred.token_endpoint.is_some());
+        assert!(cred.client_id.is_some());
+
+        // JWT exp 解析
+        let exp = parse_jwt_exp(cred.access_token.as_deref().unwrap());
+        assert!(exp.is_some(), "JWT exp 应可解析");
+        let exp_val = exp.unwrap();
+        eprintln!("✅ JWT exp = {exp_val}");
+
+        // trust-on-import 判定
+        let now = chrono::Utc::now().timestamp();
+        if exp_val > now {
+            eprintln!("✅ trust-on-import: JWT 未过期 (剩余 {}s)", exp_val - now);
+        } else {
+            eprintln!("⚠️ trust-on-import: JWT 已过期 (过期 {}s)", now - exp_val);
+        }
+
+        // SSRF 验证
+        let te = cred.token_endpoint.as_deref().unwrap();
+        assert!(validate_with_default_allowlist(te).is_ok(), "tokenEndpoint 应通过 allow-list");
+        eprintln!("✅ SSRF allow-list 验证通过: {te}");
+
+        // normalize
+        let normalized = normalize_import_auth_method(
+            cred.auth_method.as_deref().unwrap_or(""),
+            cred.client_id.as_deref().unwrap_or(""),
+            "",
+            te,
+        );
+        assert_eq!(normalized, "external_idp");
+        eprintln!("✅ normalize → {normalized}");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_live_refresh_from_local_sso_cache() {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap();
+        let path = std::path::PathBuf::from(home)
+            .join(".aws/sso/cache/kiro-auth-token.json");
+        if !path.exists() {
+            eprintln!("⏭️ 跳过：本机无 kiro-auth-token.json");
+            return;
+        }
+        let json = std::fs::read_to_string(&path).unwrap();
+        let cred: KiroCredentials = serde_json::from_str(&json).unwrap();
+        let config = Config::default();
+
+        eprintln!("🔄 正在刷新 External IdP Token (本机 SSO cache)...");
+        match refresh_external_idp_token(&cred, &config, None).await {
+            Ok(new_cred) => {
+                assert!(new_cred.access_token.is_some());
+                assert!(new_cred.expires_at.is_some());
+                let new_exp = parse_jwt_exp(new_cred.access_token.as_deref().unwrap());
+                eprintln!("✅ refresh 成功! new exp: {:?}", new_exp);
+                eprintln!("   new expires_at: {:?}", new_cred.expires_at);
+            }
+            Err(e) => {
+                if e.to_string().contains("invalid_grant") {
+                    eprintln!("⚠️ refresh_token 已失效 (invalid_grant)");
+                } else {
+                    panic!("❌ refresh 失败: {e}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_deserialize_ide_format() {
         let json = std::fs::read_to_string("examples/kiro-auth-token.json").unwrap();
         let cred: KiroCredentials = serde_json::from_str(&json).unwrap();
