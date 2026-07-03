@@ -3625,6 +3625,34 @@ impl MultiTokenManager {
             cred.expires_at = None;
             cred.subscription_title = usage.subscription_title().map(|s| s.to_string());
             cred
+        } else if new_cred.auth_method.as_deref() == Some("external_idp")
+            && new_cred.access_token.is_some()
+        {
+            // trust-on-import: external_idp 凭据带有 access_token 时，
+            // 解析 JWT exp 判断是否未过期，未过期则直接信任，跳过 refresh。
+            // 避免导入时消耗（轮换）refresh_token，支持同一凭据导入多个实例。
+            let at = new_cred.access_token.as_deref().unwrap();
+            let trust = if let Some(exp) = crate::kiro::auth::external_idp::parse_jwt_exp(at) {
+                exp > chrono::Utc::now().timestamp()
+            } else {
+                false
+            };
+            if trust {
+                tracing::info!("external_idp trust-on-import: access_token JWT exp 未过期，跳过 refresh");
+                let mut cred = new_cred.clone();
+                // 用 JWT exp 设置 expires_at（如果凭据没有提供）
+                if cred.expires_at.is_none() {
+                    if let Some(exp) = crate::kiro::auth::external_idp::parse_jwt_exp(at) {
+                        let dt = chrono::DateTime::from_timestamp(exp, 0)
+                            .unwrap_or_else(|| chrono::Utc::now());
+                        cred.expires_at = Some(dt.to_rfc3339());
+                    }
+                }
+                cred
+            } else {
+                tracing::info!("external_idp trust-on-import: access_token 已过期或无法解析，回退到 refresh");
+                refresh_token(&new_cred, &config, proxy.as_ref()).await?
+            }
         } else {
             refresh_token(&new_cred, &config, proxy.as_ref()).await?
         };
@@ -3647,6 +3675,19 @@ impl MultiTokenManager {
         validated_cred.proxy_username = new_cred.proxy_username;
         validated_cred.proxy_password = new_cred.proxy_password;
         validated_cred.kiro_api_key = new_cred.kiro_api_key;
+        // 保留 external_idp 字段（refresh 不会返回这些字段）
+        if validated_cred.token_endpoint.is_none() {
+            validated_cred.token_endpoint = new_cred.token_endpoint;
+        }
+        if validated_cred.issuer_url.is_none() {
+            validated_cred.issuer_url = new_cred.issuer_url;
+        }
+        if validated_cred.scopes.is_none() {
+            validated_cred.scopes = new_cred.scopes;
+        }
+        if validated_cred.provider.is_none() {
+            validated_cred.provider = new_cred.provider;
+        }
         apply_caller_profile_arn_override(&mut validated_cred, new_cred.profile_arn.as_deref());
         validated_cred.fill_default_profile_arn();
 

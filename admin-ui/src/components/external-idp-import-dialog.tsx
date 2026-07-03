@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { toast } from 'sonner'
-import { Upload, Loader2, FileText } from 'lucide-react'
+import { Upload, Loader2, FileText, FolderOpen } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -25,6 +25,7 @@ export function ExternalIdpImportDialog({ open, onOpenChange }: ExternalIdpImpor
   const [jsonText, setJsonText] = useState('')
   const [parsed, setParsed] = useState<Record<string, unknown> | null>(null)
   const [importing, setImporting] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const { mutateAsync: addCredential } = useAddCredential()
 
   const handleParse = () => {
@@ -121,9 +122,30 @@ export function ExternalIdpImportDialog({ open, onOpenChange }: ExternalIdpImpor
             <Textarea
               value={jsonText}
               onChange={e => setJsonText(e.target.value)}
-              placeholder={'粘贴 External IdP 凭据 JSON，支持两种格式：\n\n• Kiro IDE 格式（camelCase）\n• kiro-login-helper 格式（snake_case）'}
-              className="min-h-[200px] font-mono text-xs"
+              placeholder={'粘贴 External IdP 凭据 JSON，或点击下方按钮选择文件\n\n支持两种格式：\n• Kiro IDE 格式（camelCase）\n• kiro-login-helper 格式（snake_case）'}
+              className="min-h-[180px] font-mono text-xs"
             />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json"
+              className="hidden"
+              onChange={e => {
+                const file = e.target.files?.[0]
+                if (!file) return
+                const reader = new FileReader()
+                reader.onload = ev => {
+                  const text = ev.target?.result as string
+                  if (text) setJsonText(text)
+                }
+                reader.readAsText(file)
+                e.target.value = ''
+              }}
+            />
+            <Button variant="outline" size="sm" className="w-full" onClick={() => fileInputRef.current?.click()}>
+              <FolderOpen className="h-3.5 w-3.5 mr-2" />
+              选择 JSON 文件
+            </Button>
           </div>
         ) : (
           <div className="space-y-2 text-sm">
