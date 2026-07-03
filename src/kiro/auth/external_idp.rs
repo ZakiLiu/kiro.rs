@@ -93,14 +93,12 @@ pub async fn refresh_external_idp_token(
         ("refresh_token", refresh_token.as_str()),
     ];
 
-    // scope 仅在凭据含 scopes 时携带
-    let scopes_val;
-    if let Some(s) = credentials.scopes.as_deref() {
-        if !s.trim().is_empty() {
-            scopes_val = s.to_string();
-            form.push(("scope", &scopes_val));
-        }
-    }
+    // scope: 有存储的 scopes 就用，否则用 client_id 构造默认 Kiro scopes
+    let scopes_val = match credentials.scopes.as_deref() {
+        Some(s) if !s.trim().is_empty() => s.to_string(),
+        _ => default_sso_scopes(client_id),
+    };
+    form.push(("scope", &scopes_val));
 
     let response = client
         .post(token_endpoint)
