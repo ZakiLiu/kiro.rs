@@ -15,7 +15,9 @@ use serde_json::json;
 use std::time::Duration;
 use tokio::time::{Instant, interval_at};
 
-use crate::anthropic::handlers::{TelemetryData, record_request_telemetry};
+use crate::anthropic::handlers::{
+    TelemetryData, last_attempt_credential_id, record_request_telemetry,
+};
 use crate::anthropic::middleware::{AppState, AuthIdentity};
 use crate::kiro::model::events::Event;
 use crate::kiro::parser::decoder::EventStreamDecoder;
@@ -96,7 +98,28 @@ async fn handle_stream(
     {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!("Gemini upstream stream error: {}", e);
+            let crate::kiro::provider::ApiCallError { error, attempts } = e;
+            let error_message = error.to_string();
+            tracing::error!("Gemini upstream stream error: {}", error);
+            record_request_telemetry(
+                state,
+                auth,
+                TelemetryData {
+                    model,
+                    is_stream: true,
+                    credential_id: last_attempt_credential_id(&attempts),
+                    input_tokens,
+                    output_tokens: 0,
+                    cache_creation_tokens: 0,
+                    cache_read_tokens: 0,
+                    credits: 0.0,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    status: "error",
+                    attempts,
+                    first_token_ms: None,
+                    error_message: Some(error_message),
+                },
+            );
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({"error": {"code": 502, "message": "upstream service error", "status": "UNAVAILABLE"}})),
@@ -237,6 +260,7 @@ fn create_gemini_sse_stream(
                 status: "success",
                 attempts,
                 first_token_ms: None,
+                error_message: None,
             },
         );
     }
@@ -257,7 +281,28 @@ async fn handle_non_stream(
     {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!("Gemini upstream error: {}", e);
+            let crate::kiro::provider::ApiCallError { error, attempts } = e;
+            let error_message = error.to_string();
+            tracing::error!("Gemini upstream error: {}", error);
+            record_request_telemetry(
+                state,
+                auth,
+                TelemetryData {
+                    model,
+                    is_stream: false,
+                    credential_id: last_attempt_credential_id(&attempts),
+                    input_tokens,
+                    output_tokens: 0,
+                    cache_creation_tokens: 0,
+                    cache_read_tokens: 0,
+                    credits: 0.0,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    status: "error",
+                    attempts,
+                    first_token_ms: None,
+                    error_message: Some(error_message),
+                },
+            );
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({"error": {"code": 502, "message": "upstream service error", "status": "UNAVAILABLE"}})),
@@ -348,6 +393,7 @@ async fn handle_non_stream(
             status: "success",
             attempts,
             first_token_ms: None,
+            error_message: None,
         },
     );
 

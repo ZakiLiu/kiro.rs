@@ -39,6 +39,27 @@ pub struct ApiCallResult {
     pub attempts: Vec<TraceAttempt>,
 }
 
+/// API 调用错误（保留失败前已发生的上游尝试链路）
+#[derive(Debug)]
+pub struct ApiCallError {
+    pub error: anyhow::Error,
+    pub attempts: Vec<TraceAttempt>,
+}
+
+impl ApiCallError {
+    fn new(error: anyhow::Error, attempts: Vec<TraceAttempt>) -> Self {
+        Self { error, attempts }
+    }
+}
+
+impl std::fmt::Display for ApiCallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.error)
+    }
+}
+
+impl std::error::Error for ApiCallError {}
+
 /// MCP 调用结果
 pub struct McpCallResult {
     pub response: reqwest::Response,
@@ -474,7 +495,7 @@ impl KiroProvider {
         request_body: &str,
         user_id: Option<&str>,
         group: Option<&str>,
-    ) -> anyhow::Result<ApiCallResult> {
+    ) -> Result<ApiCallResult, ApiCallError> {
         self.call_api_with_retry(request_body, false, user_id, group)
             .await
     }
@@ -484,7 +505,7 @@ impl KiroProvider {
         request_body: &str,
         user_id: Option<&str>,
         group: Option<&str>,
-    ) -> anyhow::Result<ApiCallResult> {
+    ) -> Result<ApiCallResult, ApiCallError> {
         self.call_api_with_retry(request_body, true, user_id, group)
             .await
     }
@@ -503,7 +524,7 @@ impl KiroProvider {
         &self,
         request_body: &str,
         group: Option<&str>,
-    ) -> anyhow::Result<McpCallResult> {
+    ) -> Result<McpCallResult, ApiCallError> {
         self.call_mcp_with_retry(request_body, group).await
     }
 
@@ -512,11 +533,14 @@ impl KiroProvider {
         &self,
         request_body: &str,
         group: Option<&str>,
-    ) -> anyhow::Result<McpCallResult> {
+    ) -> Result<McpCallResult, ApiCallError> {
         let total_credentials = self.token_manager.total_count();
         let available = self.token_manager.available_count();
         if available == 0 {
-            anyhow::bail!("没有可用的凭据");
+            return Err(ApiCallError::new(
+                anyhow::anyhow!("没有可用的凭据"),
+                Vec::new(),
+            ));
         }
         let max_retries = available
             .min(SMALL_POOL_THRESHOLD)
@@ -534,6 +558,7 @@ impl KiroProvider {
         // 全局限流等待次数：检测到全局限流时先 sleep 等凭据冷却恢复再继续，而非立即 bail。
         let mut global_rate_limit_waits: usize = 0;
         const MAX_GLOBAL_RATE_LIMIT_WAITS: usize = 2;
+        let mut attempts: Vec<TraceAttempt> = Vec::new();
 
         for attempt in 0..max_retries {
             // 若上一轮触发了 bearer-invalid 补救重试，优先豁免 RateLimiter 直接重试同一凭据；
@@ -560,7 +585,7 @@ impl KiroProvider {
                 Err(e) => {
                     // 所有凭据均处于冷却 → 不再重试，直接返回（handlers.rs 会转为 429）
                     if e.to_string().contains("所有凭据均处于冷却/速率限制") {
-                        return Err(e);
+                        return Err(ApiCallError::new(e, attempts));
                     }
                     last_error = Some(e);
                     // 已 exclude 的凭据数 ≥ 当前可用集合，下一轮清空让 LB 重新挑选
@@ -575,8 +600,16 @@ impl KiroProvider {
             };
 
             let config = self.token_manager.config();
-            let machine_id = machine_id::generate_from_credentials(&ctx.credentials, &config)
-                .ok_or_else(|| anyhow::anyhow!("无法生成 machine_id，请检查凭证配置"))?;
+            let machine_id = match machine_id::generate_from_credentials(&ctx.credentials, &config)
+            {
+                Some(machine_id) => machine_id,
+                None => {
+                    return Err(ApiCallError::new(
+                        anyhow::anyhow!("无法生成 machine_id，请检查凭证配置"),
+                        attempts,
+                    ));
+                }
+            };
             let endpoint = match self.endpoint_for(&ctx.credentials) {
                 Ok(endpoint) => endpoint,
                 Err(e) => {
@@ -615,15 +648,26 @@ impl KiroProvider {
             let _request_for_log = request.try_clone();
 
             // 发送请求
+            let attempt_start = Instant::now();
             let response = match request.send().await {
                 Ok(resp) => resp,
                 Err(e) => {
+                    let duration_ms = attempt_start.elapsed().as_millis() as u64;
                     tracing::warn!(
                         "MCP 请求发送失败（尝试 {}/{}）: {:?}",
                         attempt + 1,
                         max_retries,
                         e
                     );
+                    attempts.push(TraceAttempt {
+                        attempt: attempt as u32,
+                        credential_id: ctx.id,
+                        endpoint: endpoint_name.to_string(),
+                        http_status: None,
+                        outcome: trace_db::outcome::NETWORK_ERROR.to_string(),
+                        error_snippet: truncate_snippet(&e.to_string()),
+                        duration_ms,
+                    });
                     last_error = Some(e.into());
                     if attempt + 1 < max_retries {
                         sleep(Self::retry_delay(attempt)).await;
@@ -652,6 +696,24 @@ impl KiroProvider {
 
             // 失败响应
             let body = response.text().await.unwrap_or_default();
+            let attempt_outcome = match status.as_u16() {
+                400 => trace_db::outcome::BAD_REQUEST,
+                401 | 403 => trace_db::outcome::AUTH_FAILED,
+                402 => trace_db::outcome::QUOTA_EXHAUSTED,
+                429 => trace_db::outcome::ACCOUNT_THROTTLED,
+                408 => trace_db::outcome::TRANSIENT,
+                s if (500..600).contains(&s) => trace_db::outcome::TRANSIENT,
+                _ => trace_db::outcome::UNKNOWN,
+            };
+            attempts.push(TraceAttempt {
+                attempt: attempt as u32,
+                credential_id: ctx.id,
+                endpoint: endpoint_name.to_string(),
+                http_status: Some(status.as_u16()),
+                outcome: attempt_outcome.to_string(),
+                error_snippet: truncate_snippet(&body),
+                duration_ms: attempt_start.elapsed().as_millis() as u64,
+            });
 
             // 402 Payment Required
             if status.as_u16() == 402 {
@@ -659,7 +721,10 @@ impl KiroProvider {
                     // 月度额度用尽 → 永久禁用凭据
                     let has_available = self.token_manager.report_quota_exhausted(ctx.id);
                     if !has_available {
-                        anyhow::bail!("MCP 请求失败（所有凭据已用尽）: {} {}", status, body);
+                        return Err(ApiCallError::new(
+                            anyhow::anyhow!("MCP 请求失败（所有凭据已用尽）: {} {}", status, body),
+                            attempts,
+                        ));
                     }
                 }
                 // 其他 402（如 OVERAGE）→ 仅跳过此凭据，不禁用
@@ -678,12 +743,17 @@ impl KiroProvider {
                 if body.contains("profileArn is required") {
                     tracing::warn!(
                         "凭据 #{} 缺少 profileArn（永久禁用）: {} {}",
-                        ctx.id, status, body
+                        ctx.id,
+                        status,
+                        body
                     );
-                    self.token_manager.mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
+                    self.token_manager
+                        .mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
-                        "MCP 请求失败（profileArn 缺失）: {} {}", status, body
+                        "MCP 请求失败（profileArn 缺失）: {} {}",
+                        status,
+                        body
                     ));
                     continue;
                 }
@@ -721,22 +791,31 @@ impl KiroProvider {
                     );
                 }
                 #[cfg(feature = "sensitive-logs")]
-                anyhow::bail!("MCP 请求失败: {} {}", status, body);
+                return Err(ApiCallError::new(
+                    anyhow::anyhow!("MCP 请求失败: {} {}", status, body),
+                    attempts,
+                ));
                 #[cfg(not(feature = "sensitive-logs"))]
                 {
                     if is_too_long {
                         let body_bytes = request_body.len();
                         let estimated_tokens = Self::estimate_tokens(request_body);
-                        anyhow::bail!(
-                            "MCP 请求失败: {} Input is too long. (request_body_bytes={}, estimated_input_tokens={})",
-                            status,
-                            body_bytes,
-                            estimated_tokens
-                        );
+                        return Err(ApiCallError::new(
+                            anyhow::anyhow!(
+                                "MCP 请求失败: {} Input is too long. (request_body_bytes={}, estimated_input_tokens={})",
+                                status,
+                                body_bytes,
+                                estimated_tokens
+                            ),
+                            attempts,
+                        ));
                     }
 
                     let summary = Self::summarize_error_body(&body);
-                    anyhow::bail!("MCP 请求失败: {} {}", status, summary);
+                    return Err(ApiCallError::new(
+                        anyhow::anyhow!("MCP 请求失败: {} {}", status, summary),
+                        attempts,
+                    ));
                 }
             }
 
@@ -744,13 +823,9 @@ impl KiroProvider {
             if matches!(status.as_u16(), 401 | 403) {
                 // 账户暂停 / TEMPORARILY_SUSPENDED：直接永久禁用
                 if is_suspended_signal(&body) {
-                    tracing::warn!(
-                        "凭据 #{} 账户暂停（永久禁用）: {} {}",
-                        ctx.id,
-                        status,
-                        body
-                    );
-                    self.token_manager.mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
+                    tracing::warn!("凭据 #{} 账户暂停（永久禁用）: {} {}", ctx.id, status, body);
+                    self.token_manager
+                        .mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "MCP 请求失败（账户暂停）: {} {}",
@@ -779,13 +854,9 @@ impl KiroProvider {
                 }
 
                 // 鉴权失败：直接永久禁用（不走失败计数，不参与自动恢复）
-                tracing::warn!(
-                    "凭据 #{} 鉴权失败（永久禁用）: {} {}",
-                    ctx.id,
-                    status,
-                    body
-                );
-                self.token_manager.mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
+                tracing::warn!("凭据 #{} 鉴权失败（永久禁用）: {} {}", ctx.id, status, body);
+                self.token_manager
+                    .mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
                 failed_ids.push(ctx.id);
                 last_error = Some(anyhow::anyhow!(
                     "MCP 请求失败（鉴权失败）: {} {}",
@@ -845,11 +916,14 @@ impl KiroProvider {
                         consecutive_429_count,
                         global_rate_limit_waits
                     );
-                    anyhow::bail!(
-                        "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：global_429_detected，来自凭据 #{}）",
-                        retry_secs.max(5),
-                        ctx.id
-                    );
+                    return Err(ApiCallError::new(
+                        anyhow::anyhow!(
+                            "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：global_429_detected，来自凭据 #{}）",
+                            retry_secs.max(5),
+                            ctx.id
+                        ),
+                        attempts,
+                    ));
                 }
 
                 last_error = Some(anyhow::anyhow!("MCP 请求失败: {} {}", status, body));
@@ -888,7 +962,10 @@ impl KiroProvider {
 
             // 其他 4xx
             if status.is_client_error() {
-                anyhow::bail!("MCP 请求失败: {} {}", status, body);
+                return Err(ApiCallError::new(
+                    anyhow::anyhow!("MCP 请求失败: {} {}", status, body),
+                    attempts,
+                ));
             }
 
             // 兜底
@@ -898,9 +975,12 @@ impl KiroProvider {
             }
         }
 
-        Err(last_error.unwrap_or_else(|| {
-            anyhow::anyhow!("MCP 请求失败：已达到最大重试次数（{}次）", max_retries)
-        }))
+        Err(ApiCallError::new(
+            last_error.unwrap_or_else(|| {
+                anyhow::anyhow!("MCP 请求失败：已达到最大重试次数（{}次）", max_retries)
+            }),
+            attempts,
+        ))
     }
 
     /// 内部方法：带重试逻辑的 API 调用
@@ -914,11 +994,14 @@ impl KiroProvider {
         is_stream: bool,
         user_id: Option<&str>,
         group: Option<&str>,
-    ) -> anyhow::Result<ApiCallResult> {
+    ) -> Result<ApiCallResult, ApiCallError> {
         let total_credentials = self.token_manager.total_count();
         let available = self.token_manager.available_count();
         if available == 0 {
-            anyhow::bail!("没有可用的凭据");
+            return Err(ApiCallError::new(
+                anyhow::anyhow!("没有可用的凭据"),
+                Vec::new(),
+            ));
         }
         let max_retries = available
             .min(SMALL_POOL_THRESHOLD)
@@ -975,7 +1058,7 @@ impl KiroProvider {
                 Err(e) => {
                     // 所有凭据均处于冷却 → 不再重试，直接返回（handlers.rs 会转为 429）
                     if e.to_string().contains("所有凭据均处于冷却/速率限制") {
-                        return Err(e);
+                        return Err(ApiCallError::new(e, attempts));
                     }
                     last_error = Some(e);
                     // 已 exclude 的凭据数 ≥ 当前可用集合，下一轮清空让 LB 重新挑选
@@ -990,8 +1073,16 @@ impl KiroProvider {
             };
 
             let config = self.token_manager.config();
-            let machine_id = machine_id::generate_from_credentials(&ctx.credentials, &config)
-                .ok_or_else(|| anyhow::anyhow!("无法生成 machine_id，请检查凭证配置"))?;
+            let machine_id = match machine_id::generate_from_credentials(&ctx.credentials, &config)
+            {
+                Some(machine_id) => machine_id,
+                None => {
+                    return Err(ApiCallError::new(
+                        anyhow::anyhow!("无法生成 machine_id，请检查凭证配置"),
+                        attempts,
+                    ));
+                }
+            };
             let endpoint = match self.endpoint_for(&ctx.credentials) {
                 Ok(endpoint) => endpoint,
                 Err(e) => {
@@ -1151,12 +1242,15 @@ impl KiroProvider {
                     let has_available = self.token_manager.report_quota_exhausted(ctx.id);
                     self.token_manager.update_balance_cache(ctx.id, 0.0);
                     if !has_available {
-                        anyhow::bail!(
-                            "{} API 请求失败（所有凭据已用尽）: {} {}",
-                            api_type,
-                            status,
-                            body
-                        );
+                        return Err(ApiCallError::new(
+                            anyhow::anyhow!(
+                                "{} API 请求失败（所有凭据已用尽）: {} {}",
+                                api_type,
+                                status,
+                                body
+                            ),
+                            attempts,
+                        ));
                     }
                 }
                 // 其他 402（如 OVERAGE）→ 设冷却跳过，不禁用
@@ -1189,13 +1283,18 @@ impl KiroProvider {
                 if body.contains("profileArn is required") {
                     tracing::warn!(
                         "凭据 #{} 缺少 profileArn（永久禁用）: {} {}",
-                        ctx.id, status, body
+                        ctx.id,
+                        status,
+                        body
                     );
-                    self.token_manager.mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
+                    self.token_manager
+                        .mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "{} API 请求失败（profileArn 缺失）: {} {}",
-                        api_type, status, body
+                        api_type,
+                        status,
+                        body
                     ));
                     continue;
                 }
@@ -1268,24 +1367,33 @@ impl KiroProvider {
                     );
                 }
                 #[cfg(feature = "sensitive-logs")]
-                anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+                return Err(ApiCallError::new(
+                    anyhow::anyhow!("{} API 请求失败: {} {}", api_type, status, body),
+                    attempts,
+                ));
                 #[cfg(not(feature = "sensitive-logs"))]
                 {
                     // 对用户保留可区分的错误信息（例如 Input is too long），但避免返回过长内容。
                     if is_too_long {
                         let body_bytes = final_body_for_log.len();
                         let estimated_tokens = Self::estimate_tokens(&final_body_for_log);
-                        anyhow::bail!(
-                            "{} API 请求失败: {} Input is too long. (request_body_bytes={}, estimated_input_tokens={})",
-                            api_type,
-                            status,
-                            body_bytes,
-                            estimated_tokens
-                        );
+                        return Err(ApiCallError::new(
+                            anyhow::anyhow!(
+                                "{} API 请求失败: {} Input is too long. (request_body_bytes={}, estimated_input_tokens={})",
+                                api_type,
+                                status,
+                                body_bytes,
+                                estimated_tokens
+                            ),
+                            attempts,
+                        ));
                     }
 
                     let summary = Self::summarize_error_body(&body);
-                    anyhow::bail!("{} API 请求失败: {} {}", api_type, status, summary);
+                    return Err(ApiCallError::new(
+                        anyhow::anyhow!("{} API 请求失败: {} {}", api_type, status, summary),
+                        attempts,
+                    ));
                 }
             }
 
@@ -1293,13 +1401,9 @@ impl KiroProvider {
             if matches!(status.as_u16(), 401 | 403) {
                 // 账户暂停 / TEMPORARILY_SUSPENDED：直接永久禁用
                 if is_suspended_signal(&body) {
-                    tracing::warn!(
-                        "凭据 #{} 账户暂停（永久禁用）: {} {}",
-                        ctx.id,
-                        status,
-                        body
-                    );
-                    self.token_manager.mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
+                    tracing::warn!("凭据 #{} 账户暂停（永久禁用）: {} {}", ctx.id, status, body);
+                    self.token_manager
+                        .mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
                     failed_ids.push(ctx.id);
                     last_error = Some(anyhow::anyhow!(
                         "{} API 请求失败（账户暂停）: {} {}",
@@ -1335,13 +1439,9 @@ impl KiroProvider {
                 }
 
                 // 鉴权失败（含 bearer 刷新后仍失败）：直接永久禁用
-                tracing::warn!(
-                    "凭据 #{} 鉴权失败（永久禁用）: {} {}",
-                    ctx.id,
-                    status,
-                    body
-                );
-                self.token_manager.mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
+                tracing::warn!("凭据 #{} 鉴权失败（永久禁用）: {} {}", ctx.id, status, body);
+                self.token_manager
+                    .mark_authentication_failed_with_message(ctx.id, Some(body.clone()));
                 failed_ids.push(ctx.id);
                 last_error = Some(anyhow::anyhow!(
                     "{} API 请求失败（鉴权失败）: {} {}",
@@ -1380,11 +1480,14 @@ impl KiroProvider {
                     body
                 ));
                 if remaining == 0 {
-                    anyhow::bail!(
-                        "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：account_throttle，来自凭据 #{}）",
-                        cooldown_secs,
-                        ctx.id
-                    );
+                    return Err(ApiCallError::new(
+                        anyhow::anyhow!(
+                            "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：account_throttle，来自凭据 #{}）",
+                            cooldown_secs,
+                            ctx.id
+                        ),
+                        attempts,
+                    ));
                 }
                 failed_ids.push(ctx.id);
                 continue;
@@ -1398,7 +1501,10 @@ impl KiroProvider {
                     status,
                     body
                 );
-                anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+                return Err(ApiCallError::new(
+                    anyhow::anyhow!("{} API 请求失败: {} {}", api_type, status, body),
+                    attempts,
+                ));
             }
 
             // 524 / 网关超时：快速返回，让客户端下次重连
@@ -1409,7 +1515,10 @@ impl KiroProvider {
                     status,
                     body
                 );
-                anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+                return Err(ApiCallError::new(
+                    anyhow::anyhow!("{} API 请求失败: {} {}", api_type, status, body),
+                    attempts,
+                ));
             }
 
             if status.as_u16() == 429 {
@@ -1469,11 +1578,14 @@ impl KiroProvider {
                         consecutive_429_count,
                         global_rate_limit_waits
                     );
-                    anyhow::bail!(
-                        "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：global_429_detected，来自凭据 #{}）",
-                        retry_secs.max(5),
-                        ctx.id
-                    );
+                    return Err(ApiCallError::new(
+                        anyhow::anyhow!(
+                            "所有凭据均处于冷却/速率限制（retry_after_secs={}，原因：global_429_detected，来自凭据 #{}）",
+                            retry_secs.max(5),
+                            ctx.id
+                        ),
+                        attempts,
+                    ));
                 }
 
                 last_error = Some(anyhow::anyhow!(
@@ -1525,7 +1637,10 @@ impl KiroProvider {
 
             // 其他 4xx - 通常为请求/配置问题：直接返回，不计入凭据失败
             if status.is_client_error() {
-                anyhow::bail!("{} API 请求失败: {} {}", api_type, status, body);
+                return Err(ApiCallError::new(
+                    anyhow::anyhow!("{} API 请求失败: {} {}", api_type, status, body),
+                    attempts,
+                ));
             }
 
             // 兜底：当作可重试的瞬态错误处理
@@ -1550,13 +1665,16 @@ impl KiroProvider {
         }
 
         // 所有重试都失败
-        Err(last_error.unwrap_or_else(|| {
-            anyhow::anyhow!(
-                "{} API 请求失败：已达到最大重试次数（{}次）",
-                api_type,
-                max_retries
-            )
-        }))
+        Err(ApiCallError::new(
+            last_error.unwrap_or_else(|| {
+                anyhow::anyhow!(
+                    "{} API 请求失败：已达到最大重试次数（{}次）",
+                    api_type,
+                    max_retries
+                )
+            }),
+            attempts,
+        ))
     }
 
     fn retry_delay(attempt: usize) -> Duration {

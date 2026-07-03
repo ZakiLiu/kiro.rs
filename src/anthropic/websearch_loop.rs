@@ -311,7 +311,7 @@ async fn run_round(
     {
         Ok(r) => r,
         Err(e) => {
-            return Err(map_provider_error_to_response(e));
+            return Err(map_provider_error_to_response(e.error));
         }
     };
     let credential_id = call_result.credential_id;

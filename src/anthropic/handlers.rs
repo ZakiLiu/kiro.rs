@@ -2,7 +2,7 @@
 
 use std::convert::Infallible;
 
-use crate::admin::trace_db::TraceRecord;
+use crate::admin::trace_db::{TraceAttempt, TraceRecord};
 use crate::admin::usage_stats::UsageRecord;
 use crate::kiro::model::events::{Event, MeteringEvent};
 use crate::kiro::model::requests::kiro::KiroRequest;
@@ -54,8 +54,9 @@ pub(crate) struct TelemetryData<'a> {
     pub credits: f64,
     pub duration_ms: u64,
     pub status: &'a str,
-    pub attempts: Vec<crate::admin::trace_db::TraceAttempt>,
+    pub attempts: Vec<TraceAttempt>,
     pub first_token_ms: Option<u64>,
+    pub error_message: Option<String>,
 }
 
 pub(crate) fn record_request_telemetry(
@@ -109,7 +110,7 @@ pub(crate) fn record_request_telemetry(
             } else {
                 None
             },
-            error_message: None,
+            error_message: data.error_message,
             total_attempts: data.attempts.len().max(1) as u32,
             duration_ms: data.duration_ms,
             interrupted_after_bytes: None,
@@ -124,6 +125,14 @@ pub(crate) fn record_request_telemetry(
         store.insert(&trace);
     }
 }
+
+pub(crate) fn last_attempt_credential_id(attempts: &[TraceAttempt]) -> u64 {
+    attempts
+        .last()
+        .map(|attempt| attempt.credential_id)
+        .unwrap_or(0)
+}
+
 /// 流式路径的 token 用量快照，由 unfold closure 在流结束时写入，
 /// 供 handler 层读取后传给 record_request_telemetry。
 #[allow(dead_code)]
@@ -1317,6 +1326,7 @@ pub async fn post_messages(
                     status: "no_credentials",
                     attempts: vec![],
                     first_token_ms: None,
+                    error_message: None,
                 },
             );
             return super::health_check::mock_unauthorized_response();
@@ -1352,6 +1362,7 @@ pub async fn post_messages(
                 status: "success",
                 attempts: vec![],
                 first_token_ms: Some(0),
+                error_message: None,
             },
         );
         return if payload.stream {
@@ -1679,25 +1690,22 @@ async fn handle_stream_request(
     {
         Ok(resp) => resp,
         Err(e) => {
+            let crate::kiro::provider::ApiCallError { error, attempts } = e;
+            let error_message = error.to_string();
+            let credential_id = last_attempt_credential_id(&attempts);
             let elapsed_ms = context.request_start.elapsed().as_millis() as u64;
             tracing::warn!(
                 elapsed_ms = elapsed_ms,
                 model = %context.model,
                 "请求失败（流式，含重试耗时）"
             );
-            let error_snippet = e.to_string();
-            let error_snippet_short = if error_snippet.len() > 200 {
-                format!("{}...", &error_snippet[..200])
-            } else {
-                error_snippet.clone()
-            };
             record_request_telemetry(
                 state,
                 auth,
                 TelemetryData {
                     model: context.model,
                     is_stream: true,
-                    credential_id: 0,
+                    credential_id,
                     input_tokens: context.input_tokens,
                     output_tokens: 0,
                     cache_creation_tokens: 0,
@@ -1705,21 +1713,14 @@ async fn handle_stream_request(
                     credits: 0.0,
                     duration_ms: elapsed_ms,
                     status: "error",
-                    attempts: vec![crate::admin::trace_db::TraceAttempt {
-                        attempt: 0,
-                        credential_id: 0,
-                        endpoint: String::new(),
-                        http_status: None,
-                        outcome: "ERROR".to_string(),
-                        error_snippet: Some(error_snippet_short),
-                        duration_ms: elapsed_ms,
-                    }],
+                    attempts,
                     first_token_ms: None,
+                    error_message: Some(error_message),
                 },
             );
             return map_kiro_provider_error_to_response(
                 context.request_body,
-                e,
+                error,
                 context.adaptive_outcome,
             );
         }
@@ -1811,6 +1812,7 @@ async fn handle_stream_request(
                 status: "success",
                 attempts: stream_attempts,
                 first_token_ms: Some(ttfb_ms),
+                error_message: None,
             },
         );
         Ok(Bytes::new())
@@ -1983,25 +1985,22 @@ async fn handle_non_stream_request(
     {
         Ok(resp) => resp,
         Err(e) => {
+            let crate::kiro::provider::ApiCallError { error, attempts } = e;
+            let error_message = error.to_string();
+            let credential_id = last_attempt_credential_id(&attempts);
             let elapsed_ms = context.request_start.elapsed().as_millis() as u64;
             tracing::warn!(
                 elapsed_ms = elapsed_ms,
                 model = %context.model,
                 "请求失败（非流式，含重试耗时）"
             );
-            let error_snippet = e.to_string();
-            let error_snippet_short = if error_snippet.len() > 200 {
-                format!("{}...", &error_snippet[..200])
-            } else {
-                error_snippet.clone()
-            };
             record_request_telemetry(
                 state,
                 auth,
                 TelemetryData {
                     model: context.model,
                     is_stream: false,
-                    credential_id: 0,
+                    credential_id,
                     input_tokens: context.input_tokens,
                     output_tokens: 0,
                     cache_creation_tokens: 0,
@@ -2009,21 +2008,14 @@ async fn handle_non_stream_request(
                     credits: 0.0,
                     duration_ms: elapsed_ms,
                     status: "error",
-                    attempts: vec![crate::admin::trace_db::TraceAttempt {
-                        attempt: 0,
-                        credential_id: 0,
-                        endpoint: String::new(),
-                        http_status: None,
-                        outcome: "ERROR".to_string(),
-                        error_snippet: Some(error_snippet_short),
-                        duration_ms: elapsed_ms,
-                    }],
+                    attempts,
                     first_token_ms: None,
+                    error_message: Some(error_message),
                 },
             );
             return map_kiro_provider_error_to_response(
                 context.request_body,
-                e,
+                error,
                 context.adaptive_outcome,
             );
         }
@@ -2351,6 +2343,7 @@ async fn handle_non_stream_request(
             status: "success",
             attempts: api_result.attempts,
             first_token_ms: Some(ttfb_ms),
+            error_message: None,
         },
     );
 
@@ -2559,7 +2552,7 @@ fn is_likely_base64(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::admin::trace_db::TraceKeySource;
+    use crate::admin::trace_db::{TraceAttempt, TraceKeySource, TraceQuery, TraceStore, outcome};
     use crate::anthropic::types::{Message, SystemMessage};
     use crate::kiro::model::credentials::KiroCredentials;
     use crate::kiro::model::requests::conversation::{
@@ -2744,6 +2737,82 @@ mod tests {
         // credit 字段不再注入到标准 usage
         assert!(usage.get("credit_usage").is_none());
         assert!(usage.get("credit_unit").is_none());
+    }
+
+    #[test]
+    fn test_error_telemetry_preserves_provider_attempts_for_failure_stats() {
+        let db_path =
+            std::env::temp_dir().join(format!("kiro-rs-trace-regression-{}.db", Uuid::new_v4()));
+        let store = Arc::new(TraceStore::open(db_path.clone(), true, 7).unwrap());
+        let state = AppState::new(
+            "test-api-key",
+            Arc::new(parking_lot::RwLock::new(
+                crate::anthropic::middleware::PromptCacheRuntime::new(300, false),
+            )),
+        )
+        .with_trace_store(store.clone());
+        let auth = AuthIdentity {
+            key_id: 7,
+            key_source: TraceKeySource::ClientKey,
+            group: None,
+        };
+
+        record_request_telemetry(
+            &state,
+            &auth,
+            TelemetryData {
+                model: "test-model",
+                is_stream: false,
+                credential_id: 42,
+                input_tokens: 10,
+                output_tokens: 0,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                credits: 0.0,
+                duration_ms: 25,
+                status: "error",
+                attempts: vec![TraceAttempt {
+                    attempt: 0,
+                    credential_id: 42,
+                    endpoint: "ide".to_string(),
+                    http_status: Some(403),
+                    outcome: outcome::AUTH_FAILED.to_string(),
+                    error_snippet: Some("forbidden".to_string()),
+                    duration_ms: 25,
+                }],
+                first_token_ms: None,
+                error_message: Some("auth failed after retries".to_string()),
+            },
+        );
+
+        let stats = store.failure_stats();
+        assert_eq!(stats.get(&42).map(|s| s.auth), Some(1));
+
+        let (records, total) = store.query_paged(&TraceQuery {
+            status: Some("error".to_string()),
+            limit: 10,
+            ..Default::default()
+        });
+        assert_eq!(total, 1);
+        assert_eq!(records[0].final_credential_id, 42);
+        assert_eq!(
+            records[0].error_message.as_deref(),
+            Some("auth failed after retries")
+        );
+        assert_eq!(records[0].attempts.len(), 1);
+        assert_eq!(records[0].attempts[0].credential_id, 42);
+
+        drop(state);
+        drop(store);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_file_name(format!(
+            "{}-wal",
+            db_path.file_name().unwrap().to_string_lossy()
+        )));
+        let _ = std::fs::remove_file(db_path.with_file_name(format!(
+            "{}-shm",
+            db_path.file_name().unwrap().to_string_lossy()
+        )));
     }
 
     #[test]
