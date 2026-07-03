@@ -1287,11 +1287,37 @@ pub async fn post_messages(
             .unwrap_or(false);
 
         if !has_credentials {
-            tracing::info!(
+            tracing::warn!(
                 model = %payload.model,
                 stream = %payload.stream,
                 group = ?auth.group,
-                "测活请求拦截 → 无可用凭据，返回 401"
+                "测活请求拦截 → 分组无可用凭据，返回 401"
+            );
+            if let Some(metrics) = &state.metrics {
+                metrics.record(
+                    MetricEvent::new(MetricEventType::RequestCompleted)
+                        .with_model(&payload.model)
+                        .with_status("error")
+                        .with_latency_ms(0),
+                );
+            }
+            record_request_telemetry(
+                &state,
+                &auth,
+                TelemetryData {
+                    model: &payload.model,
+                    is_stream: payload.stream,
+                    credential_id: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_creation_tokens: 0,
+                    cache_read_tokens: 0,
+                    credits: 0.0,
+                    duration_ms: 0,
+                    status: "no_credentials",
+                    attempts: vec![],
+                    first_token_ms: None,
+                },
             );
             return super::health_check::mock_unauthorized_response();
         }
