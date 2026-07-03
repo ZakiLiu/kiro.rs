@@ -87,9 +87,12 @@ pub fn compress(state: &mut ConversationState, config: &CompressionConfig) -> Co
         tracing::debug!(
             removed_tool_uses,
             removed_tool_results,
-            "压缩后已修复 tool_use/tool_result 配对"
+            "压缩后已修复 tool_use/tool_result 配对（全局存在性）"
         );
     }
+
+    // 相邻性修复：全局配对完好但不相邻的 tool_use/tool_result
+    repair_tool_adjacency_pass(state);
 
     let repaired_non_empty_contents = repair_non_empty_content_pass(state);
     if repaired_non_empty_contents > 0 {
@@ -570,11 +573,138 @@ fn repair_tool_pairing_pass(state: &mut ConversationState) -> (usize, usize) {
 
             if tool_uses.is_empty() {
                 a.assistant_response_message.tool_uses = None;
+                a.assistant_response_message.message_id = None;
             }
         }
     }
 
     (removed_tool_uses, removed_tool_results)
+}
+
+/// 修复 tool_use/tool_result 相邻性（全局 repair 之后）。
+///
+/// Kiro/Bedrock 上游要求严格相邻：
+/// - assistant(tool_use) 的**紧跟** user 消息必须包含对应 tool_result
+/// - user(tool_result) 的**前一条** assistant 消息必须包含对应 tool_use
+///
+/// `repair_tool_pairing_pass` 仅检查全局存在性，不检查相邻性。
+/// 客户端做自己的上下文压缩（删除/合并中间消息）后，可能留下全局配对完好
+/// 但不相邻的 tool_use/tool_result，导致上游 400。
+///
+/// 返回 (移除的 tool_use 数, 移除的 tool_result 数)。
+fn repair_tool_adjacency_pass(state: &mut ConversationState) -> (usize, usize) {
+    use std::collections::HashSet;
+
+    let mut removed_uses = 0usize;
+    let mut removed_results = 0usize;
+    let len = state.history.len();
+
+    // 预计算每个位置的 tool ID 集合（只读遍历）
+    let assistant_tu_ids: Vec<HashSet<String>> = (0..len)
+        .map(|i| match &state.history[i] {
+            Message::Assistant(a) => a
+                .assistant_response_message
+                .tool_uses
+                .as_ref()
+                .map(|tus| tus.iter().map(|tu| tu.tool_use_id.clone()).collect())
+                .unwrap_or_default(),
+            _ => HashSet::new(),
+        })
+        .collect();
+
+    let user_tr_ids: Vec<HashSet<String>> = (0..len)
+        .map(|i| match &state.history[i] {
+            Message::User(u) => u
+                .user_input_message
+                .user_input_message_context
+                .tool_results
+                .iter()
+                .map(|tr| tr.tool_use_id.clone())
+                .collect(),
+            _ => HashSet::new(),
+        })
+        .collect();
+
+    let current_tr_ids: HashSet<String> = state
+        .current_message
+        .user_input_message
+        .user_input_message_context
+        .tool_results
+        .iter()
+        .map(|tr| tr.tool_use_id.clone())
+        .collect();
+
+    let empty: HashSet<String> = HashSet::new();
+
+    // Pass 1: 清理非相邻 tool_result
+    for i in 0..len {
+        if let Message::User(u) = &mut state.history[i] {
+            let results = &mut u
+                .user_input_message
+                .user_input_message_context
+                .tool_results;
+            if results.is_empty() {
+                continue;
+            }
+            let allowed = if i > 0 { &assistant_tu_ids[i - 1] } else { &empty };
+            let before = results.len();
+            results.retain(|tr| allowed.contains(&tr.tool_use_id));
+            removed_results += before - results.len();
+        }
+    }
+
+    // current_message
+    {
+        let results = &mut state
+            .current_message
+            .user_input_message
+            .user_input_message_context
+            .tool_results;
+        if !results.is_empty() {
+            let allowed = if len > 0 {
+                &assistant_tu_ids[len - 1]
+            } else {
+                &empty
+            };
+            let before = results.len();
+            results.retain(|tr| allowed.contains(&tr.tool_use_id));
+            removed_results += before - results.len();
+        }
+    }
+
+    // Pass 2: 清理非相邻 tool_use
+    for i in 0..len {
+        if let Message::Assistant(a) = &mut state.history[i] {
+            if let Some(ref mut tool_uses) = a.assistant_response_message.tool_uses {
+                if tool_uses.is_empty() {
+                    continue;
+                }
+                let following_tr = if i + 1 < len {
+                    &user_tr_ids[i + 1]
+                } else {
+                    &current_tr_ids
+                };
+                let before = tool_uses.len();
+                tool_uses.retain(|tu| following_tr.contains(&tu.tool_use_id));
+                removed_uses += before - tool_uses.len();
+
+                if tool_uses.is_empty() {
+                    a.assistant_response_message.tool_uses = None;
+                    a.assistant_response_message.message_id = None;
+                }
+            }
+        }
+    }
+
+    if removed_uses > 0 || removed_results > 0 {
+        tracing::debug!(
+            removed_uses,
+            removed_results,
+            "已修复非相邻 tool_use/tool_result 配对"
+        );
+    }
+
+    (removed_uses, removed_results)
 }
 
 /// 修复空 content 字段（压缩后最终兜底）。
@@ -1572,6 +1702,199 @@ mod tests {
             assert_eq!(text, "hello", "非空 text 不应被修改");
         } else {
             panic!("expected User message");
+        }
+    }
+
+    // ============ 相邻性修复测试 ============
+
+    #[test]
+    fn test_adjacency_repair_removes_non_adjacent_tool_result() {
+        let system_user = Message::User(HistoryUserMessage::new("system", "claude-sonnet-4.5"));
+        let system_assistant =
+            Message::Assistant(HistoryAssistantMessage::new("I will follow."));
+
+        let user1 = Message::User(HistoryUserMessage::new("question", "claude-sonnet-4.5"));
+
+        let tool_use_a =
+            ToolUseEntry::new("tool-A", "read").with_input(serde_json::json!({}));
+        let assistant1 = Message::Assistant(HistoryAssistantMessage {
+            assistant_response_message: AssistantMessage::new("reading")
+                .with_tool_uses(vec![tool_use_a])
+                .with_message_id("msg-1"),
+        });
+
+        // user2: tool_result A（相邻 ✓）+ tool_result B（非相邻 ✗）
+        let user2 = Message::User(HistoryUserMessage {
+            user_input_message: UserMessage::new(" ", "claude-sonnet-4.5").with_context(
+                UserInputMessageContext::new().with_tool_results(vec![
+                    ToolResult::success("tool-A", "content A"),
+                    ToolResult::success("tool-B", "content B"),
+                ]),
+            ),
+        });
+
+        let assistant2 = Message::Assistant(HistoryAssistantMessage::new("done"));
+
+        let mut state = ConversationState::new("test")
+            .with_current_message(CurrentMessage::new(UserInputMessage::new(
+                "next",
+                "claude-sonnet-4.5",
+            )))
+            .with_history(vec![
+                system_user,
+                system_assistant,
+                user1,
+                assistant1,
+                user2,
+                assistant2,
+            ]);
+
+        let config = CompressionConfig::default();
+        let _stats = compress(&mut state, &config);
+
+        if let Message::User(u) = &state.history[4] {
+            let results = &u
+                .user_input_message
+                .user_input_message_context
+                .tool_results;
+            assert_eq!(results.len(), 1, "应只剩 1 个 tool_result");
+            assert_eq!(results[0].tool_use_id, "tool-A");
+        } else {
+            panic!("expected User at index 4");
+        }
+    }
+
+    #[test]
+    fn test_adjacency_repair_removes_non_adjacent_tool_use() {
+        let system_user = Message::User(HistoryUserMessage::new("system", "claude-sonnet-4.5"));
+        let system_assistant =
+            Message::Assistant(HistoryAssistantMessage::new("I will follow."));
+
+        let user1 = Message::User(HistoryUserMessage::new("q1", "claude-sonnet-4.5"));
+
+        let tool_use_x =
+            ToolUseEntry::new("tool-X", "write").with_input(serde_json::json!({}));
+        let assistant1 = Message::Assistant(HistoryAssistantMessage {
+            assistant_response_message: AssistantMessage::new("writing")
+                .with_tool_uses(vec![tool_use_x])
+                .with_message_id("msg-x"),
+        });
+
+        // user2 没有 tool_result X
+        let user2 = Message::User(HistoryUserMessage::new("q2", "claude-sonnet-4.5"));
+        let assistant2 = Message::Assistant(HistoryAssistantMessage::new("ok"));
+
+        // current 有 tool_result X → 全局存在但不相邻
+        let current = CurrentMessage::new(
+            UserInputMessage::new(" ", "claude-sonnet-4.5").with_context(
+                UserInputMessageContext::new()
+                    .with_tool_results(vec![ToolResult::success("tool-X", "result")]),
+            ),
+        );
+
+        let mut state = ConversationState::new("test")
+            .with_current_message(current)
+            .with_history(vec![
+                system_user,
+                system_assistant,
+                user1,
+                assistant1,
+                user2,
+                assistant2,
+            ]);
+
+        let config = CompressionConfig::default();
+        let _stats = compress(&mut state, &config);
+
+        if let Message::Assistant(a) = &state.history[3] {
+            assert!(
+                a.assistant_response_message.tool_uses.is_none(),
+                "非相邻 tool_use 应被移除"
+            );
+            assert!(
+                a.assistant_response_message.message_id.is_none(),
+                "message_id 应随 tool_uses 一起清理"
+            );
+        } else {
+            panic!("expected Assistant at index 3");
+        }
+
+        assert!(
+            state
+                .current_message
+                .user_input_message
+                .user_input_message_context
+                .tool_results
+                .is_empty(),
+            "非相邻 tool_result 应从 current_message 移除"
+        );
+    }
+
+    #[test]
+    fn test_adjacency_repair_preserves_adjacent_pairs() {
+        let system_user = Message::User(HistoryUserMessage::new("system", "claude-sonnet-4.5"));
+        let system_assistant =
+            Message::Assistant(HistoryAssistantMessage::new("I will follow."));
+
+        let user1 = Message::User(HistoryUserMessage::new("do it", "claude-sonnet-4.5"));
+
+        let tool_use =
+            ToolUseEntry::new("tool-1", "read").with_input(serde_json::json!({}));
+        let assistant1 = Message::Assistant(HistoryAssistantMessage {
+            assistant_response_message: AssistantMessage::new("reading")
+                .with_tool_uses(vec![tool_use])
+                .with_message_id("msg-1"),
+        });
+
+        let user2 = Message::User(HistoryUserMessage {
+            user_input_message: UserMessage::new("thanks", "claude-sonnet-4.5").with_context(
+                UserInputMessageContext::new()
+                    .with_tool_results(vec![ToolResult::success("tool-1", "file content")]),
+            ),
+        });
+
+        let assistant2 = Message::Assistant(HistoryAssistantMessage::new("done"));
+
+        let mut state = ConversationState::new("test")
+            .with_current_message(CurrentMessage::new(UserInputMessage::new(
+                "next",
+                "claude-sonnet-4.5",
+            )))
+            .with_history(vec![
+                system_user,
+                system_assistant,
+                user1,
+                assistant1,
+                user2,
+                assistant2,
+            ]);
+
+        let config = CompressionConfig::default();
+        let _stats = compress(&mut state, &config);
+
+        if let Message::Assistant(a) = &state.history[3] {
+            assert!(
+                a.assistant_response_message.tool_uses.is_some(),
+                "相邻 tool_use 不应被移除"
+            );
+            assert_eq!(
+                a.assistant_response_message
+                    .tool_uses
+                    .as_ref()
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+        if let Message::User(u) = &state.history[4] {
+            assert_eq!(
+                u.user_input_message
+                    .user_input_message_context
+                    .tool_results
+                    .len(),
+                1,
+                "相邻 tool_result 不应被移除"
+            );
         }
     }
 }
