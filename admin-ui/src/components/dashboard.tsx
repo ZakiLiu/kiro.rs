@@ -29,6 +29,7 @@ import {
   Wand2,
   Zap,
   Tags,
+  Shield,
 } from "lucide-react";
 
 function GithubIcon({ className }: { className?: string }) {
@@ -73,6 +74,7 @@ import { BatchEditCredentialDialog } from "@/components/batch-edit-credential-di
 import { IdcLoginDialog } from "@/components/idc-login-dialog";
 import { SocialLoginDialog } from "@/components/social-login-dialog";
 import { KamImportDialog } from "@/components/kam-import-dialog";
+import { ExternalIdpLoginDialog } from "@/components/external-idp-login-dialog";
 import {
   BatchVerifyDialog,
   type VerifyResult,
@@ -143,6 +145,7 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
   const [batchEditDialogOpen, setBatchEditDialogOpen] = useState(false);
   const [idcLoginDialogOpen, setIdcLoginDialogOpen] = useState(false);
   const [enterpriseLoginDialogOpen, setEnterpriseLoginDialogOpen] = useState(false);
+  const [externalIdpLoginDialogOpen, setExternalIdpLoginDialogOpen] = useState(false);
   const [socialLoginDialogOpen, setSocialLoginDialogOpen] = useState(false);
   const [kamImportDialogOpen, setKamImportDialogOpen] = useState(false);
   const [proxyPoolDialogOpen, setProxyPoolDialogOpen] = useState(false);
@@ -1299,6 +1302,10 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
                   <Building2 />
                   Enterprise (IAM Identity Center) 登录
                 </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setExternalIdpLoginDialogOpen(true)}>
+                  <Shield />
+                  External IdP (Azure AD) 登录
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuLabel>导入</DropdownMenuLabel>
                 <DropdownMenuItem
@@ -1538,6 +1545,13 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
       <KamImportDialog
         open={kamImportDialogOpen}
         onOpenChange={setKamImportDialogOpen}
+      />
+      <ExternalIdpLoginDialog
+        open={externalIdpLoginDialogOpen}
+        onOpenChange={setExternalIdpLoginDialogOpen}
+        onSuccess={() =>
+          queryClient.invalidateQueries({ queryKey: ["credentials"] })
+        }
       />
       <ProxyPoolDialog
         open={proxyPoolDialogOpen}

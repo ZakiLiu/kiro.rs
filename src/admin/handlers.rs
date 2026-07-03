@@ -20,7 +20,8 @@ use super::{
         CreateClientKeyRequest, CreateClientKeyResponse, CreatePresetRequest, GlobalProxyResponse,
         ImportTokenJsonRequest, SetAccountThrottleConfigRequest, SetDisabledRequest,
         SetEndpointRequest, SetLoadBalancingModeRequest, SetLogGovernanceConfigRequest,
-        SetPriorityRequest, SetRegionRequest, StartIdcLoginRequest, StartSocialLoginRequest,
+        SetPriorityRequest, SetRegionRequest, StartExternalIdpLoginRequest,
+        StartIdcLoginRequest, StartSocialLoginRequest,
         SuccessResponse, UpdateAdminKeyRequest, UpdateClientKeyRequest, UpdateCredentialRequest,
         UpdatePresetRequest, UpdateProxyConfigRequest, UpdateRefreshTokenRequest,
     },
@@ -703,6 +704,28 @@ pub async fn poll_idc_login(
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     match state.service.poll_idc_login(&session_id).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/auth/external-idp/start
+pub async fn start_external_idp_login(
+    State(state): State<AdminState>,
+    Json(payload): Json<StartExternalIdpLoginRequest>,
+) -> impl IntoResponse {
+    match state.service.start_external_idp_login(payload).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/auth/external-idp/poll/:session_id
+pub async fn poll_external_idp_login(
+    State(state): State<AdminState>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    match state.service.poll_external_idp_login(&session_id).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
