@@ -1840,6 +1840,7 @@ pub async fn get_group_config(
                         "maxHistoryTurns": resolved_compression.max_history_turns,
                         "maxHistoryChars": resolved_compression.max_history_chars,
                         "maxRequestBodyBytes": resolved_compression.max_request_body_bytes,
+                        "maxInputTokens": resolved_compression.max_input_tokens,
                     }
                 }
             }))

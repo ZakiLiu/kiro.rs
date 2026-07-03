@@ -77,13 +77,14 @@
 
 结论：**不会自动“动态降帧/降分辨率”来匹配上限**。
 
-- `max_request_body_bytes` 只用于：
+- `max_request_body_bytes` 用于：
   1) 序列化后做阈值检查
   2) 触发“自适应二次压缩”（仅压缩 tool_result/tool_use_input/长文本/历史）
   3) 仍超限则**本地直接拒绝发送**（返回 `Request too large ...`）
-- 相关逻辑：`src/anthropic/handlers.rs:737`、`src/anthropic/handlers.rs:145`、`src/anthropic/handlers.rs:778`
+- `max_input_tokens` 用于按预转换估算 input tokens 触发同一套自适应二次压缩；默认 `200000`，`0` 表示不限制。
+- 相关逻辑：`src/anthropic/handlers.rs` 的 `adaptive_shrink_request_body` 与 `/v1/messages` 请求体预检分支。
 
-并且：这次失败样本的 `kiro_request_body_bytes` 约 `3.76~3.77MB`，本身就低于 `4,000,000`，所以即便把阈值改成 4MB，也**不会触发**本地超限分支；请求仍会照样发上游，是否 400 取决于上游校验。
+并且：如果失败样本的 `kiro_request_body_bytes` 低于字节阈值，但预转换估算 input tokens 已超过 `max_input_tokens`，现在也会触发本地自适应压缩，不再只依赖 bytes 分支。
 
 ## 未修复/待覆盖的 case（与本问题强相关）
 

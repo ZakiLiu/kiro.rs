@@ -73,6 +73,8 @@ pub struct GroupCompressionConfig {
     pub max_history_chars: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_request_body_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<usize>,
 }
 
 impl GroupConfig {
@@ -104,6 +106,7 @@ impl GroupCompressionConfig {
             image_max_pixels_multi: global.image_max_pixels_multi,
             image_multi_threshold: global.image_multi_threshold,
             max_request_body_bytes: self.max_request_body_bytes.unwrap_or(global.max_request_body_bytes),
+            max_input_tokens: self.max_input_tokens.unwrap_or(global.max_input_tokens),
         }
     }
 }

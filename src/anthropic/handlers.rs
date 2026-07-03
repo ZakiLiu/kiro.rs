@@ -363,13 +363,25 @@ fn total_image_bytes(kiro_request: &KiroRequest) -> usize {
     total
 }
 
+fn estimate_request_body_tokens(request_body: &str) -> usize {
+    request_body.len() / 4
+}
+
 fn adaptive_shrink_request_body(
     kiro_request: &mut KiroRequest,
     base_config: &crate::model::config::CompressionConfig,
     max_body: usize,
+    max_tokens: usize,
     request_body: &mut String,
 ) -> Result<Option<AdaptiveCompressionOutcome>, serde_json::Error> {
-    if max_body == 0 || request_body.len() <= max_body || !base_config.enabled {
+    if !base_config.enabled {
+        return Ok(None);
+    }
+
+    let under_byte_limit = max_body == 0 || request_body.len() <= max_body;
+    let under_token_limit =
+        max_tokens == 0 || estimate_request_body_tokens(request_body) <= max_tokens;
+    if under_byte_limit && under_token_limit {
         return Ok(None);
     }
 
@@ -476,7 +488,10 @@ fn adaptive_shrink_request_body(
         (max_content_chars * 3 / 4).max(ADAPTIVE_MIN_MESSAGE_CONTENT_MAX_CHARS);
 
     for _ in 0..ADAPTIVE_COMPRESSION_MAX_ITERS {
-        if request_body.len() <= max_body {
+        let under_byte_limit = max_body == 0 || request_body.len() <= max_body;
+        let under_token_limit =
+            max_tokens == 0 || estimate_request_body_tokens(request_body) <= max_tokens;
+        if under_byte_limit && under_token_limit {
             break;
         }
 
@@ -1484,21 +1499,28 @@ pub async fn post_messages(
 
     // 请求体大小预检（上游存在硬性请求体大小限制；按实际序列化后的总字节数判断）
     let max_body = compression_config.max_request_body_bytes;
+    let max_tokens = compression_config.max_input_tokens;
     let mut adaptive_outcome: Option<AdaptiveCompressionOutcome> = None;
-    if max_body > 0 && request_body.len() > max_body && compression_config.enabled {
+    let exceeds_bytes = max_body > 0 && request_body.len() > max_body;
+    let exceeds_tokens = max_tokens > 0 && (estimated_input_tokens.max(0) as usize) > max_tokens;
+    if (exceeds_bytes || exceeds_tokens) && compression_config.enabled {
         // 自适应二次压缩：按 request_body_bytes 迭代截断，尽量把请求缩到阈值内
         match adaptive_shrink_request_body(
             &mut kiro_request,
             &compression_config,
             max_body,
+            max_tokens,
             &mut request_body,
         ) {
             Ok(Some(outcome)) => {
                 tracing::warn!(
                     conversation_id = kiro_request.conversation_state.conversation_id.as_str(),
+                    trigger = if exceeds_tokens { "tokens" } else { "bytes" },
                     initial_bytes = outcome.initial_bytes,
                     final_bytes = outcome.final_bytes,
                     threshold = max_body,
+                    estimated_input_tokens,
+                    token_threshold = max_tokens,
                     iters = outcome.iters,
                     additional_history_turns_removed = outcome.additional_history_turns_removed,
                     final_tool_result_max_chars = outcome.final_tool_result_max_chars,
@@ -2742,6 +2764,41 @@ mod tests {
             KiroMessage::User(user) => user.user_input_message.images.is_empty(),
             _ => false,
         });
+    }
+
+    #[test]
+    fn test_adaptive_shrink_triggers_on_token_limit_under_byte_limit() {
+        let content = "A".repeat(20_000);
+        let mut kiro_request = KiroRequest {
+            conversation_state: ConversationState::new("conv-token")
+                .with_current_message(CurrentMessage::new(UserInputMessage::new(
+                    content,
+                    "claude-sonnet-4.5",
+                ))),
+            profile_arn: None,
+            additional_model_request_fields: None,
+        };
+        let mut request_body = serde_json::to_string(&kiro_request).unwrap();
+        let max_body = request_body.len() + 10_000;
+        let max_tokens = 4_000;
+
+        assert!(request_body.len() <= max_body);
+        assert!(estimate_request_body_tokens(&request_body) > max_tokens);
+
+        let outcome = adaptive_shrink_request_body(
+            &mut kiro_request,
+            &crate::model::config::CompressionConfig::default(),
+            max_body,
+            max_tokens,
+            &mut request_body,
+        )
+        .expect("adaptive shrink should serialize")
+        .expect("token limit should trigger adaptive shrink");
+
+        assert!(outcome.iters > 0);
+        assert!(outcome.final_bytes < outcome.initial_bytes);
+        assert!(request_body.len() <= max_body);
+        assert!(estimate_request_body_tokens(&request_body) <= max_tokens);
     }
 
     #[test]

@@ -556,6 +556,7 @@ pub struct CompressionConfigResponse {
     pub max_history_turns: usize,
     pub max_history_chars: usize,
     pub max_request_body_bytes: usize,
+    pub max_input_tokens: usize,
 }
 
 /// 区分「字段缺失」与「显式 null」的双层 Option 反序列化：
@@ -639,6 +640,7 @@ pub struct UpdateCompressionConfigRequest {
     pub max_history_turns: Option<usize>,
     pub max_history_chars: Option<usize>,
     pub max_request_body_bytes: Option<usize>,
+    pub max_input_tokens: Option<usize>,
 }
 
 // ============ 负载均衡模式 ============

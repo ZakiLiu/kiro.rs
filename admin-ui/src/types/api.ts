@@ -611,6 +611,7 @@ export interface CompressionConfigResponse {
   maxHistoryTurns: number
   maxHistoryChars: number
   maxRequestBodyBytes: number
+  maxInputTokens: number
 }
 
 export interface GlobalConfigResponse {
@@ -635,6 +636,7 @@ export interface UpdateCompressionConfigRequest {
   maxHistoryTurns?: number
   maxHistoryChars?: number
   maxRequestBodyBytes?: number
+  maxInputTokens?: number
 }
 
 export interface UpdateGlobalConfigRequest {

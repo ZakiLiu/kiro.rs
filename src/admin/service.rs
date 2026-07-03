@@ -1484,6 +1484,7 @@ impl AdminService {
                 max_history_turns: c.max_history_turns,
                 max_history_chars: c.max_history_chars,
                 max_request_body_bytes: c.max_request_body_bytes,
+                max_input_tokens: c.max_input_tokens,
             },
         }
     }
@@ -1640,6 +1641,9 @@ impl AdminService {
         }
         if let Some(v) = src.max_request_body_bytes {
             target.max_request_body_bytes = v;
+        }
+        if let Some(v) = src.max_input_tokens {
+            target.max_input_tokens = v;
         }
     }
 
@@ -3639,5 +3643,42 @@ mod tests {
         let service = create_test_service();
         let config = service.get_global_config();
         assert_eq!(config.default_endpoint, "ide"); // Config::default() 的默认值
+    }
+
+    #[tokio::test]
+    async fn test_update_global_config_compression_max_input_tokens() {
+        let service = create_test_service();
+
+        let req = super::super::types::UpdateGlobalConfigRequest {
+            region: None,
+            credential_rpm: None,
+            credential_daily_max_requests: None,
+            prompt_cache_ttl_seconds: None,
+            prompt_cache_accounting_enabled: None,
+            default_endpoint: None,
+            compression: Some(super::super::types::UpdateCompressionConfigRequest {
+                enabled: None,
+                whitespace_compression: None,
+                thinking_strategy: None,
+                tool_result_max_chars: None,
+                tool_result_head_lines: None,
+                tool_result_tail_lines: None,
+                tool_use_input_max_chars: None,
+                tool_description_max_chars: None,
+                max_history_turns: None,
+                max_history_chars: None,
+                max_request_body_bytes: None,
+                max_input_tokens: Some(123_456),
+            }),
+        };
+
+        let result = service.update_global_config(req).await;
+        assert!(result.is_ok());
+
+        let config = service.get_global_config();
+        assert_eq!(config.compression.max_input_tokens, 123_456);
+
+        let persisted = read_persisted_config(&service);
+        assert_eq!(persisted.compression.max_input_tokens, 123_456);
     }
 }

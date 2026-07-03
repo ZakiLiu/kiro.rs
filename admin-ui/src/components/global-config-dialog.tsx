@@ -53,6 +53,7 @@ export function GlobalConfigDialog({ open, onOpenChange }: GlobalConfigDialogPro
   const [cMaxHistoryTurns, setCMaxHistoryTurns] = useState('')
   const [cMaxHistoryChars, setCMaxHistoryChars] = useState('')
   const [cMaxRequestBodyBytes, setCMaxRequestBodyBytes] = useState('')
+  const [cMaxInputTokens, setCMaxInputTokens] = useState('')
 
   const isLoading = proxyLoading || globalLoading
   const isPending = proxyPending || globalPending
@@ -77,6 +78,7 @@ export function GlobalConfigDialog({ open, onOpenChange }: GlobalConfigDialogPro
       setCMaxHistoryTurns(c.maxHistoryTurns.toString())
       setCMaxHistoryChars(c.maxHistoryChars.toString())
       setCMaxRequestBodyBytes(c.maxRequestBodyBytes.toString())
+      setCMaxInputTokens(c.maxInputTokens.toString())
     }
     if (open && proxyConfig) {
       setProxyUrl(proxyConfig.proxyUrl || '')
@@ -147,6 +149,7 @@ export function GlobalConfigDialog({ open, onOpenChange }: GlobalConfigDialogPro
       setIf('maxHistoryTurns', parseInt(cMaxHistoryTurns) || 0, oc.maxHistoryTurns)
       setIf('maxHistoryChars', parseInt(cMaxHistoryChars) || 0, oc.maxHistoryChars)
       setIf('maxRequestBodyBytes', parseInt(cMaxRequestBodyBytes) || 0, oc.maxRequestBodyBytes)
+      setIf('maxInputTokens', parseInt(cMaxInputTokens) || 0, oc.maxInputTokens)
       if (hasCompChanges) {
         globalPayload.compression = comp
         hasGlobalChanges = true
@@ -313,6 +316,7 @@ export function GlobalConfigDialog({ open, onOpenChange }: GlobalConfigDialogPro
                 {numInput('gcMaxChars', '历史最大字符数', cMaxHistoryChars, setCMaxHistoryChars, '0 = 不限')}
               </div>
               {numInput('gcMaxBody', '请求体大小上限（字节）', cMaxRequestBodyBytes, setCMaxRequestBodyBytes, '超过此大小触发自适应压缩，0 = 不限')}
+              {numInput('gcMaxInputTokens', '输入 token 上限', cMaxInputTokens, setCMaxInputTokens, '超过此估算 token 数触发自适应压缩，0 = 不限')}
             </div>
 
             <DialogFooter>

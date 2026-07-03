@@ -11,6 +11,7 @@
   "promptCacheTtlSeconds": 300,
   "promptCacheAccountingEnabled": true,
   "compression": {
-    "maxRequestBodyBytes": 4718592
+    "maxRequestBodyBytes": 4718592,
+    "maxInputTokens": 200000
   }
 }

@@ -402,6 +402,10 @@ fn default_max_request_body_bytes() -> usize {
     4_718_592
 }
 
+fn default_max_input_tokens() -> usize {
+    200_000
+}
+
 /// 输入压缩配置
 ///
 /// 控制请求体在协议转换后、发送到上游前的多层压缩策略。
@@ -454,6 +458,9 @@ pub struct CompressionConfig {
     /// 请求体最大字节数，超过则直接拒绝（0 = 不限制）
     #[serde(default = "default_max_request_body_bytes")]
     pub max_request_body_bytes: usize,
+    /// 输入 token 上限（超过此值触发自适应压缩），默认 200000（0 = 不限制）
+    #[serde(default = "default_max_input_tokens")]
+    pub max_input_tokens: usize,
 }
 
 impl Default for CompressionConfig {
@@ -474,6 +481,7 @@ impl Default for CompressionConfig {
             image_max_pixels_multi: default_image_max_pixels_multi(),
             image_multi_threshold: default_image_multi_threshold(),
             max_request_body_bytes: default_max_request_body_bytes(),
+            max_input_tokens: default_max_input_tokens(),
         }
     }
 }
@@ -640,5 +648,25 @@ mod tests {
         let preset: Preset = serde_json::from_str(r#"{"id":"p1","name":"P1","systemPrompt":"hi"}"#)
             .expect("preset should deserialize without enabled field");
         assert!(preset.enabled);
+    }
+
+    #[test]
+    fn test_compression_config_defaults_max_input_tokens() {
+        let config = CompressionConfig::default();
+
+        assert_eq!(config.max_input_tokens, 200_000);
+    }
+
+    #[test]
+    fn test_config_deserializes_compression_max_input_tokens() {
+        let config: Config =
+            serde_json::from_str(r#"{"compression":{"maxInputTokens":123456}}"#)
+                .expect("config with maxInputTokens should deserialize");
+
+        assert_eq!(config.compression.max_input_tokens, 123_456);
+        assert_eq!(
+            config.compression.max_request_body_bytes,
+            default_max_request_body_bytes()
+        );
     }
 }

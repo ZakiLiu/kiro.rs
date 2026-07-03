@@ -72,6 +72,7 @@ export interface GroupCompressionOverrides {
   maxHistoryTurns?: number | null
   maxHistoryChars?: number | null
   maxRequestBodyBytes?: number | null
+  maxInputTokens?: number | null
 }
 
 export interface ResolvedGroupConfig {
@@ -91,6 +92,7 @@ export interface ResolvedGroupConfig {
     maxHistoryTurns: number
     maxHistoryChars: number
     maxRequestBodyBytes: number
+    maxInputTokens: number
   }
 }
 

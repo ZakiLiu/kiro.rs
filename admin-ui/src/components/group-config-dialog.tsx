@@ -40,6 +40,7 @@ export function GroupConfigDialog({ groupName, open, onOpenChange }: GroupConfig
   const [cMaxHistoryTurns, setCMaxHistoryTurns] = useState('')
   const [cMaxHistoryChars, setCMaxHistoryChars] = useState('')
   const [cMaxRequestBodyBytes, setCMaxRequestBodyBytes] = useState('')
+  const [cMaxInputTokens, setCMaxInputTokens] = useState('')
 
   useEffect(() => {
     if (!open || !data) return
@@ -60,6 +61,7 @@ export function GroupConfigDialog({ groupName, open, onOpenChange }: GroupConfig
     setCMaxHistoryTurns(c?.maxHistoryTurns?.toString() ?? '')
     setCMaxHistoryChars(c?.maxHistoryChars?.toString() ?? '')
     setCMaxRequestBodyBytes(c?.maxRequestBodyBytes?.toString() ?? '')
+    setCMaxInputTokens(c?.maxInputTokens?.toString() ?? '')
   }, [open, data])
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -82,6 +84,7 @@ export function GroupConfigDialog({ groupName, open, onOpenChange }: GroupConfig
     setComp('maxHistoryTurns', cMaxHistoryTurns ? parseInt(cMaxHistoryTurns) : null)
     setComp('maxHistoryChars', cMaxHistoryChars ? parseInt(cMaxHistoryChars) : null)
     setComp('maxRequestBodyBytes', cMaxRequestBodyBytes ? parseInt(cMaxRequestBodyBytes) : null)
+    setComp('maxInputTokens', cMaxInputTokens ? parseInt(cMaxInputTokens) : null)
 
     const config: GroupConfigOverrides = {}
     if (credentialRpm.trim()) config.credentialRpm = parseInt(credentialRpm)
@@ -234,6 +237,7 @@ export function GroupConfigDialog({ groupName, open, onOpenChange }: GroupConfig
                 {numInput('gcMaxChars', '历史最大字符数', cMaxHistoryChars, setCMaxHistoryChars, resolved?.compression?.maxHistoryChars)}
               </div>
               {numInput('gcMaxBody', '请求体上限（字节）', cMaxRequestBodyBytes, setCMaxRequestBodyBytes, resolved?.compression?.maxRequestBodyBytes)}
+              {numInput('gcMaxInputTokens', '输入 token 上限', cMaxInputTokens, setCMaxInputTokens, resolved?.compression?.maxInputTokens)}
             </div>
 
             <DialogFooter>
