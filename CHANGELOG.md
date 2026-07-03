@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.1.4] - 2026-07-03
+
+### Fixed
+- **External IdP refresh scope 缺失** — 修复 external_idp 刷新 token 时缺少 scope 参数导致的 AADSTS90009 错误
+
 ## [v2.1.3] - 2026-07-03
 
 ### Fixed
