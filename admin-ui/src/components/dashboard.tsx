@@ -75,6 +75,7 @@ import { IdcLoginDialog } from "@/components/idc-login-dialog";
 import { SocialLoginDialog } from "@/components/social-login-dialog";
 import { KamImportDialog } from "@/components/kam-import-dialog";
 import { ExternalIdpLoginDialog } from "@/components/external-idp-login-dialog";
+import { ExternalIdpImportDialog } from "@/components/external-idp-import-dialog";
 import {
   BatchVerifyDialog,
   type VerifyResult,
@@ -146,6 +147,7 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
   const [idcLoginDialogOpen, setIdcLoginDialogOpen] = useState(false);
   const [enterpriseLoginDialogOpen, setEnterpriseLoginDialogOpen] = useState(false);
   const [externalIdpLoginDialogOpen, setExternalIdpLoginDialogOpen] = useState(false);
+  const [externalIdpImportDialogOpen, setExternalIdpImportDialogOpen] = useState(false);
   const [socialLoginDialogOpen, setSocialLoginDialogOpen] = useState(false);
   const [kamImportDialogOpen, setKamImportDialogOpen] = useState(false);
   const [proxyPoolDialogOpen, setProxyPoolDialogOpen] = useState(false);
@@ -1314,6 +1316,10 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
                   <Upload />
                   批量导入
                 </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setExternalIdpImportDialogOpen(true)}>
+                  <Shield />
+                  External IdP 凭据导入
+                </DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => setKamImportDialogOpen(true)}>
                   <FileUp />
                   Kiro Account Manager 导入
@@ -1545,6 +1551,10 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
       <KamImportDialog
         open={kamImportDialogOpen}
         onOpenChange={setKamImportDialogOpen}
+      />
+      <ExternalIdpImportDialog
+        open={externalIdpImportDialogOpen}
+        onOpenChange={setExternalIdpImportDialogOpen}
       />
       <ExternalIdpLoginDialog
         open={externalIdpLoginDialogOpen}
