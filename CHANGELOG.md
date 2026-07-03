@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.1.1] - 2026-07-03
+
+### Added
+- **Admin UI External IdP 登录** — 增加 Azure AD (External IdP) 登录菜单入口 + SSO 端点路由
+
 ## [v2.1.0] - 2026-07-03
 
 ### Added
