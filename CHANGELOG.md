@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.1.10] - 2026-07-04
+
+### Fixed
+- **失败请求写入 TraceRecord** — 新增 ApiCallError 结构，失败路径也携带 attempts 向量写入 trace_attempts 表，修复凭据鉴权失败等错误不记录导致 UI 失败次数统计始终显示 0/0/0 的 bug
+
 ## [v2.1.9] - 2026-07-04
 
 ### Fixed
