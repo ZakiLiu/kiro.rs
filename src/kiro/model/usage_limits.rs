@@ -41,7 +41,7 @@ pub struct UserInfo {
 }
 
 /// 订阅信息
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionInfo {
     #[serde(default)]

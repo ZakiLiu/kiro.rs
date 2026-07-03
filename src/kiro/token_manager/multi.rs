@@ -3391,6 +3391,20 @@ impl MultiTokenManager {
                 .ok_or_else(|| anyhow::anyhow!("凭据不存在: {}", id))?
         };
 
+        // external_idp 凭据的 access_token 是 Azure AD JWT，Kiro usage API 不认
+        if credentials.auth_method.as_deref() == Some("external_idp") {
+            return Ok(UsageLimitsResponse {
+                next_date_reset: None,
+                subscription_info: Some(crate::kiro::model::usage_limits::SubscriptionInfo {
+                    subscription_title: Some("External IdP".to_string()),
+                    ..Default::default()
+                }),
+                usage_breakdown_list: Vec::new(),
+                overage_configuration: None,
+                user_info: None,
+            });
+        }
+
         // 检查是否需要刷新 token
         let needs_refresh = is_token_expired(&credentials) || is_token_expiring_soon(&credentials);
 
