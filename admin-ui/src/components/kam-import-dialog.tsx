@@ -10,8 +10,8 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { useCredentials, useAddCredential, useDeleteCredential } from '@/hooks/use-credentials'
-import { getCredentialBalance, setCredentialDisabled, getProxyPool } from '@/api/credentials'
+import { useCredentials, useAddCredential } from '@/hooks/use-credentials'
+import { getCredentialBalance, getProxyPool } from '@/api/credentials'
 import { extractErrorMessage, sha256Hex } from '@/lib/utils'
 
 interface KamImportDialogProps {
@@ -60,13 +60,11 @@ function normalizeExpiresAt(value: unknown): string | undefined {
 
 interface VerificationResult {
   index: number
-  status: 'pending' | 'checking' | 'verifying' | 'verified' | 'duplicate' | 'failed' | 'skipped'
+  status: 'pending' | 'checking' | 'verifying' | 'verified' | 'verified_no_balance' | 'duplicate' | 'failed' | 'skipped'
   error?: string
   usage?: string
   email?: string
   credentialId?: number
-  rollbackStatus?: 'success' | 'failed' | 'skipped'
-  rollbackError?: string
 }
 
 
@@ -188,26 +186,12 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
 
   const { data: existingCredentials } = useCredentials()
   const { mutateAsync: addCredential } = useAddCredential()
-  const { mutateAsync: deleteCredential } = useDeleteCredential()
   const { data: proxyPool } = useQuery({
     queryKey: ['proxy-pool'],
     queryFn: getProxyPool,
     enabled: open,
   })
 
-  const rollbackCredential = async (id: number): Promise<{ success: boolean; error?: string }> => {
-    try {
-      await setCredentialDisabled(id, true)
-    } catch (error) {
-      return { success: false, error: `禁用失败: ${extractErrorMessage(error)}` }
-    }
-    try {
-      await deleteCredential(id)
-      return { success: true }
-    } catch (error) {
-      return { success: false, error: `删除失败: ${extractErrorMessage(error)}` }
-    }
-  }
 
   const resetForm = () => {
     setJsonInput('')
@@ -364,8 +348,6 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
           return next
         })
 
-        let addedCredId: number | null = null
-
         try {
           const clientId = cred.clientId?.trim() || undefined
           const clientSecret = cred.clientSecret?.trim() || undefined
@@ -398,40 +380,42 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
             proxyUrl,
           })
 
-          addedCredId = addedCred.credentialId
-
+          // 凭据添加成功，余额查询失败不回滚（某些账号类型不支持 Usage API）
           await new Promise(resolve => setTimeout(resolve, 1000))
 
-          const balance = await getCredentialBalance(addedCred.credentialId)
-
-          successCount++
-          existingTokenHashes.add(tokenHash)
-          setCurrentProcessing(`验活成功: ${addedCred.email || account.email || `账号 ${i + 1}`}`)
-          setResults(prev => {
-            const next = [...prev]
-            next[i] = {
-              ...next[i],
-              status: 'verified',
-              usage: `${balance.currentUsage}/${balance.usageLimit}`,
-              email: addedCred.email || account.email,
-              credentialId: addedCred.credentialId,
-            }
-            return next
-          })
-        } catch (error) {
-          let rollbackStatus: VerificationResult['rollbackStatus'] = 'skipped'
-          let rollbackError: string | undefined
-
-          if (addedCredId) {
-            const result = await rollbackCredential(addedCredId)
-            if (result.success) {
-              rollbackStatus = 'success'
-            } else {
-              rollbackStatus = 'failed'
-              rollbackError = result.error
-            }
+          try {
+            const balance = await getCredentialBalance(addedCred.credentialId)
+            successCount++
+            existingTokenHashes.add(tokenHash)
+            setCurrentProcessing(`验活成功: ${addedCred.email || account.email || `账号 ${i + 1}`}`)
+            setResults(prev => {
+              const next = [...prev]
+              next[i] = {
+                ...next[i],
+                status: 'verified',
+                usage: `${balance.currentUsage}/${balance.usageLimit}`,
+                email: addedCred.email || account.email,
+                credentialId: addedCred.credentialId,
+              }
+              return next
+            })
+          } catch {
+            successCount++
+            existingTokenHashes.add(tokenHash)
+            setCurrentProcessing(`已添加（余额查询不可用）: ${addedCred.email || account.email || `账号 ${i + 1}`}`)
+            setResults(prev => {
+              const next = [...prev]
+              next[i] = {
+                ...next[i],
+                status: 'verified_no_balance',
+                error: '余额查询不可用（不影响正常使用）',
+                email: addedCred.email || account.email,
+                credentialId: addedCred.credentialId,
+              }
+              return next
+            })
           }
-
+        } catch (error) {
           failCount++
           setResults(prev => {
             const next = [...prev]
@@ -439,8 +423,6 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
               ...next[i],
               status: 'failed',
               error: extractErrorMessage(error),
-              rollbackStatus,
-              rollbackError,
             }
             return next
           })
@@ -477,6 +459,8 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
         return <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
       case 'verified':
         return <CheckCircle2 className="w-5 h-5 text-green-500" />
+      case 'verified_no_balance':
+        return <AlertCircle className="w-5 h-5 text-yellow-500" />
       case 'duplicate':
         return <AlertCircle className="w-5 h-5 text-yellow-500" />
       case 'skipped':
@@ -492,12 +476,10 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
       case 'checking': return '检查重复...'
       case 'verifying': return '验活中...'
       case 'verified': return '验活成功'
+      case 'verified_no_balance': return '已添加（余额不可查）'
       case 'duplicate': return '重复凭据'
       case 'skipped': return '已跳过（error 状态）'
-      case 'failed':
-        if (result.rollbackStatus === 'success') return '验活失败（已排除）'
-        if (result.rollbackStatus === 'failed') return '验活失败（未排除）'
-        return '验活失败（未创建）'
+      case 'failed': return '添加失败'
     }
   }
 
@@ -606,7 +588,7 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
 
               <div className="flex gap-4 text-sm">
                 <span className="text-green-600 dark:text-green-400">
-                  ✓ 成功: {results.filter(r => r.status === 'verified').length}
+                  ✓ 成功: {results.filter(r => r.status === 'verified' || r.status === 'verified_no_balance').length}
                 </span>
                 <span className="text-yellow-600 dark:text-yellow-400">
                   ⚠ 重复: {results.filter(r => r.status === 'duplicate').length}
@@ -637,10 +619,7 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
                           <div className="text-xs text-muted-foreground mt-1">用量: {result.usage}</div>
                         )}
                         {result.error && (
-                          <div className="text-xs text-red-600 dark:text-red-400 mt-1">{result.error}</div>
-                        )}
-                        {result.rollbackError && (
-                          <div className="text-xs text-red-600 dark:text-red-400 mt-1">回滚失败: {result.rollbackError}</div>
+                          <div className={`text-xs mt-1 ${result.status === 'verified_no_balance' ? 'text-yellow-600 dark:text-yellow-400' : 'text-red-600 dark:text-red-400'}`}>{result.error}</div>
                         )}
                       </div>
                     </div>
