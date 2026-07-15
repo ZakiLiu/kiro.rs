@@ -1870,11 +1870,7 @@ pub async fn update_group_config(
         Some(payload)
     };
     match groups.update_config(&name, config) {
-        Ok(_) => Json(SuccessResponse::new(format!(
-            "分组 {} 配置已更新",
-            name
-        )))
-        .into_response(),
+        Ok(_) => Json(SuccessResponse::new(format!("分组 {} 配置已更新", name))).into_response(),
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(super::types::AdminErrorResponse::not_found(e.to_string())),

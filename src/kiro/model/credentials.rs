@@ -46,7 +46,11 @@ pub struct KiroCredentials {
 
     /// 过期时间 (RFC3339 格式)
     /// alias "expired" 兼容 kiro-login-helper 格式，alias "expires_at" 兼容 snake_case
-    #[serde(skip_serializing_if = "Option::is_none", alias = "expired", alias = "expires_at")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "expired",
+        alias = "expires_at"
+    )]
     pub expires_at: Option<String>,
 
     /// 认证方式 (social / idc / api_key / external_idp)
@@ -127,9 +131,12 @@ pub struct KiroCredentials {
     pub disable_reason: Option<String>,
 
     // ── external_idp (Enterprise SSO / Azure AD) 字段 ──
-
     /// External IdP Token 端点 URL（如 https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token）
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "token_endpoint")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "token_endpoint"
+    )]
     pub token_endpoint: Option<String>,
 
     /// OIDC Issuer URL（如 https://login.microsoftonline.com/{tenant}/v2.0）
@@ -376,9 +383,7 @@ impl KiroCredentials {
         }
 
         // 修复迁移：IdC 凭据被错误写入 SOCIAL_PROFILE_ARN → 清理回 BUILDER_ID
-        if !self.is_social_login()
-            && self.profile_arn.as_deref() == Some(SOCIAL_PROFILE_ARN)
-        {
+        if !self.is_social_login() && self.profile_arn.as_deref() == Some(SOCIAL_PROFILE_ARN) {
             self.profile_arn = Some(BUILDER_ID_PROFILE_ARN.to_string());
             return true;
         }

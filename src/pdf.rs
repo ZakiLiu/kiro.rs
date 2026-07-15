@@ -162,7 +162,10 @@ pub fn download_pdf(url: &str) -> Result<Vec<u8>, PdfError> {
             })
             .and_then(|resp| {
                 if !resp.status().is_success() {
-                    return Err(PdfError::ExtractionFailed(format!("HTTP {}", resp.status())));
+                    return Err(PdfError::ExtractionFailed(format!(
+                        "HTTP {}",
+                        resp.status()
+                    )));
                 }
                 resp.bytes()
                     .map_err(|e| PdfError::ExtractionFailed(format!("read body failed: {}", e)))

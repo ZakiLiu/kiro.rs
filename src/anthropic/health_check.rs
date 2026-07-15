@@ -1,6 +1,6 @@
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use bytes::Bytes;
 use serde_json::json;
 use std::convert::Infallible;
@@ -111,10 +111,17 @@ fn eval_simple_math(expr: &str) -> Option<String> {
         .lines()
         .rev()
         .find(|l| l.trim_start().starts_with("Q:") || l.contains("= ?") || l.contains("=?"))
-        .or_else(|| expr.lines().find(|l| l.contains('+') || l.contains('*') || l.contains('-') || l.contains('/')))
+        .or_else(|| {
+            expr.lines()
+                .find(|l| l.contains('+') || l.contains('*') || l.contains('-') || l.contains('/'))
+        })
         .unwrap_or(expr);
     let expr = expr.strip_prefix("Q:").unwrap_or(expr).trim();
-    let expr = expr.strip_suffix("= ?").or_else(|| expr.strip_suffix("=?")).unwrap_or(expr).trim();
+    let expr = expr
+        .strip_suffix("= ?")
+        .or_else(|| expr.strip_suffix("=?"))
+        .unwrap_or(expr)
+        .trim();
     let expr = expr.strip_suffix('=').unwrap_or(expr).trim();
 
     if expr.is_empty() {
@@ -122,7 +129,10 @@ fn eval_simple_math(expr: &str) -> Option<String> {
     }
 
     // 只允许数字、运算符、空格、括号、小数点
-    if !expr.chars().all(|c| c.is_ascii_digit() || "+-*/().% ".contains(c)) {
+    if !expr
+        .chars()
+        .all(|c| c.is_ascii_digit() || "+-*/().% ".contains(c))
+    {
         return None;
     }
 
@@ -140,8 +150,14 @@ fn eval_expr(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<f64> {
     loop {
         skip_spaces(chars);
         match chars.peek() {
-            Some('+') => { chars.next(); result += eval_term(chars)?; }
-            Some('-') => { chars.next(); result -= eval_term(chars)?; }
+            Some('+') => {
+                chars.next();
+                result += eval_term(chars)?;
+            }
+            Some('-') => {
+                chars.next();
+                result -= eval_term(chars)?;
+            }
             _ => break,
         }
     }
@@ -153,9 +169,26 @@ fn eval_term(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<f64> {
     loop {
         skip_spaces(chars);
         match chars.peek() {
-            Some('*') => { chars.next(); result *= eval_factor(chars)?; }
-            Some('/') => { chars.next(); let d = eval_factor(chars)?; if d == 0.0 { return None; } result /= d; }
-            Some('%') => { chars.next(); let d = eval_factor(chars)?; if d == 0.0 { return None; } result %= d; }
+            Some('*') => {
+                chars.next();
+                result *= eval_factor(chars)?;
+            }
+            Some('/') => {
+                chars.next();
+                let d = eval_factor(chars)?;
+                if d == 0.0 {
+                    return None;
+                }
+                result /= d;
+            }
+            Some('%') => {
+                chars.next();
+                let d = eval_factor(chars)?;
+                if d == 0.0 {
+                    return None;
+                }
+                result %= d;
+            }
             _ => break,
         }
     }
@@ -168,22 +201,36 @@ fn eval_factor(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<f64> 
         chars.next();
         let result = eval_expr(chars)?;
         skip_spaces(chars);
-        if chars.peek() == Some(&')') { chars.next(); }
+        if chars.peek() == Some(&')') {
+            chars.next();
+        }
         return Some(result);
     }
     // 负号
-    let neg = if chars.peek() == Some(&'-') { chars.next(); true } else { false };
+    let neg = if chars.peek() == Some(&'-') {
+        chars.next();
+        true
+    } else {
+        false
+    };
     skip_spaces(chars);
     let mut num = String::new();
     while let Some(&c) = chars.peek() {
-        if c.is_ascii_digit() || c == '.' { num.push(c); chars.next(); } else { break; }
+        if c.is_ascii_digit() || c == '.' {
+            num.push(c);
+            chars.next();
+        } else {
+            break;
+        }
     }
     let val: f64 = num.parse().ok()?;
     Some(if neg { -val } else { val })
 }
 
 fn skip_spaces(chars: &mut std::iter::Peekable<std::str::Chars>) {
-    while chars.peek() == Some(&' ') { chars.next(); }
+    while chars.peek() == Some(&' ') {
+        chars.next();
+    }
 }
 
 fn mock_usage() -> serde_json::Value {
@@ -280,7 +327,12 @@ pub fn mock_stream_response(model: &str, kind: &HealthCheckKind) -> Response {
     headers.insert("content-type", "text/event-stream".parse().unwrap());
     headers.insert("cache-control", "no-cache".parse().unwrap());
 
-    (StatusCode::OK, headers, axum::body::Body::from_stream(stream)).into_response()
+    (
+        StatusCode::OK,
+        headers,
+        axum::body::Body::from_stream(stream),
+    )
+        .into_response()
 }
 
 pub fn mock_unauthorized_response() -> Response {

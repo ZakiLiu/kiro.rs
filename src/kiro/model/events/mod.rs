@@ -11,10 +11,10 @@ mod token_usage;
 mod tool_use;
 
 pub use assistant::AssistantResponseEvent;
+pub(crate) use assistant::strip_tool_use_xml_leaks;
 pub use base::Event;
 pub use context_usage::ContextUsageEvent;
 pub use metering::MeteringEvent;
 pub use reasoning::ReasoningContentEvent;
 pub use token_usage::TokenUsageEvent;
 pub use tool_use::ToolUseEvent;
-pub(crate) use assistant::strip_tool_use_xml_leaks;

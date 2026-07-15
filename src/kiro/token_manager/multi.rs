@@ -1868,7 +1868,7 @@ impl MultiTokenManager {
                                         entry.recovery_attempts = 0;
                                         entry.auto_heal_reason = None;
                                         entry.disable_reason = None;
-                entry.disable_message = None;
+                                        entry.disable_message = None;
                                     }
                                 }
                                 creds
@@ -2679,7 +2679,7 @@ impl MultiTokenManager {
                     entry.refresh_failure_count = 0;
                     entry.auto_heal_reason = None;
                     entry.disable_reason = None;
-                entry.disable_message = None;
+                    entry.disable_message = None;
                 }
             }
         }
@@ -2712,10 +2712,7 @@ impl MultiTokenManager {
             entry.disable_message = message;
             entry.last_used_at = Some(Utc::now().to_rfc3339());
             entry.failure_count = MAX_FAILURES_PER_CREDENTIAL;
-            tracing::warn!(
-                "凭据 #{} 鉴权失败，已永久禁用（需手动恢复）",
-                id
-            );
+            tracing::warn!("凭据 #{} 鉴权失败，已永久禁用（需手动恢复）", id);
         }
         drop(entries);
         self.affinity.remove_by_credential(id);
@@ -3391,7 +3388,7 @@ impl MultiTokenManager {
                     entry.recovery_attempts = 0;
                     entry.auto_heal_reason = None;
                     entry.disable_reason = None;
-                entry.disable_message = None;
+                    entry.disable_message = None;
                 }
             }
         }
@@ -3673,7 +3670,9 @@ impl MultiTokenManager {
                 false
             };
             if trust {
-                tracing::info!("external_idp trust-on-import: access_token JWT exp 未过期，跳过 refresh");
+                tracing::info!(
+                    "external_idp trust-on-import: access_token JWT exp 未过期，跳过 refresh"
+                );
                 let mut cred = new_cred.clone();
                 // 用 JWT exp 设置 expires_at（如果凭据没有提供）
                 if cred.expires_at.is_none() {
@@ -3685,7 +3684,9 @@ impl MultiTokenManager {
                 }
                 cred
             } else {
-                tracing::info!("external_idp trust-on-import: access_token 已过期或无法解析，回退到 refresh");
+                tracing::info!(
+                    "external_idp trust-on-import: access_token 已过期或无法解析，回退到 refresh"
+                );
                 refresh_token(&new_cred, &config, proxy.as_ref()).await?
             }
         } else {
@@ -3976,10 +3977,7 @@ impl MultiTokenManager {
                 CooldownReason::AccountSuspended,
                 Some(StdDuration::from_secs(3600)),
             );
-            tracing::warn!(
-                "凭据 #{} 首次收到 suspended 信号，已进入 1 小时冷却",
-                id
-            );
+            tracing::warn!("凭据 #{} 首次收到 suspended 信号，已进入 1 小时冷却", id);
         }
 
         self.available_count() > 0

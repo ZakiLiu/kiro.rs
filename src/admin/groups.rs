@@ -89,23 +89,43 @@ impl GroupConfig {
 
 impl GroupCompressionConfig {
     /// 将分组覆盖合并到全局压缩配置上，返回最终生效值
-    pub fn resolve(&self, global: &crate::model::config::CompressionConfig) -> crate::model::config::CompressionConfig {
+    pub fn resolve(
+        &self,
+        global: &crate::model::config::CompressionConfig,
+    ) -> crate::model::config::CompressionConfig {
         crate::model::config::CompressionConfig {
             enabled: self.enabled.unwrap_or(global.enabled),
-            whitespace_compression: self.whitespace_compression.unwrap_or(global.whitespace_compression),
-            thinking_strategy: self.thinking_strategy.clone().unwrap_or_else(|| global.thinking_strategy.clone()),
-            tool_result_max_chars: self.tool_result_max_chars.unwrap_or(global.tool_result_max_chars),
-            tool_result_head_lines: self.tool_result_head_lines.unwrap_or(global.tool_result_head_lines),
-            tool_result_tail_lines: self.tool_result_tail_lines.unwrap_or(global.tool_result_tail_lines),
-            tool_use_input_max_chars: self.tool_use_input_max_chars.unwrap_or(global.tool_use_input_max_chars),
-            tool_description_max_chars: self.tool_description_max_chars.unwrap_or(global.tool_description_max_chars),
+            whitespace_compression: self
+                .whitespace_compression
+                .unwrap_or(global.whitespace_compression),
+            thinking_strategy: self
+                .thinking_strategy
+                .clone()
+                .unwrap_or_else(|| global.thinking_strategy.clone()),
+            tool_result_max_chars: self
+                .tool_result_max_chars
+                .unwrap_or(global.tool_result_max_chars),
+            tool_result_head_lines: self
+                .tool_result_head_lines
+                .unwrap_or(global.tool_result_head_lines),
+            tool_result_tail_lines: self
+                .tool_result_tail_lines
+                .unwrap_or(global.tool_result_tail_lines),
+            tool_use_input_max_chars: self
+                .tool_use_input_max_chars
+                .unwrap_or(global.tool_use_input_max_chars),
+            tool_description_max_chars: self
+                .tool_description_max_chars
+                .unwrap_or(global.tool_description_max_chars),
             max_history_turns: self.max_history_turns.unwrap_or(global.max_history_turns),
             max_history_chars: self.max_history_chars.unwrap_or(global.max_history_chars),
             image_max_long_edge: global.image_max_long_edge,
             image_max_pixels_single: global.image_max_pixels_single,
             image_max_pixels_multi: global.image_max_pixels_multi,
             image_multi_threshold: global.image_multi_threshold,
-            max_request_body_bytes: self.max_request_body_bytes.unwrap_or(global.max_request_body_bytes),
+            max_request_body_bytes: self
+                .max_request_body_bytes
+                .unwrap_or(global.max_request_body_bytes),
             max_input_tokens: self.max_input_tokens.unwrap_or(global.max_input_tokens),
         }
     }
@@ -287,11 +307,7 @@ impl GroupManager {
     }
 
     /// 更新分组配置覆盖（整体替换；传 None 清除覆盖）
-    pub fn update_config(
-        &self,
-        name: &str,
-        config: Option<GroupConfig>,
-    ) -> anyhow::Result<Group> {
+    pub fn update_config(&self, name: &str, config: Option<GroupConfig>) -> anyhow::Result<Group> {
         let mut inner = self.inner.write();
         let entry = inner
             .entries

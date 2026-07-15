@@ -41,9 +41,9 @@ pub fn validate_external_idp_endpoint(
     }
 
     let host_lower = host.to_ascii_lowercase();
-    let matched = allowed_suffixes.iter().any(|suffix| {
-        host_lower == *suffix || host_lower.ends_with(&format!(".{suffix}"))
-    });
+    let matched = allowed_suffixes
+        .iter()
+        .any(|suffix| host_lower == *suffix || host_lower.ends_with(&format!(".{suffix}")));
 
     if !matched {
         return Err(format!(
@@ -230,7 +230,10 @@ mod tests {
         assert_eq!(f("external", ""), "external_idp");
         assert_eq!(f("azure", ""), "external_idp");
         // tokenEndpoint 推断
-        assert_eq!(f("", "https://login.microsoftonline.com/t/token"), "external_idp");
+        assert_eq!(
+            f("", "https://login.microsoftonline.com/t/token"),
+            "external_idp"
+        );
         // 常规路由
         assert_eq!(f("social", ""), "social");
         assert_eq!(f("idc", ""), "idc");
@@ -240,25 +243,30 @@ mod tests {
 
     #[test]
     fn test_validate_valid_endpoint() {
-        assert!(validate_with_default_allowlist(
-            "https://login.microsoftonline.com/tenant/oauth2/v2.0/token"
-        )
-        .is_ok());
-        assert!(validate_with_default_allowlist(
-            "https://login.microsoftonline.us/tenant/oauth2/v2.0/token"
-        )
-        .is_ok());
-        assert!(validate_with_default_allowlist(
-            "https://login.chinacloudapi.cn/tenant/oauth2/v2.0/token"
-        )
-        .is_ok());
+        assert!(
+            validate_with_default_allowlist(
+                "https://login.microsoftonline.com/tenant/oauth2/v2.0/token"
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_with_default_allowlist(
+                "https://login.microsoftonline.us/tenant/oauth2/v2.0/token"
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_with_default_allowlist(
+                "https://login.chinacloudapi.cn/tenant/oauth2/v2.0/token"
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn test_reject_http() {
-        let result = validate_with_default_allowlist(
-            "http://login.microsoftonline.com/tenant/token",
-        );
+        let result =
+            validate_with_default_allowlist("http://login.microsoftonline.com/tenant/token");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("scheme must be https"));
     }
@@ -272,21 +280,21 @@ mod tests {
 
     #[test]
     fn test_reject_subdomain_spoof() {
-        assert!(validate_with_default_allowlist(
-            "https://login.microsoftonline.com.attacker.com/token"
-        )
-        .is_err());
-        assert!(validate_with_default_allowlist(
-            "https://evil-login.microsoftonline.com.evil.com/token"
-        )
-        .is_err());
+        assert!(
+            validate_with_default_allowlist("https://login.microsoftonline.com.attacker.com/token")
+                .is_err()
+        );
+        assert!(
+            validate_with_default_allowlist(
+                "https://evil-login.microsoftonline.com.evil.com/token"
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn test_reject_non_allowlisted_host() {
-        assert!(
-            validate_with_default_allowlist("https://accounts.google.com/token").is_err()
-        );
+        assert!(validate_with_default_allowlist("https://accounts.google.com/token").is_err());
         assert!(validate_with_default_allowlist("https://evil.com/token").is_err());
     }
 
@@ -294,28 +302,24 @@ mod tests {
     fn test_custom_allowlist() {
         let custom = &["custom-idp.example.com"];
         assert!(
-            validate_external_idp_endpoint("https://custom-idp.example.com/token", custom)
+            validate_external_idp_endpoint("https://custom-idp.example.com/token", custom).is_ok()
+        );
+        assert!(
+            validate_external_idp_endpoint("https://sub.custom-idp.example.com/token", custom)
                 .is_ok()
         );
-        assert!(validate_external_idp_endpoint(
-            "https://sub.custom-idp.example.com/token",
-            custom
-        )
-        .is_ok());
-        assert!(validate_external_idp_endpoint(
-            "https://login.microsoftonline.com/token",
-            custom
-        )
-        .is_err());
+        assert!(
+            validate_external_idp_endpoint("https://login.microsoftonline.com/token", custom)
+                .is_err()
+        );
     }
 
     #[tokio::test]
     #[ignore] // requires network access to Microsoft token endpoint
     async fn test_live_refresh_external_idp() {
-        let json = std::fs::read_to_string(
-            "examples/CLIProxyAPI_licia.anguillara-sharevn.bond.json",
-        )
-        .unwrap();
+        let json =
+            std::fs::read_to_string("examples/CLIProxyAPI_licia.anguillara-sharevn.bond.json")
+                .unwrap();
         let cred: KiroCredentials = serde_json::from_str(&json).unwrap();
 
         assert_eq!(cred.auth_method.as_deref(), Some("external_idp"));
@@ -328,7 +332,10 @@ mod tests {
 
         match result {
             Ok(new_cred) => {
-                assert!(new_cred.access_token.is_some(), "should get new access_token");
+                assert!(
+                    new_cred.access_token.is_some(),
+                    "should get new access_token"
+                );
                 assert!(new_cred.expires_at.is_some(), "should get new expires_at");
                 let new_token = new_cred.access_token.as_deref().unwrap();
                 assert!(new_token.starts_with("eyJ"), "access_token should be a JWT");
@@ -356,8 +363,7 @@ mod tests {
         let home = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .unwrap();
-        let path = std::path::PathBuf::from(home)
-            .join(".aws/sso/cache/kiro-auth-token.json");
+        let path = std::path::PathBuf::from(home).join(".aws/sso/cache/kiro-auth-token.json");
         if !path.exists() {
             eprintln!("⏭️ 跳过：本机无 kiro-auth-token.json");
             return;
@@ -386,7 +392,10 @@ mod tests {
 
         // SSRF 验证
         let te = cred.token_endpoint.as_deref().unwrap();
-        assert!(validate_with_default_allowlist(te).is_ok(), "tokenEndpoint 应通过 allow-list");
+        assert!(
+            validate_with_default_allowlist(te).is_ok(),
+            "tokenEndpoint 应通过 allow-list"
+        );
         eprintln!("✅ SSRF allow-list 验证通过: {te}");
 
         // normalize
@@ -406,8 +415,7 @@ mod tests {
         let home = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .unwrap();
-        let path = std::path::PathBuf::from(home)
-            .join(".aws/sso/cache/kiro-auth-token.json");
+        let path = std::path::PathBuf::from(home).join(".aws/sso/cache/kiro-auth-token.json");
         if !path.exists() {
             eprintln!("⏭️ 跳过：本机无 kiro-auth-token.json");
             return;
@@ -448,29 +456,46 @@ mod tests {
         assert_eq!(cred.provider.as_deref(), Some("ExternalIdp"));
         assert!(cred.expires_at.is_some());
         assert!(
-            cred.token_endpoint.as_deref().unwrap().contains("login.microsoftonline.com"),
+            cred.token_endpoint
+                .as_deref()
+                .unwrap()
+                .contains("login.microsoftonline.com"),
             "tokenEndpoint should contain Microsoft host"
         );
     }
 
     #[test]
     fn test_deserialize_helper_format() {
-        let json = std::fs::read_to_string(
-            "examples/CLIProxyAPI_licia.anguillara-sharevn.bond.json",
-        )
-        .unwrap();
+        let json =
+            std::fs::read_to_string("examples/CLIProxyAPI_licia.anguillara-sharevn.bond.json")
+                .unwrap();
         let cred: KiroCredentials = serde_json::from_str(&json).unwrap();
         assert_eq!(cred.auth_method.as_deref(), Some("external_idp"));
-        assert!(cred.access_token.is_some(), "access_token should be deserialized from snake_case");
-        assert!(cred.refresh_token.is_some(), "refresh_token should be deserialized from snake_case");
-        assert!(cred.token_endpoint.is_some(), "token_endpoint should be deserialized from snake_case");
-        assert!(cred.issuer_url.is_some(), "issuer_url should be deserialized from snake_case");
+        assert!(
+            cred.access_token.is_some(),
+            "access_token should be deserialized from snake_case"
+        );
+        assert!(
+            cred.refresh_token.is_some(),
+            "refresh_token should be deserialized from snake_case"
+        );
+        assert!(
+            cred.token_endpoint.is_some(),
+            "token_endpoint should be deserialized from snake_case"
+        );
+        assert!(
+            cred.issuer_url.is_some(),
+            "issuer_url should be deserialized from snake_case"
+        );
         assert!(cred.client_id.is_some());
         assert!(cred.scopes.is_some(), "scopes should be present");
         assert!(cred.profile_arn.is_some(), "profile_arn should be present");
         assert!(cred.region.is_some());
         // expires_at 来自 "expired" alias
-        assert!(cred.expires_at.is_some(), "expires_at should be deserialized from 'expired' alias");
+        assert!(
+            cred.expires_at.is_some(),
+            "expires_at should be deserialized from 'expired' alias"
+        );
     }
 
     #[test]
@@ -479,6 +504,9 @@ mod tests {
         let cred: KiroCredentials = serde_json::from_str(&json).unwrap();
         let exp = parse_jwt_exp(cred.access_token.as_deref().unwrap());
         assert!(exp.is_some(), "should extract exp from real Azure AD JWT");
-        assert!(exp.unwrap() > 1700000000, "exp should be a valid Unix timestamp");
+        assert!(
+            exp.unwrap() > 1700000000,
+            "exp should be a valid Unix timestamp"
+        );
     }
 }

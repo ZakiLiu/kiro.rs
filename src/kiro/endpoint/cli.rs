@@ -286,10 +286,7 @@ impl CliEndpoint {
             return Ok(body.to_string());
         };
         if let Some(arn) = credentials.streaming_profile_arn() {
-            obj.insert(
-                "profileArn".to_string(),
-                serde_json::Value::String(arn),
-            );
+            obj.insert("profileArn".to_string(), serde_json::Value::String(arn));
         } else {
             obj.remove("profileArn");
         }

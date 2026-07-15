@@ -639,14 +639,15 @@ fn repair_tool_adjacency_pass(state: &mut ConversationState) -> (usize, usize) {
     // Pass 1: 清理非相邻 tool_result
     for i in 0..len {
         if let Message::User(u) = &mut state.history[i] {
-            let results = &mut u
-                .user_input_message
-                .user_input_message_context
-                .tool_results;
+            let results = &mut u.user_input_message.user_input_message_context.tool_results;
             if results.is_empty() {
                 continue;
             }
-            let allowed = if i > 0 { &assistant_tu_ids[i - 1] } else { &empty };
+            let allowed = if i > 0 {
+                &assistant_tu_ids[i - 1]
+            } else {
+                &empty
+            };
             let before = results.len();
             results.retain(|tr| allowed.contains(&tr.tool_use_id));
             removed_results += before - results.len();
@@ -1710,13 +1711,11 @@ mod tests {
     #[test]
     fn test_adjacency_repair_removes_non_adjacent_tool_result() {
         let system_user = Message::User(HistoryUserMessage::new("system", "claude-sonnet-4.5"));
-        let system_assistant =
-            Message::Assistant(HistoryAssistantMessage::new("I will follow."));
+        let system_assistant = Message::Assistant(HistoryAssistantMessage::new("I will follow."));
 
         let user1 = Message::User(HistoryUserMessage::new("question", "claude-sonnet-4.5"));
 
-        let tool_use_a =
-            ToolUseEntry::new("tool-A", "read").with_input(serde_json::json!({}));
+        let tool_use_a = ToolUseEntry::new("tool-A", "read").with_input(serde_json::json!({}));
         let assistant1 = Message::Assistant(HistoryAssistantMessage {
             assistant_response_message: AssistantMessage::new("reading")
                 .with_tool_uses(vec![tool_use_a])
@@ -1753,10 +1752,7 @@ mod tests {
         let _stats = compress(&mut state, &config);
 
         if let Message::User(u) = &state.history[4] {
-            let results = &u
-                .user_input_message
-                .user_input_message_context
-                .tool_results;
+            let results = &u.user_input_message.user_input_message_context.tool_results;
             assert_eq!(results.len(), 1, "应只剩 1 个 tool_result");
             assert_eq!(results[0].tool_use_id, "tool-A");
         } else {
@@ -1767,13 +1763,11 @@ mod tests {
     #[test]
     fn test_adjacency_repair_removes_non_adjacent_tool_use() {
         let system_user = Message::User(HistoryUserMessage::new("system", "claude-sonnet-4.5"));
-        let system_assistant =
-            Message::Assistant(HistoryAssistantMessage::new("I will follow."));
+        let system_assistant = Message::Assistant(HistoryAssistantMessage::new("I will follow."));
 
         let user1 = Message::User(HistoryUserMessage::new("q1", "claude-sonnet-4.5"));
 
-        let tool_use_x =
-            ToolUseEntry::new("tool-X", "write").with_input(serde_json::json!({}));
+        let tool_use_x = ToolUseEntry::new("tool-X", "write").with_input(serde_json::json!({}));
         let assistant1 = Message::Assistant(HistoryAssistantMessage {
             assistant_response_message: AssistantMessage::new("writing")
                 .with_tool_uses(vec![tool_use_x])
@@ -1833,13 +1827,11 @@ mod tests {
     #[test]
     fn test_adjacency_repair_preserves_adjacent_pairs() {
         let system_user = Message::User(HistoryUserMessage::new("system", "claude-sonnet-4.5"));
-        let system_assistant =
-            Message::Assistant(HistoryAssistantMessage::new("I will follow."));
+        let system_assistant = Message::Assistant(HistoryAssistantMessage::new("I will follow."));
 
         let user1 = Message::User(HistoryUserMessage::new("do it", "claude-sonnet-4.5"));
 
-        let tool_use =
-            ToolUseEntry::new("tool-1", "read").with_input(serde_json::json!({}));
+        let tool_use = ToolUseEntry::new("tool-1", "read").with_input(serde_json::json!({}));
         let assistant1 = Message::Assistant(HistoryAssistantMessage {
             assistant_response_message: AssistantMessage::new("reading")
                 .with_tool_uses(vec![tool_use])

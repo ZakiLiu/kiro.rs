@@ -57,8 +57,8 @@ pub(super) fn process_message_content(
                                 && let Some(declared_format) = get_image_format(&source.media_type)
                             {
                                 // 检测实际格式，修正客户端声明与数据不匹配（IMAGE_MIME_MISMATCH）
-                                let format = detect_actual_format(&source.data)
-                                    .unwrap_or(declared_format);
+                                let format =
+                                    detect_actual_format(&source.data).unwrap_or(declared_format);
                                 // GIF：抽帧为多张静态图，避免动图 base64 体积巨大导致上游 400
                                 if format.eq_ignore_ascii_case("gif") {
                                     if *remaining_image_budget == 0 {
@@ -216,7 +216,8 @@ pub(super) fn process_message_content(
                                                 Ok(bytes) => Some(bytes),
                                                 Err(e) => {
                                                     tracing::warn!("PDF 下载失败: {}", e);
-                                                    text_parts.push(format!("[PDF 下载失败: {}]", e));
+                                                    text_parts
+                                                        .push(format!("[PDF 下载失败: {}]", e));
                                                     None
                                                 }
                                             }
@@ -251,7 +252,8 @@ pub(super) fn process_message_content(
                                             }
                                             Err(e) => {
                                                 tracing::warn!("PDF 文本提取失败: {}", e);
-                                                text_parts.push(format!("[PDF 文本提取失败: {}]", e));
+                                                text_parts
+                                                    .push(format!("[PDF 文本提取失败: {}]", e));
                                             }
                                         }
                                     }
@@ -288,7 +290,9 @@ pub(super) fn get_image_format(media_type: &str) -> Option<String> {
 pub(super) fn detect_actual_format(base64_data: &str) -> Option<String> {
     use base64::Engine;
     let prefix = &base64_data[..base64_data.len().min(24)];
-    let bytes = base64::engine::general_purpose::STANDARD.decode(prefix).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(prefix)
+        .ok()?;
     if bytes.len() < 4 {
         return None;
     }
@@ -299,8 +303,14 @@ pub(super) fn detect_actual_format(base64_data: &str) -> Option<String> {
     } else if bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 {
         Some("gif".to_string())
     } else if bytes.len() >= 12
-        && bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46
-        && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50
+        && bytes[0] == 0x52
+        && bytes[1] == 0x49
+        && bytes[2] == 0x46
+        && bytes[3] == 0x46
+        && bytes[8] == 0x57
+        && bytes[9] == 0x45
+        && bytes[10] == 0x42
+        && bytes[11] == 0x50
     {
         Some("webp".to_string())
     } else {
