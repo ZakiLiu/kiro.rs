@@ -1,7 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::token::{
@@ -13,6 +17,8 @@ use super::types::{CacheControl, Message, MessagesRequest};
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(300);
 const ONE_HOUR_CACHE_TTL: Duration = Duration::from_secs(3600);
 const PREFIX_LOOKBACK_LIMIT: usize = 10;
+const CACHE_FILE_NAME: &str = "prompt_cache_tracker.json";
+const CACHE_FLUSH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CacheResult {
@@ -42,11 +48,22 @@ struct CacheBreakpoint {
     ttl: Duration,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CacheEntry {
     token_count: i32,
     ttl: Duration,
-    expires_at: Instant,
+    expires_at_ms: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedCacheEntry {
+    fingerprint: [u8; 32],
+    entry: CacheEntry,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct PersistedCache {
+    entries: Vec<PersistedCacheEntry>,
 }
 
 /// 全局共享缓存池。Kiro 后端所有凭据共享同一缓存，无需 per-credential 隔离。
@@ -54,14 +71,88 @@ struct CacheEntry {
 pub struct CacheTracker {
     entries: Mutex<HashMap<[u8; 32], CacheEntry>>,
     max_supported_ttl: Duration,
+    persist_path: Option<PathBuf>,
+    dirty: AtomicBool,
 }
 
 impl CacheTracker {
-    pub fn new(max_supported_ttl: Duration) -> Self {
+    pub fn new(max_supported_ttl: Duration, cache_dir: Option<PathBuf>) -> Self {
+        let persist_path = cache_dir.map(|directory| directory.join(CACHE_FILE_NAME));
+        let (entries, dirty) = persist_path
+            .as_ref()
+            .map(|path| Self::load_from_file(path, max_supported_ttl))
+            .unwrap_or_default();
+
         Self {
-            entries: Mutex::new(HashMap::new()),
+            entries: Mutex::new(entries),
             max_supported_ttl,
+            persist_path,
+            dirty: AtomicBool::new(dirty),
         }
+    }
+
+    fn load_from_file(
+        path: &PathBuf,
+        max_supported_ttl: Duration,
+    ) -> (HashMap<[u8; 32], CacheEntry>, bool) {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return (HashMap::new(), false);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    %error,
+                    "读取 Prompt Cache 持久化文件失败"
+                );
+                return (HashMap::new(), false);
+            }
+        };
+
+        let persisted = match serde_json::from_slice::<PersistedCache>(&bytes) {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    %error,
+                    "解析 Prompt Cache 持久化文件失败"
+                );
+                return (HashMap::new(), false);
+            }
+        };
+
+        let now = now_unix_millis();
+        let max_expiry = now.saturating_add(duration_millis(max_supported_ttl));
+        let persisted_count = persisted.entries.len();
+        let mut entries = HashMap::with_capacity(persisted_count);
+        let mut changed = false;
+
+        for persisted_entry in persisted.entries {
+            let mut entry = persisted_entry.entry;
+            if entry.expires_at_ms <= now {
+                changed = true;
+                continue;
+            }
+
+            let capped_ttl = entry.ttl.min(max_supported_ttl);
+            let capped_expiry = entry.expires_at_ms.min(max_expiry);
+            if capped_ttl != entry.ttl || capped_expiry != entry.expires_at_ms {
+                changed = true;
+                entry.ttl = capped_ttl;
+                entry.expires_at_ms = capped_expiry;
+            }
+            entries.insert(persisted_entry.fingerprint, entry);
+        }
+
+        tracing::info!(
+            path = %path.display(),
+            loaded_entries = entries.len(),
+            persisted_entries = persisted_count,
+            "Prompt Cache 已从磁盘恢复"
+        );
+        let needs_rewrite = changed || entries.len() != persisted_count;
+        (entries, needs_rewrite)
     }
 
     pub fn build_profile(
@@ -218,9 +309,13 @@ impl CacheTracker {
             .cumulative_tokens
             .min(profile.total_input_tokens);
 
-        let now = Instant::now();
+        let now = now_unix_millis();
         let mut pool = self.entries.lock();
-        pool.retain(|_, entry| entry.expires_at > now);
+        let before_retain = pool.len();
+        pool.retain(|_, entry| entry.expires_at_ms > now);
+        if pool.len() != before_retain {
+            self.dirty.store(true, Ordering::Release);
+        }
 
         if pool.is_empty() {
             tracing::debug!("缓存池为空，首次请求");
@@ -248,7 +343,7 @@ impl CacheTracker {
         'outer: for breakpoint in candidate_breakpoints {
             let candidate = &profile.blocks[breakpoint.block_index];
             if let Some(entry) = pool.get(&candidate.prefix_fingerprint) {
-                if entry.expires_at <= now {
+                if entry.expires_at_ms <= now {
                     continue;
                 }
                 matched_tokens = breakpoint.cumulative_tokens.min(profile.total_input_tokens);
@@ -276,19 +371,21 @@ impl CacheTracker {
     }
 
     pub fn update(&self, _credential_id: u64, profile: &CacheProfile) {
-        let now = Instant::now();
+        let now = now_unix_millis();
         let mut pool = self.entries.lock();
-        pool.retain(|_, entry| entry.expires_at > now);
+        let before_retain = pool.len();
+        pool.retain(|_, entry| entry.expires_at_ms > now);
+        let mut changed = pool.len() != before_retain;
 
         for breakpoint in profile.cacheable_breakpoints() {
             let block = &profile.blocks[breakpoint.block_index];
-            let next_expiry = now + breakpoint.ttl;
+            let next_expiry = now.saturating_add(duration_millis(breakpoint.ttl));
 
             match pool.get_mut(&block.prefix_fingerprint) {
                 Some(existing) => {
                     existing.token_count = existing.token_count.max(block.cumulative_tokens);
                     existing.ttl = existing.ttl.max(breakpoint.ttl);
-                    existing.expires_at = existing.expires_at.max(next_expiry);
+                    existing.expires_at_ms = existing.expires_at_ms.max(next_expiry);
                 }
                 None => {
                     pool.insert(
@@ -296,11 +393,16 @@ impl CacheTracker {
                         CacheEntry {
                             token_count: block.cumulative_tokens,
                             ttl: breakpoint.ttl,
-                            expires_at: next_expiry,
+                            expires_at_ms: next_expiry,
                         },
                     );
                 }
             }
+            changed = true;
+        }
+
+        if changed {
+            self.dirty.store(true, Ordering::Release);
         }
     }
 
@@ -311,6 +413,96 @@ impl CacheTracker {
             protocol_ttl.min(self.max_supported_ttl)
         }
     }
+
+    /// 将内存快照写入 JSON 文件。无变更时不执行磁盘写入。
+    pub fn flush_to_disk(&self) {
+        let Some(path) = self.persist_path.as_ref() else {
+            return;
+        };
+        if !self.dirty.swap(false, Ordering::AcqRel) {
+            return;
+        }
+
+        let mut entries: Vec<PersistedCacheEntry> = self
+            .entries
+            .lock()
+            .iter()
+            .map(|(fingerprint, entry)| PersistedCacheEntry {
+                fingerprint: *fingerprint,
+                entry: entry.clone(),
+            })
+            .collect();
+        entries.sort_by_key(|entry| entry.fingerprint);
+
+        let json = match serde_json::to_vec(&PersistedCache { entries }) {
+            Ok(json) => json,
+            Err(error) => {
+                self.dirty.store(true, Ordering::Release);
+                tracing::warn!(%error, "序列化 Prompt Cache 快照失败");
+                return;
+            }
+        };
+
+        if let Some(parent) = path.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            self.dirty.store(true, Ordering::Release);
+            tracing::warn!(
+                path = %parent.display(),
+                %error,
+                "创建 Prompt Cache 目录失败"
+            );
+            return;
+        }
+
+        if let Err(error) = std::fs::write(path, json) {
+            self.dirty.store(true, Ordering::Release);
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "写入 Prompt Cache 持久化文件失败"
+            );
+        }
+    }
+
+    /// 启动每分钟清理过期条目并持久化的后台任务。
+    pub fn spawn_background(self: Arc<Self>) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let cache = Arc::downgrade(&self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(CACHE_FLUSH_INTERVAL).await;
+                let Some(cache) = cache.upgrade() else {
+                    return;
+                };
+                cache.evict_expired();
+                cache.flush_to_disk();
+            }
+        });
+    }
+
+    fn evict_expired(&self) {
+        let now = now_unix_millis();
+        let mut entries = self.entries.lock();
+        let before = entries.len();
+        entries.retain(|_, entry| entry.expires_at_ms > now);
+        if entries.len() != before {
+            self.dirty.store(true, Ordering::Release);
+        }
+    }
+}
+
+fn now_unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 /// 计算不同 TTL 的缓存创建 token 数
@@ -672,9 +864,60 @@ mod tests {
         ) as i32
     }
 
+    fn temp_cache_dir(test_name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("kiro-rs-{}-{}", test_name, uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn cache_entries_persist_and_restore() {
+        let cache_dir = temp_cache_dir("prompt-cache-persist");
+        let request = build_request(vec![msg("user", cache_text(&long_cacheable_text()))]);
+        let total = estimate_input_tokens(&request);
+
+        let tracker = CacheTracker::new(Duration::from_secs(3600), Some(cache_dir.clone()));
+        let profile = tracker.build_profile(&request, total);
+        tracker.update(1, &profile);
+        tracker.flush_to_disk();
+        assert!(cache_dir.join(CACHE_FILE_NAME).exists());
+
+        let restored = CacheTracker::new(Duration::from_secs(3600), Some(cache_dir.clone()));
+        let restored_profile = restored.build_profile(&request, total);
+        let result = restored.compute(1, &restored_profile);
+        assert!(result.cache_read_input_tokens > 0);
+        assert_eq!(result.cache_creation_input_tokens, 0);
+
+        let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
+    #[test]
+    fn cache_load_discards_expired_entries() {
+        let cache_dir = temp_cache_dir("prompt-cache-expired");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let snapshot = PersistedCache {
+            entries: vec![PersistedCacheEntry {
+                fingerprint: [7; 32],
+                entry: CacheEntry {
+                    token_count: 100,
+                    ttl: Duration::from_secs(300),
+                    expires_at_ms: now_unix_millis().saturating_sub(1),
+                },
+            }],
+        };
+        std::fs::write(
+            cache_dir.join(CACHE_FILE_NAME),
+            serde_json::to_vec(&snapshot).unwrap(),
+        )
+        .unwrap();
+
+        let tracker = CacheTracker::new(Duration::from_secs(3600), Some(cache_dir.clone()));
+        assert!(tracker.entries.lock().is_empty());
+
+        let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
     #[test]
     fn attribution_header_drift_does_not_break_cache_hit() {
-        let tracker = CacheTracker::new(Duration::from_secs(3600));
+        let tracker = CacheTracker::new(Duration::from_secs(3600), None);
         let system1 = vec![
             SystemMessage {
                 block_type: Some("text".to_string()),
@@ -732,7 +975,7 @@ mod tests {
 
     #[test]
     fn normal_system_text_change_still_misses() {
-        let tracker = CacheTracker::new(Duration::from_secs(3600));
+        let tracker = CacheTracker::new(Duration::from_secs(3600), None);
         let system1 = vec![SystemMessage {
             block_type: Some("text".to_string()),
             text: long_cacheable_text(),
@@ -767,7 +1010,7 @@ mod tests {
 
     #[test]
     fn explicit_breakpoint_without_hit_creates_prefix_only() {
-        let tracker = CacheTracker::new(Duration::from_secs(3600));
+        let tracker = CacheTracker::new(Duration::from_secs(3600), None);
         let req = build_request(vec![msg("user", cache_text(&long_cacheable_text()))]);
         let total = estimate_input_tokens(&req);
         let profile = tracker.build_profile(&req, total);
@@ -785,7 +1028,7 @@ mod tests {
 
     #[test]
     fn same_content_with_shape_drift_does_not_false_hit() {
-        let tracker = CacheTracker::new(Duration::from_secs(3600));
+        let tracker = CacheTracker::new(Duration::from_secs(3600), None);
         let req1 = build_request(vec![msg("user", cache_text(&long_cacheable_text()))]);
         let total1 = estimate_input_tokens(&req1);
         let profile1 = tracker.build_profile(&req1, total1);
@@ -812,7 +1055,7 @@ mod tests {
 
     #[test]
     fn same_length_retry_with_same_breakpoint_is_hit() {
-        let tracker = CacheTracker::new(Duration::from_secs(3600));
+        let tracker = CacheTracker::new(Duration::from_secs(3600), None);
         let req1 = build_request(vec![msg("user", cache_text(&long_cacheable_text()))]);
         let total1 = estimate_input_tokens(&req1);
         let profile1 = tracker.build_profile(&req1, total1);
@@ -835,7 +1078,7 @@ mod tests {
 
     #[test]
     fn prefix_match_with_appended_turn_reads_previous_prefix_cache() {
-        let tracker = CacheTracker::new(Duration::from_secs(3600));
+        let tracker = CacheTracker::new(Duration::from_secs(3600), None);
         let req1 = build_request(vec![
             msg("user", cache_text(&long_cacheable_text())),
             msg("assistant", serde_json::json!("R1")),
@@ -870,7 +1113,7 @@ mod tests {
 
     #[test]
     fn prefix_lookback_limits_to_recent_ten_breakpoints() {
-        let tracker = CacheTracker::new(Duration::from_secs(3600));
+        let tracker = CacheTracker::new(Duration::from_secs(3600), None);
         let mut messages = Vec::new();
         for i in 0..12 {
             messages.push(msg(
@@ -891,7 +1134,7 @@ mod tests {
             msg("user", cache_text(&long_cacheable_text())),
             msg("assistant", serde_json::json!("R1")),
         ]);
-        let tracker = CacheTracker::new(Duration::from_secs(3600));
+        let tracker = CacheTracker::new(Duration::from_secs(3600), None);
         let profile = tracker.build_profile(&req, estimate_input_tokens(&req));
         let breakpoints = profile.cacheable_breakpoints();
         assert!(breakpoints.len() >= 2);
@@ -899,7 +1142,7 @@ mod tests {
 
     #[test]
     fn multi_turn_history_extends_cacheable_prefix() {
-        let tracker = CacheTracker::new(Duration::from_secs(3600));
+        let tracker = CacheTracker::new(Duration::from_secs(3600), None);
         let long = long_cacheable_text();
 
         let req1 = build_request(vec![msg("user", cache_text(&long))]);
@@ -947,7 +1190,7 @@ mod tests {
             msg("assistant", serde_json::json!("R1")),
             msg("user", serde_json::json!("R2")),
         ]);
-        let tracker = CacheTracker::new(Duration::from_secs(3600));
+        let tracker = CacheTracker::new(Duration::from_secs(3600), None);
         let profile = tracker.build_profile(&req, estimate_input_tokens(&req));
         let breakpoints = profile.cacheable_breakpoints();
         assert!(breakpoints.len() >= 2);
@@ -972,7 +1215,7 @@ mod tests {
             msg("assistant", serde_json::json!("R1")),
             msg("user", serde_json::json!("R2")),
         ]);
-        let tracker = CacheTracker::new(Duration::from_secs(18000));
+        let tracker = CacheTracker::new(Duration::from_secs(18000), None);
         let profile = tracker.build_profile(&req, estimate_input_tokens(&req));
         let breakpoints = profile.cacheable_breakpoints();
 
@@ -987,7 +1230,7 @@ mod tests {
     #[test]
     fn auto_injected_static_breakpoints_use_configured_long_ttl() {
         let req = build_request(vec![msg("user", serde_json::json!("hello"))]);
-        let tracker = CacheTracker::new(Duration::from_secs(7200));
+        let tracker = CacheTracker::new(Duration::from_secs(7200), None);
         let profile = tracker.build_profile(&req, estimate_input_tokens(&req));
 
         assert!(
@@ -1019,7 +1262,7 @@ mod tests {
 
     #[test]
     fn tool_changes_invalidate_downstream_prefix() {
-        let tracker = CacheTracker::new(Duration::from_secs(3600));
+        let tracker = CacheTracker::new(Duration::from_secs(3600), None);
         let mut req1 = build_request(vec![msg("user", cache_text(&long_cacheable_text()))]);
         req1.tools.as_mut().unwrap().push(Tool {
             tool_type: None,
@@ -1028,7 +1271,7 @@ mod tests {
             input_schema: Default::default(),
             max_uses: None,
             cache_control: None,
-                function: None,
+            function: None,
         });
         let total1 = estimate_input_tokens(&req1);
         let profile1 = tracker.build_profile(&req1, total1);
@@ -1042,7 +1285,7 @@ mod tests {
             input_schema: Default::default(),
             max_uses: None,
             cache_control: None,
-                function: None,
+            function: None,
         });
         let total2 = estimate_input_tokens(&req2);
         let profile2 = tracker.build_profile(&req2, total2);

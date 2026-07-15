@@ -112,10 +112,11 @@ impl ToolJsonAccumulator {
             })?
         };
 
-        let name = tool_name_map
-            .get(&kiro_name)
-            .cloned()
-            .unwrap_or(kiro_name);
+        let (name, input) = crate::anthropic::converter::restore_tool_use_for_client(
+            &kiro_name,
+            input,
+            tool_name_map,
+        );
 
         Ok(Some(CompletedToolUse {
             id: tool_use.tool_use_id.clone(),
@@ -205,7 +206,10 @@ mod tests {
         let ev = make_tool_event("t1", "tool", r#"{"pending"#, false);
         acc.push(&ev, &map).unwrap();
         let err = acc.finish().unwrap_err();
-        assert!(matches!(err, ToolJsonAccumulatorError::IncompleteJson { .. }));
+        assert!(matches!(
+            err,
+            ToolJsonAccumulatorError::IncompleteJson { .. }
+        ));
         assert!(err.message().contains("t1"));
     }
 
@@ -219,9 +223,31 @@ mod tests {
     fn tool_name_map_restores_original_name() {
         let mut acc = ToolJsonAccumulator::new();
         let mut map = HashMap::new();
-        map.insert("short_name".to_string(), "very_long_original_tool_name".to_string());
+        map.insert(
+            "short_name".to_string(),
+            "very_long_original_tool_name".to_string(),
+        );
         let ev = make_tool_event("t1", "short_name", "{}", true);
         let result = acc.push(&ev, &map).unwrap().unwrap();
         assert_eq!(result.name, "very_long_original_tool_name");
+    }
+
+    #[test]
+    fn tool_name_map_restores_claude_code_input() {
+        let mut acc = ToolJsonAccumulator::new();
+        let mut map = HashMap::new();
+        map.insert("fs_write".to_string(), "Write".to_string());
+        let ev = make_tool_event(
+            "t1",
+            "fs_write",
+            r#"{"path":"/tmp/a.txt","text":"hello"}"#,
+            true,
+        );
+        let result = acc.push(&ev, &map).unwrap().unwrap();
+        assert_eq!(result.name, "Write");
+        assert_eq!(
+            result.input,
+            serde_json::json!({"file_path": "/tmp/a.txt", "content": "hello"})
+        );
     }
 }

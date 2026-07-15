@@ -325,7 +325,7 @@ pub async fn exchange_code_for_token(
         invitation_code: None,
     };
 
-    let kiro_version = &config.kiro_version;
+    let kiro_version = crate::kiro::kiro_version::effective(&config.kiro_version);
     let user_agent = format!("KiroIDE-{}", kiro_version);
 
     let resp = client

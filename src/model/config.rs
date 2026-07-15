@@ -11,6 +11,17 @@ pub enum TlsBackend {
     NativeTls,
 }
 
+/// Claude Code 内置工具兼容模式。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ToolCompatibilityMode {
+    /// 将 Claude Code 内置工具名、schema 与参数适配为 Kiro 内置工具。
+    #[default]
+    ClaudeCode,
+    /// 保留原有透传行为，用于兼容与排障。
+    Raw,
+}
+
 /// Prompt Preset 预设
 ///
 /// 可通过 `x-preset-id` 请求头选择，将 system_prompt 前置注入到请求中。
@@ -197,6 +208,10 @@ pub struct Config {
     #[serde(default)]
     pub extract_thinking: bool,
 
+    /// Claude Code 内置工具兼容模式，默认 `claude-code`。
+    #[serde(default = "default_tool_compatibility_mode")]
+    pub tool_compatibility_mode: ToolCompatibilityMode,
+
     // ── 系统提示词控制 ──
     /// 是否剥离客户端 system prompt 中的安全限制，默认 false
     #[serde(default)]
@@ -304,6 +319,10 @@ fn default_account_throttle_cooldown_secs() -> u64 {
 
 fn default_auto_apply_time() -> String {
     "03:00".to_string()
+}
+
+fn default_tool_compatibility_mode() -> ToolCompatibilityMode {
+    ToolCompatibilityMode::ClaudeCode
 }
 
 pub const PROMPT_CACHE_TTL_5M_SECONDS: u64 = 300;
@@ -526,6 +545,7 @@ impl Default for Config {
             account_throttle_failover: false,
             account_throttle_cooldown_secs: default_account_throttle_cooldown_secs(),
             extract_thinking: false,
+            tool_compatibility_mode: default_tool_compatibility_mode(),
             strip_system_restrictions: false,
             system_prompt_enabled: false,
             enabled_presets: Vec::new(),
@@ -617,6 +637,21 @@ mod tests {
     }
 
     #[test]
+    fn test_tool_compatibility_mode_defaults_to_claude_code() {
+        let config: Config = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(
+            config.tool_compatibility_mode,
+            ToolCompatibilityMode::ClaudeCode
+        );
+    }
+
+    #[test]
+    fn test_tool_compatibility_mode_deserializes_raw() {
+        let config: Config = serde_json::from_str(r#"{"toolCompatibilityMode":"raw"}"#).unwrap();
+        assert_eq!(config.tool_compatibility_mode, ToolCompatibilityMode::Raw);
+    }
+
+    #[test]
     fn test_config_deserializes_prompt_cache_accounting_false() {
         let config: Config = serde_json::from_str(r#"{"promptCacheAccountingEnabled":false}"#)
             .expect("config should deserialize");
@@ -659,9 +694,8 @@ mod tests {
 
     #[test]
     fn test_config_deserializes_compression_max_input_tokens() {
-        let config: Config =
-            serde_json::from_str(r#"{"compression":{"maxInputTokens":123456}}"#)
-                .expect("config with maxInputTokens should deserialize");
+        let config: Config = serde_json::from_str(r#"{"compression":{"maxInputTokens":123456}}"#)
+            .expect("config with maxInputTokens should deserialize");
 
         assert_eq!(config.compression.max_input_tokens, 123_456);
         assert_eq!(

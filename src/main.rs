@@ -96,25 +96,23 @@ async fn main() {
     // 导入额外凭据文件（--import 参数，支持 external_idp 等各种格式）
     for import_path in &args.import_credentials {
         match std::fs::read_to_string(import_path) {
-            Ok(json_str) => {
-                match serde_json::from_str::<KiroCredentials>(&json_str) {
-                    Ok(mut cred) => {
-                        cred.canonicalize_auth_method();
-                        tracing::info!(
-                            path = %import_path,
-                            auth_method = ?cred.auth_method.as_deref(),
-                            has_access_token = cred.access_token.is_some(),
-                            has_refresh_token = cred.refresh_token.is_some(),
-                            has_token_endpoint = cred.token_endpoint.is_some(),
-                            "已导入凭据文件"
-                        );
-                        credentials_list.push(cred);
-                    }
-                    Err(e) => {
-                        tracing::warn!(path = %import_path, error = %e, "导入凭据文件解析失败，跳过");
-                    }
+            Ok(json_str) => match serde_json::from_str::<KiroCredentials>(&json_str) {
+                Ok(mut cred) => {
+                    cred.canonicalize_auth_method();
+                    tracing::info!(
+                        path = %import_path,
+                        auth_method = ?cred.auth_method.as_deref(),
+                        has_access_token = cred.access_token.is_some(),
+                        has_refresh_token = cred.refresh_token.is_some(),
+                        has_token_endpoint = cred.token_endpoint.is_some(),
+                        "已导入凭据文件"
+                    );
+                    credentials_list.push(cred);
                 }
-            }
+                Err(e) => {
+                    tracing::warn!(path = %import_path, error = %e, "导入凭据文件解析失败，跳过");
+                }
+            },
             Err(e) => {
                 tracing::warn!(path = %import_path, error = %e, "导入凭据文件读取失败，跳过");
             }
@@ -218,6 +216,13 @@ async fn main() {
         );
     }
 
+    // 启动 Kiro IDE 版本自动获取；失败时继续使用 config.kiroVersion。
+    kiro::kiro_version::spawn_refresher(
+        proxy_config.clone(),
+        config.read().tls_backend,
+        std::time::Duration::from_secs(12 * 3600),
+    );
+
     // 创建 MultiTokenManager 和 KiroProvider
     let token_manager = MultiTokenManager::new(
         config.read().clone(),
@@ -272,6 +277,7 @@ async fn main() {
     let prompt_cache_runtime = Arc::new(RwLock::new(anthropic::PromptCacheRuntime::new(
         config.read().prompt_cache_ttl_seconds,
         config.read().prompt_cache_accounting_enabled,
+        token_manager.cache_dir(),
     )));
 
     // 构建指标收集器（可通过配置禁用）
@@ -403,6 +409,7 @@ async fn main() {
     let mut app_state =
         anthropic::middleware::AppState::new(&api_key, prompt_cache_runtime.clone())
             .with_kiro_provider(kiro_provider.clone())
+            .with_tool_compatibility_mode(config.read().tool_compatibility_mode)
             .with_compression_config(compression_config.clone())
             .with_presets(presets.clone())
             .with_client_keys(client_key_manager.clone())

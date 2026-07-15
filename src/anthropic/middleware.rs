@@ -1,5 +1,6 @@
 //! Anthropic API 中间件
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +19,7 @@ use crate::admin::usage_stats::{SharedAggregator, SharedRecorder};
 use crate::common::auth;
 use crate::kiro::provider::KiroProvider;
 use crate::metrics::MetricsCollector;
-use crate::model::config::{CompressionConfig, Preset};
+use crate::model::config::{CompressionConfig, Preset, ToolCompatibilityMode};
 
 use crate::admin::trace_db::TraceKeySource;
 
@@ -46,14 +47,21 @@ pub struct PromptCacheRuntime {
     accounting_enabled: bool,
     ttl_seconds: u64,
     tracker: Arc<CacheTracker>,
+    cache_dir: Option<PathBuf>,
 }
 
 impl PromptCacheRuntime {
-    pub fn new(ttl_seconds: u64, accounting_enabled: bool) -> Self {
+    pub fn new(ttl_seconds: u64, accounting_enabled: bool, cache_dir: Option<PathBuf>) -> Self {
+        let tracker = Arc::new(CacheTracker::new(
+            Duration::from_secs(ttl_seconds),
+            cache_dir.clone(),
+        ));
+        tracker.clone().spawn_background();
         Self {
             accounting_enabled,
             ttl_seconds,
-            tracker: Arc::new(CacheTracker::new(Duration::from_secs(ttl_seconds))),
+            tracker,
+            cache_dir,
         }
     }
 
@@ -73,8 +81,14 @@ impl PromptCacheRuntime {
         if let Some(value) = ttl_seconds
             && self.ttl_seconds != value
         {
+            self.tracker.flush_to_disk();
             self.ttl_seconds = value;
-            self.tracker = Arc::new(CacheTracker::new(Duration::from_secs(value)));
+            let tracker = Arc::new(CacheTracker::new(
+                Duration::from_secs(value),
+                self.cache_dir.clone(),
+            ));
+            tracker.clone().spawn_background();
+            self.tracker = tracker;
         }
     }
 }
@@ -89,6 +103,8 @@ pub struct AppState {
     pub kiro_provider: Option<Arc<KiroProvider>>,
     /// Profile ARN（可选，用于请求）
     pub profile_arn: Option<String>,
+    /// Claude Code 内置工具兼容模式。
+    pub tool_compatibility_mode: ToolCompatibilityMode,
     /// 输入压缩配置（共享引用，支持热更新）
     pub compression_config: Arc<RwLock<CompressionConfig>>,
     /// Prompt Cache 运行时配置（共享引用，支持热更新）
@@ -120,6 +136,7 @@ impl AppState {
             api_key: api_key.into(),
             kiro_provider: None,
             profile_arn: None,
+            tool_compatibility_mode: ToolCompatibilityMode::default(),
             compression_config: Arc::new(RwLock::new(CompressionConfig::default())),
             prompt_cache_runtime,
             metrics: None,
@@ -150,6 +167,12 @@ impl AppState {
     /// 设置 Profile ARN
     pub fn with_profile_arn(mut self, arn: impl Into<String>) -> Self {
         self.profile_arn = Some(arn.into());
+        self
+    }
+
+    /// 设置 Claude Code 内置工具兼容模式。
+    pub fn with_tool_compatibility_mode(mut self, mode: ToolCompatibilityMode) -> Self {
+        self.tool_compatibility_mode = mode;
         self
     }
 

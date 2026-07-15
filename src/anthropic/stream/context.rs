@@ -38,6 +38,8 @@ pub struct StreamContext {
     pub tool_block_indices: HashMap<String, i32>,
     /// 工具名称反向映射（短名称 → 原始名称），用于响应时还原
     pub tool_name_map: HashMap<String, String>,
+    /// 工具输入分片缓冲（tool_use_id -> (Kiro 工具名, JSON 分片)）。
+    tool_input_buffers: HashMap<String, (String, String)>,
     /// thinking 是否启用
     pub thinking_enabled: bool,
     /// thinking 内容缓冲区
@@ -89,6 +91,7 @@ impl StreamContext {
             thinking_tokens: 0,
             tool_block_indices: HashMap::new(),
             tool_name_map,
+            tool_input_buffers: HashMap::new(),
             thinking_enabled,
             thinking_buffer: String::new(),
             in_thinking_block: false,
@@ -778,6 +781,16 @@ impl StreamContext {
             events.extend(self.create_text_delta_events(&buffered));
         }
 
+        let is_new_tool = !self.tool_input_buffers.contains_key(&tool_use.tool_use_id);
+        let input_buffer = self
+            .tool_input_buffers
+            .entry(tool_use.tool_use_id.clone())
+            .or_insert_with(|| (tool_use.name.clone(), String::new()));
+        if input_buffer.0.is_empty() {
+            input_buffer.0.clone_from(&tool_use.name);
+        }
+        input_buffer.1.push_str(&tool_use.input);
+
         // 获取或分配块索引
         let block_index = if let Some(&idx) = self.tool_block_indices.get(&tool_use.tool_use_id) {
             idx
@@ -795,26 +808,55 @@ impl StreamContext {
             .cloned()
             .unwrap_or_else(|| tool_use.name.clone());
 
-        // 发送 content_block_start
-        let start_events = self.state_manager.handle_content_block_start(
-            block_index,
-            "tool_use",
-            json!({
-                "type": "content_block_start",
-                "index": block_index,
-                "content_block": {
-                    "type": "tool_use",
-                    "id": tool_use.tool_use_id,
-                    "name": original_name,
-                    "input": {}
-                }
-            }),
-        );
-        events.extend(start_events);
+        // 首个分片发送 content_block_start；输入 JSON 等 stop=true 后统一还原。
+        if is_new_tool {
+            let start_events = self.state_manager.handle_content_block_start(
+                block_index,
+                "tool_use",
+                json!({
+                    "type": "content_block_start",
+                    "index": block_index,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": tool_use.tool_use_id,
+                        "name": original_name,
+                        "input": {}
+                    }
+                }),
+            );
+            events.extend(start_events);
+        }
 
-        // 发送参数增量 (ToolUseEvent.input 是 String 类型)
-        if !tool_use.input.is_empty() {
-            self.output_tokens += (tool_use.input.len() as i32 + 3) / 4; // 估算 token
+        if !tool_use.stop {
+            return events;
+        }
+
+        let (kiro_name, raw_input) = self
+            .tool_input_buffers
+            .remove(&tool_use.tool_use_id)
+            .unwrap_or_else(|| (tool_use.name.clone(), tool_use.input.clone()));
+
+        if !raw_input.is_empty() {
+            let client_input = match serde_json::from_str::<serde_json::Value>(&raw_input) {
+                Ok(input) => {
+                    let (_, input) = crate::anthropic::converter::restore_tool_use_for_client(
+                        &kiro_name,
+                        input,
+                        &self.tool_name_map,
+                    );
+                    serde_json::to_string(&input).unwrap_or_else(|_| raw_input.clone())
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        tool_use_id = %tool_use.tool_use_id,
+                        tool_name = %kiro_name,
+                        %error,
+                        "工具输入 JSON 无法解析，保留上游原始分片"
+                    );
+                    raw_input
+                }
+            };
+            self.output_tokens += (client_input.len() as i32 + 3) / 4;
 
             if let Some(delta_event) = self.state_manager.handle_content_block_delta(
                 block_index,
@@ -823,7 +865,7 @@ impl StreamContext {
                     "index": block_index,
                     "delta": {
                         "type": "input_json_delta",
-                        "partial_json": tool_use.input
+                        "partial_json": client_input
                     }
                 }),
             ) {
@@ -831,10 +873,7 @@ impl StreamContext {
             }
         }
 
-        // 如果是完整的工具调用（stop=true），发送 content_block_stop
-        if tool_use.stop
-            && let Some(stop_event) = self.state_manager.handle_content_block_stop(block_index)
-        {
+        if let Some(stop_event) = self.state_manager.handle_content_block_stop(block_index) {
             events.push(stop_event);
         }
 

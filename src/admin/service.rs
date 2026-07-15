@@ -1202,7 +1202,8 @@ impl AdminService {
         let client_secret = item.client_secret.as_deref().unwrap_or("");
         let token_endpoint = item.token_endpoint.as_deref().unwrap_or("");
 
-        let normalized = normalize_import_auth_method(auth_method, client_id, client_secret, token_endpoint);
+        let normalized =
+            normalize_import_auth_method(auth_method, client_id, client_secret, token_endpoint);
 
         // 如果 normalize 未能确定且有 provider，回退到 provider 判断
         if normalized == "social" && auth_method.is_empty() {
@@ -1803,7 +1804,9 @@ impl AdminService {
             .map_err(|e| self.classify_proxy_error(e))?;
 
         // 级联清除：将引用该代理 URL 的凭据的 proxyUrl 置空
-        let affected_ids = self.token_manager.clear_credentials_with_proxy(&deleted_url);
+        let affected_ids = self
+            .token_manager
+            .clear_credentials_with_proxy(&deleted_url);
         if !affected_ids.is_empty() {
             tracing::info!(
                 "代理 #{} 已删除，级联清除了 {} 个凭据的代理配置",
@@ -2716,7 +2719,6 @@ impl AdminService {
     pub fn token_manager(&self) -> &MultiTokenManager {
         &self.token_manager
     }
-
 }
 
 fn credential_to_export_account(cred: KiroCredentials) -> Option<super::types::ExportedAccount> {
@@ -3078,10 +3080,7 @@ impl AdminService {
 
         Ok(ImageUpdateResponse {
             success: true,
-            message: format!(
-                "已替换为 v{}，服务将在约 30 秒后完成重启",
-                version
-            ),
+            message: format!("已替换为 v{}，服务将在约 30 秒后完成重启", version),
             output: Some(format!(
                 "previous: v{}\n{}: v{}\nstaged_sha256: {}\nstaged_size: {}",
                 previous_version,
@@ -3132,10 +3131,7 @@ impl AdminService {
 
         Ok(ImageUpdateResponse {
             success: true,
-            message: format!(
-                "已回退到 {}，服务将在约 30 秒后完成重启",
-                previous_label
-            ),
+            message: format!("已回退到 {}，服务将在约 30 秒后完成重启", previous_label),
             output: Some(format!("rolled back to: {}", previous_label)),
             applied: true,
             need_restart: true,
@@ -3400,7 +3396,7 @@ mod tests {
 
         let config = Arc::new(RwLock::new(Config::load(&config_path).unwrap()));
         let compression_config = Arc::new(RwLock::new(CompressionConfig::default()));
-        let prompt_cache_runtime = Arc::new(RwLock::new(PromptCacheRuntime::new(300, true)));
+        let prompt_cache_runtime = Arc::new(RwLock::new(PromptCacheRuntime::new(300, true, None)));
 
         let credentials = KiroCredentials::default();
         let tm = Arc::new(

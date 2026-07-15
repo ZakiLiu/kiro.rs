@@ -10,14 +10,14 @@ use crate::kiro::model::requests::conversation::{
     UserInputMessageContext, UserMessage,
 };
 use crate::kiro::model::requests::tool::{ToolResult, ToolUseEntry};
-use crate::model::config::CompressionConfig;
+use crate::model::config::{CompressionConfig, ToolCompatibilityMode};
 
 use super::content::{non_empty_content_or_space, process_message_content};
 use super::model::{
     ConversionError, KIRO_AGENTIC_SYSTEM_PROMPT, SYSTEM_ACK, SYSTEM_CHUNKED_POLICY,
 };
 use super::system::{generate_thinking_prefix, has_thinking_tags, wrap_system_for_history};
-use super::tools::{has_write_or_edit_tool, map_tool_name};
+use super::tools::{has_write_or_edit_tool, map_client_tool_name_to_kiro, map_tool_input_to_kiro};
 use crate::anthropic::types::{ContentBlock, MessagesRequest};
 
 /// 从 metadata.user_id 中提取 session UUID
@@ -236,6 +236,7 @@ pub(super) struct BuildHistoryContext<'a> {
     pub is_agentic: bool,
     pub remaining_image_budget: &'a mut usize,
     pub tool_name_map: &'a mut HashMap<String, String>,
+    pub tool_compatibility_mode: ToolCompatibilityMode,
 }
 
 /// 构建历史消息
@@ -252,6 +253,7 @@ pub(super) fn build_history(
         is_agentic,
         remaining_image_budget,
         tool_name_map,
+        tool_compatibility_mode,
     } = ctx;
     let mut history = Vec::new();
 
@@ -344,7 +346,11 @@ pub(super) fn build_history(
         if msg.role == "user" {
             // 先处理累积的 assistant 消息
             if !assistant_buffer.is_empty() {
-                let merged = merge_assistant_messages(&assistant_buffer, tool_name_map)?;
+                let merged = merge_assistant_messages_with_mode(
+                    &assistant_buffer,
+                    tool_name_map,
+                    tool_compatibility_mode,
+                )?;
                 history.push(Message::Assistant(merged));
                 assistant_buffer.clear();
             }
@@ -369,7 +375,11 @@ pub(super) fn build_history(
 
     // 处理末尾累积的 assistant 消息
     if !assistant_buffer.is_empty() {
-        let merged = merge_assistant_messages(&assistant_buffer, tool_name_map)?;
+        let merged = merge_assistant_messages_with_mode(
+            &assistant_buffer,
+            tool_name_map,
+            tool_compatibility_mode,
+        )?;
         history.push(Message::Assistant(merged));
     }
 
@@ -485,9 +495,18 @@ fn merge_user_messages(
 }
 
 /// 转换 assistant 消息
+#[cfg(test)]
 pub(super) fn convert_assistant_message(
     msg: &crate::anthropic::types::Message,
     tool_name_map: &mut HashMap<String, String>,
+) -> Result<HistoryAssistantMessage, ConversionError> {
+    convert_assistant_message_with_mode(msg, tool_name_map, ToolCompatibilityMode::Raw)
+}
+
+fn convert_assistant_message_with_mode(
+    msg: &crate::anthropic::types::Message,
+    tool_name_map: &mut HashMap<String, String>,
+    mode: ToolCompatibilityMode,
 ) -> Result<HistoryAssistantMessage, ConversionError> {
     let mut thinking_content = String::new();
     let mut text_content = String::new();
@@ -521,7 +540,9 @@ pub(super) fn convert_assistant_message(
                                     }
                                     _ => serde_json::json!({}),
                                 };
-                                let mapped_name = map_tool_name(&name, tool_name_map);
+                                let mapped_name =
+                                    map_client_tool_name_to_kiro(&name, tool_name_map, mode);
+                                let input = map_tool_input_to_kiro(&name, input, mode)?;
                                 tool_uses
                                     .push(ToolUseEntry::new(id, mapped_name).with_input(input));
                             }
@@ -628,20 +649,29 @@ pub(super) fn convert_assistant_message(
 
 /// 合并多个连续的 assistant 消息为一条
 /// 用于处理网络不稳定时产生的连续 assistant 消息（Issue #79）
+#[cfg(test)]
 pub(super) fn merge_assistant_messages(
     messages: &[&crate::anthropic::types::Message],
     tool_name_map: &mut HashMap<String, String>,
 ) -> Result<HistoryAssistantMessage, ConversionError> {
+    merge_assistant_messages_with_mode(messages, tool_name_map, ToolCompatibilityMode::Raw)
+}
+
+fn merge_assistant_messages_with_mode(
+    messages: &[&crate::anthropic::types::Message],
+    tool_name_map: &mut HashMap<String, String>,
+    mode: ToolCompatibilityMode,
+) -> Result<HistoryAssistantMessage, ConversionError> {
     assert!(!messages.is_empty());
     if messages.len() == 1 {
-        return convert_assistant_message(messages[0], tool_name_map);
+        return convert_assistant_message_with_mode(messages[0], tool_name_map, mode);
     }
 
     let mut all_tool_uses: Vec<ToolUseEntry> = Vec::new();
     let mut content_parts: Vec<String> = Vec::new();
 
     for msg in messages {
-        let converted = convert_assistant_message(msg, tool_name_map)?;
+        let converted = convert_assistant_message_with_mode(msg, tool_name_map, mode)?;
         let am = converted.assistant_response_message;
         if !am.content.trim().is_empty() {
             content_parts.push(am.content);

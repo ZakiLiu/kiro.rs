@@ -19,6 +19,9 @@ pub(super) const WRITE_TOOL_DESCRIPTION_SUFFIX: &str = "- IMPORTANT: If the cont
 /// 追加到 Edit 工具 description 末尾的内容
 pub(super) const EDIT_TOOL_DESCRIPTION_SUFFIX: &str = "- IMPORTANT: If the `new_string` content exceeds 50 lines, you MUST split it into multiple Edit calls, each replacing no more than 50 lines at a time. If used to append content, leave a unique placeholder to help append content. On the final chunk, do NOT include the placeholder.";
 
+/// 追加到 Bash 工具 description 末尾的内容。
+pub(super) const BASH_TOOL_DESCRIPTION_SUFFIX: &str = "- IMPORTANT: Do not send very large commands, inline scripts, or heredocs. If a command would exceed 100 lines or ~8000 characters, first create/modify a script file with chunked Write/Edit calls, then run a short command that executes it. Do not retry the same oversized command after a failure; split it smaller.";
+
 /// 追加到系统提示词的分块写入策略
 pub(super) const SYSTEM_CHUNKED_POLICY: &str = "\
 When the Write or Edit tool has content size limits, always comply silently. \
@@ -203,6 +206,7 @@ pub enum ConversionError {
     UnsupportedModel(String),
     EmptyMessages,
     EmptyMessageContent,
+    UnsupportedToolMapping(String),
 }
 
 impl std::fmt::Display for ConversionError {
@@ -211,6 +215,9 @@ impl std::fmt::Display for ConversionError {
             ConversionError::UnsupportedModel(model) => write!(f, "模型不支持: {}", model),
             ConversionError::EmptyMessages => write!(f, "消息列表为空"),
             ConversionError::EmptyMessageContent => write!(f, "消息内容为空"),
+            ConversionError::UnsupportedToolMapping(reason) => {
+                write!(f, "工具映射不支持: {}", reason)
+            }
         }
     }
 }

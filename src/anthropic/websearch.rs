@@ -869,7 +869,7 @@ mod tests {
             metadata: None,
         };
 
-        let tracker = CacheTracker::new(std::time::Duration::from_secs(300));
+        let tracker = CacheTracker::new(std::time::Duration::from_secs(300), None);
         let total = crate::token::count_all_tokens(
             payload.model.clone(),
             payload.system.clone(),
@@ -1056,7 +1056,7 @@ mod tests {
                     input_schema: Default::default(),
                     max_uses: Some(8),
                     cache_control: None,
-                function: None,
+                    function: None,
                 },
                 Tool {
                     tool_type: None,
@@ -1065,7 +1065,7 @@ mod tests {
                     input_schema: Default::default(),
                     max_uses: None,
                     cache_control: None,
-                function: None,
+                    function: None,
                 },
             ]),
             tool_choice: None,

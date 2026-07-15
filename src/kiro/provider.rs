@@ -21,6 +21,7 @@ use crate::kiro::cooldown::CooldownReason;
 use crate::kiro::endpoint::{
     CliEndpoint, IDE_ENDPOINT_NAME, IdeEndpoint, KiroEndpoint, RequestContext,
 };
+use crate::kiro::kiro_version;
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::token_manager::{CallContext, MultiTokenManager};
@@ -599,7 +600,8 @@ impl KiroProvider {
                 }
             };
 
-            let config = self.token_manager.config();
+            let mut config = self.token_manager.config();
+            config.kiro_version = kiro_version::effective(&config.kiro_version);
             let machine_id = match machine_id::generate_from_credentials(&ctx.credentials, &config)
             {
                 Some(machine_id) => machine_id,
@@ -1072,7 +1074,8 @@ impl KiroProvider {
                 }
             };
 
-            let config = self.token_manager.config();
+            let mut config = self.token_manager.config();
+            config.kiro_version = kiro_version::effective(&config.kiro_version);
             let machine_id = match machine_id::generate_from_credentials(&ctx.credentials, &config)
             {
                 Some(machine_id) => machine_id,

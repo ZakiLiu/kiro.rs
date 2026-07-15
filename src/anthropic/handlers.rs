@@ -38,7 +38,7 @@ const ADAPTIVE_MIN_MESSAGE_CONTENT_MAX_CHARS: usize = 8192;
 
 use crate::metrics::{MetricEvent, MetricEventType};
 
-use super::converter::{ConversionError, convert_request};
+use super::converter::{ConversionError, convert_request_with_mode};
 use super::error_map::{self, ErrorRequestContext};
 use super::middleware::AppState;
 
@@ -804,7 +804,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(64_000),
             thinking: Some(true),
-            additional_model_request_fields_schema: model_thinking_schema("claude-sonnet-5-thinking"),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-sonnet-5-thinking",
+            ),
         },
         Model {
             id: "claude-sonnet-5-agentic".to_string(),
@@ -817,7 +819,9 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
             context_length: Some(1_000_000),
             max_completion_tokens: Some(64_000),
             thinking: Some(true),
-            additional_model_request_fields_schema: model_thinking_schema("claude-sonnet-5-agentic"),
+            additional_model_request_fields_schema: model_thinking_schema(
+                "claude-sonnet-5-agentic",
+            ),
         },
         Model {
             id: "claude-sonnet-4-6".to_string(),
@@ -1258,11 +1262,13 @@ pub async fn post_messages(
     {
         let content_preview = match &payload.messages[0].content {
             serde_json::Value::String(s) => s.chars().take(80).collect::<String>(),
-            serde_json::Value::Array(blocks) => {
-                blocks.iter().filter_map(|b| b.get("text")?.as_str()).take(1)
-                    .map(|s| s.chars().take(80).collect::<String>())
-                    .next().unwrap_or_default()
-            }
+            serde_json::Value::Array(blocks) => blocks
+                .iter()
+                .filter_map(|b| b.get("text")?.as_str())
+                .take(1)
+                .map(|s| s.chars().take(80).collect::<String>())
+                .next()
+                .unwrap_or_default(),
             _ => String::new(),
         };
         if !content_preview.is_empty() {
@@ -1284,7 +1290,10 @@ pub async fn post_messages(
 
     // 测活请求前置过滤：单条问候/探测消息直接模拟回复，不走上游
     let health_check_kind = super::health_check::detect_health_check(&payload);
-    if !matches!(health_check_kind, super::health_check::HealthCheckKind::None) {
+    if !matches!(
+        health_check_kind,
+        super::health_check::HealthCheckKind::None
+    ) {
         let has_credentials = state
             .kiro_provider
             .as_ref()
@@ -1425,6 +1434,7 @@ pub async fn post_messages(
             is_stream,
             compression,
             auth.group.as_deref(),
+            state.tool_compatibility_mode,
         )
         .await;
     }
@@ -1471,10 +1481,11 @@ pub async fn post_messages(
     }
 
     // 转换请求
-    let conversion_result = match convert_request(
+    let conversion_result = match convert_request_with_mode(
         &payload,
         &compression_config,
         forced_conversation_id.as_deref(),
+        state.tool_compatibility_mode,
     ) {
         Ok(result) => result,
         Err(e) => {
@@ -1488,6 +1499,10 @@ pub async fn post_messages(
                 ConversionError::EmptyMessageContent => {
                     ("invalid_request_error", "消息内容为空".to_string())
                 }
+                ConversionError::UnsupportedToolMapping(reason) => (
+                    "invalid_request_error",
+                    format!("工具映射不支持: {}", reason),
+                ),
             };
             tracing::warn!("请求转换失败: {}", e);
             return (
@@ -2614,8 +2629,10 @@ mod tests {
     fn test_cache_context_uses_raw_system_tokens() {
         let payload = sample_messages_request();
 
-        let cache_tracker =
-            crate::anthropic::cache_tracker::CacheTracker::new(std::time::Duration::from_secs(300));
+        let cache_tracker = crate::anthropic::cache_tracker::CacheTracker::new(
+            std::time::Duration::from_secs(300),
+            None,
+        );
 
         // 计算实际的 system message tokens
         let system_text = &payload.system.as_ref().unwrap()[0].text;
@@ -2638,8 +2655,10 @@ mod tests {
             payload.messages.clone(),
             payload.tools.clone(),
         ) as i32;
-        let cache_tracker =
-            crate::anthropic::cache_tracker::CacheTracker::new(std::time::Duration::from_secs(300));
+        let cache_tracker = crate::anthropic::cache_tracker::CacheTracker::new(
+            std::time::Duration::from_secs(300),
+            None,
+        );
         let cache_profile = build_cache_profile(&cache_tracker, &payload, estimated);
 
         let provisional = provisional_cache_usage(&cache_tracker, &cache_profile);
@@ -2747,7 +2766,7 @@ mod tests {
         let state = AppState::new(
             "test-api-key",
             Arc::new(parking_lot::RwLock::new(
-                crate::anthropic::middleware::PromptCacheRuntime::new(300, false),
+                crate::anthropic::middleware::PromptCacheRuntime::new(300, false, None),
             )),
         )
         .with_trace_store(store.clone());
@@ -2858,7 +2877,7 @@ mod tests {
         let state = AppState::new(
             "test-api-key",
             Arc::new(parking_lot::RwLock::new(
-                crate::anthropic::middleware::PromptCacheRuntime::new(300, false),
+                crate::anthropic::middleware::PromptCacheRuntime::new(300, false, None),
             )),
         )
         .with_kiro_provider(provider);
@@ -2938,11 +2957,9 @@ mod tests {
     fn test_adaptive_shrink_triggers_on_token_limit_under_byte_limit() {
         let content = "A".repeat(20_000);
         let mut kiro_request = KiroRequest {
-            conversation_state: ConversationState::new("conv-token")
-                .with_current_message(CurrentMessage::new(UserInputMessage::new(
-                    content,
-                    "claude-sonnet-4.5",
-                ))),
+            conversation_state: ConversationState::new("conv-token").with_current_message(
+                CurrentMessage::new(UserInputMessage::new(content, "claude-sonnet-4.5")),
+            ),
             profile_arn: None,
             additional_model_request_fields: None,
         };

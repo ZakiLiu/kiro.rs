@@ -443,6 +443,43 @@ mod tests {
     }
 
     #[test]
+    fn test_stream_tool_use_restores_claude_code_name_and_input() {
+        let mut tool_name_map = HashMap::new();
+        tool_name_map.insert("fs_write".to_string(), "Write".to_string());
+        let mut ctx = StreamContext::new_with_thinking(
+            "test-model",
+            1,
+            zero_cache_usage(),
+            false,
+            tool_name_map,
+        );
+
+        let events = ctx.process_tool_use(&crate::kiro::model::events::ToolUseEvent {
+            name: "fs_write".to_string(),
+            tool_use_id: "tool_1".to_string(),
+            input: r#"{"path":"/tmp/a.txt","text":"hello"}"#.to_string(),
+            stop: true,
+        });
+
+        let start = events
+            .iter()
+            .find(|event| event.event == "content_block_start")
+            .unwrap();
+        assert_eq!(start.data["content_block"]["name"], "Write");
+
+        let delta = events
+            .iter()
+            .find(|event| event.data["delta"]["type"] == "input_json_delta")
+            .unwrap();
+        let input: serde_json::Value =
+            serde_json::from_str(delta.data["delta"]["partial_json"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            input,
+            serde_json::json!({"file_path": "/tmp/a.txt", "content": "hello"})
+        );
+    }
+
+    #[test]
     fn test_tool_use_flushes_pending_thinking_buffer_text_before_tool_block() {
         // thinking 模式下，短文本可能被暂存在 thinking_buffer 以等待 `<thinking>` 的跨 chunk 匹配。
         // 当紧接着出现 tool_use 时，应先 flush 这段文本，再开始 tool_use block。

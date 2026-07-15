@@ -18,7 +18,7 @@ use crate::kiro::model::requests::conversation::{
 };
 
 use crate::anthropic::types::ContentBlock;
-use crate::model::config::CompressionConfig;
+use crate::model::config::{CompressionConfig, ToolCompatibilityMode};
 
 // Re-export public API
 pub use model::{ConversionError, ConversionResult, is_agentic_model, map_model};
@@ -33,15 +33,32 @@ use system::determine_chat_trigger_type;
 pub(crate) use system::{
     build_additional_model_request_fields, output_config_thinking_schema, thinking_config_for_model,
 };
+pub(crate) use tools::restore_tool_use_for_client;
 use tools::{collect_history_tool_names, convert_tools, create_placeholder_tool};
 
 use super::types::MessagesRequest;
 
 /// 将 Anthropic 请求转换为 Kiro 请求
+#[allow(dead_code)]
 pub fn convert_request(
     req: &MessagesRequest,
     compression_config: &CompressionConfig,
     forced_conversation_id: Option<&str>,
+) -> Result<ConversionResult, ConversionError> {
+    convert_request_with_mode(
+        req,
+        compression_config,
+        forced_conversation_id,
+        ToolCompatibilityMode::Raw,
+    )
+}
+
+/// 将 Anthropic 请求转换为 Kiro 请求，并应用指定的工具兼容模式。
+pub fn convert_request_with_mode(
+    req: &MessagesRequest,
+    compression_config: &CompressionConfig,
+    forced_conversation_id: Option<&str>,
+    tool_compatibility_mode: ToolCompatibilityMode,
 ) -> Result<ConversionResult, ConversionError> {
     // 1. 映射模型（已知模型走映射表，未知模型直接透传给 Kiro 后端）
     let model_id = match map_model(&req.model) {
@@ -160,6 +177,7 @@ pub fn convert_request(
         &req.tools,
         compression_config.tool_description_max_chars,
         &mut tool_name_map,
+        tool_compatibility_mode,
     );
 
     // 7. 构建历史消息（需要先构建，以便收集历史中使用的工具）
@@ -174,6 +192,7 @@ pub fn convert_request(
             is_agentic: is_agentic_model(&req.model),
             remaining_image_budget: &mut remaining_image_budget,
             tool_name_map: &mut tool_name_map,
+            tool_compatibility_mode,
         },
     )?;
 
@@ -1147,7 +1166,12 @@ mod tests {
             },
         ];
 
-        let converted = tools::convert_tools(&Some(tools), 4000, &mut HashMap::new());
+        let converted = tools::convert_tools(
+            &Some(tools),
+            4000,
+            &mut HashMap::new(),
+            ToolCompatibilityMode::Raw,
+        );
 
         assert_eq!(converted.len(), 1, "web_search 应该被过滤");
         assert_eq!(
@@ -1182,7 +1206,12 @@ mod tests {
             },
         ];
 
-        let converted = tools::convert_tools(&Some(tools), 4000, &mut HashMap::new());
+        let converted = tools::convert_tools(
+            &Some(tools),
+            4000,
+            &mut HashMap::new(),
+            ToolCompatibilityMode::Raw,
+        );
 
         assert!(converted.is_empty(), "所有 web_search 变体都应被过滤");
     }
@@ -1528,9 +1557,9 @@ mod tests {
         let b64 = "iVBORw0KGgo=";
         for (media_type, expected_format) in &[
             ("image/png", "png"),
-            ("image/jpeg", "png"),  // PNG 数据 → 实际检测为 png
-            ("image/gif", "png"),   // PNG 数据 → 实际检测为 png
-            ("image/webp", "png"),  // PNG 数据 → 实际检测为 png
+            ("image/jpeg", "png"), // PNG 数据 → 实际检测为 png
+            ("image/gif", "png"),  // PNG 数据 → 实际检测为 png
+            ("image/webp", "png"), // PNG 数据 → 实际检测为 png
         ] {
             let req = MessagesRequest {
                 model: "claude-sonnet-4".to_string(),

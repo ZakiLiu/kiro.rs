@@ -22,11 +22,11 @@ use crate::kiro::model::events::Event;
 use crate::kiro::model::requests::kiro::KiroRequest;
 use crate::kiro::parser::decoder::EventStreamDecoder;
 use crate::kiro::provider::KiroProvider;
-use crate::model::config::CompressionConfig;
+use crate::model::config::{CompressionConfig, ToolCompatibilityMode};
 use crate::token;
 
-use super::converter::convert_request;
-use super::stream::{SseEvent, ToolJsonAccumulator, THINKING_SIGNATURE_PLACEHOLDER};
+use super::converter::convert_request_with_mode;
+use super::stream::{SseEvent, THINKING_SIGNATURE_PLACEHOLDER, ToolJsonAccumulator};
 use super::types::{ErrorResponse, Message, MessagesRequest};
 use super::websearch::{self, WebSearchResults};
 
@@ -196,25 +196,22 @@ async fn decode_round(
                         redacted_reasoning.push_str(redacted);
                     }
                 }
-                Event::ToolUse(tu) => {
-                    match tool_accumulator.push(&tu, tool_name_map) {
-                        Ok(Some(completed)) => {
-                            tool_uses.push(DecodedToolUse {
-                                id: completed.id,
-                                name: completed.name,
-                                input: completed.input,
-                            });
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            tracing::error!("{}", e);
-                            tool_json_error = Some(e.message());
-                        }
+                Event::ToolUse(tu) => match tool_accumulator.push(&tu, tool_name_map) {
+                    Ok(Some(completed)) => {
+                        tool_uses.push(DecodedToolUse {
+                            id: completed.id,
+                            name: completed.name,
+                            input: completed.input,
+                        });
                     }
-                }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::error!("{}", e);
+                        tool_json_error = Some(e.message());
+                    }
+                },
                 Event::ContextUsage(cu) => {
-                    let window =
-                        super::types::get_context_window_size(model);
+                    let window = super::types::get_context_window_size(model);
                     let actual = (cu.context_usage_percentage * (window as f64) / 100.0) as i32;
                     context_input_tokens = Some(actual);
                     if cu.context_usage_percentage >= 100.0 {
@@ -273,18 +270,21 @@ async fn run_round(
     _fallback_input_tokens: i32,
     first_byte_marker: Option<&mut StreamFirstByteMarker>,
     group: Option<&str>,
+    tool_compatibility_mode: ToolCompatibilityMode,
 ) -> Result<(RoundOutcome, u64), Response> {
-    let conversion = match convert_request(payload, compression_config, None) {
-        Ok(c) => c,
-        Err(e) => {
-            let msg = e.to_string();
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new("invalid_request_error", msg)),
-            )
-                .into_response());
-        }
-    };
+    let conversion =
+        match convert_request_with_mode(payload, compression_config, None, tool_compatibility_mode)
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = e.to_string();
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse::new("invalid_request_error", msg)),
+                )
+                    .into_response());
+            }
+        };
 
     let kiro_request = KiroRequest {
         conversation_state: conversion.conversation_state,
@@ -305,10 +305,7 @@ async fn run_round(
         }
     };
 
-    let call_result = match provider
-        .call_api_stream(&request_body, None, group)
-        .await
-    {
+    let call_result = match provider.call_api_stream(&request_body, None, group).await {
         Ok(r) => r,
         Err(e) => {
             return Err(map_provider_error_to_response(e.error));
@@ -440,6 +437,7 @@ async fn run_web_search_loop_inner(
     compression_config: CompressionConfig,
     mut first_byte_marker: Option<&mut StreamFirstByteMarker>,
     group: Option<&str>,
+    tool_compatibility_mode: ToolCompatibilityMode,
 ) -> Result<WebSearchLoopSuccess, Response> {
     let fallback_input_tokens = token::count_all_tokens(
         payload.model.clone(),
@@ -461,6 +459,7 @@ async fn run_web_search_loop_inner(
             fallback_input_tokens,
             first_byte_marker.as_deref_mut(),
             group,
+            tool_compatibility_mode,
         )
         .await
         {
@@ -552,12 +551,29 @@ pub(super) async fn run_web_search_loop(
     stream_client: bool,
     compression_config: CompressionConfig,
     group: Option<&str>,
+    tool_compatibility_mode: ToolCompatibilityMode,
 ) -> Response {
     if stream_client {
-        return render_deferred_sse(provider, payload, compression_config, group).await;
+        return render_deferred_sse(
+            provider,
+            payload,
+            compression_config,
+            group,
+            tool_compatibility_mode,
+        )
+        .await;
     }
 
-    match run_web_search_loop_inner(provider, payload, compression_config, None, group).await {
+    match run_web_search_loop_inner(
+        provider,
+        payload,
+        compression_config,
+        None,
+        group,
+        tool_compatibility_mode,
+    )
+    .await
+    {
         Ok(success) => render_json(
             &success.model,
             success.content,
@@ -574,6 +590,7 @@ async fn render_deferred_sse(
     payload: MessagesRequest,
     compression_config: CompressionConfig,
     group: Option<&str>,
+    tool_compatibility_mode: ToolCompatibilityMode,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<SseBytes>(32);
     let (startup_tx, startup_rx) = oneshot::channel::<StreamStartup>();
@@ -587,6 +604,7 @@ async fn render_deferred_sse(
             compression_config,
             Some(&mut marker),
             group_owned.as_deref(),
+            tool_compatibility_mode,
         )
         .await;
 

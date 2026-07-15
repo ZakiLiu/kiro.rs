@@ -103,7 +103,7 @@ async fn refresh_social_token(
     let refresh_domain = format!("prod.{}.auth.desktop.kiro.dev", region);
     let machine_id = machine_id::generate_from_credentials(credentials, config)
         .ok_or_else(|| anyhow::anyhow!("无法生成 machineId"))?;
-    let kiro_version = &config.kiro_version;
+    let kiro_version = crate::kiro::kiro_version::effective(&config.kiro_version);
 
     let client = build_client(proxy, 60, config.tls_backend)?;
     let body = RefreshRequest {

@@ -5,6 +5,7 @@ use crate::kiro::endpoint::{
     CLI_ENDPOINT_NAME, CliEndpoint, IDE_ENDPOINT_NAME, IDE_RUNTIME_ENDPOINT_NAME, IdeEndpoint,
     KiroEndpoint, RequestContext,
 };
+pub(crate) use crate::kiro::kiro_version::USAGE_API_KIRO_VERSION;
 use crate::kiro::machine_id;
 use crate::kiro::model::available_models::{ListAvailableModelsResponse, runtime_fallback_models};
 use crate::kiro::model::credentials::KiroCredentials;
@@ -18,8 +19,6 @@ use serde::Serialize;
 /// 参考项目已验证：新版 IDE 版本在这些接口上会触发更严格的请求形态校验；
 /// `ListAvailableModels` 继续使用运行时 `config.kiro_version` 时，Free 凭据可能返回
 /// `400 Improperly formed request`。
-pub(crate) const USAGE_API_KIRO_VERSION: &str = "0.9.2";
-
 /// 对 user_id 进行掩码处理，保护隐私
 pub(super) fn mask_user_id(user_id: Option<&str>) -> String {
     match user_id {
@@ -46,6 +45,44 @@ fn usage_endpoint_for_credentials(
     }
 }
 
+fn usage_request_parts_without_profile_arn(
+    credentials: &KiroCredentials,
+    config: &Config,
+    token: &str,
+    machine_id: &str,
+) -> anyhow::Result<crate::kiro::endpoint::UsageRequestParts> {
+    let endpoint = usage_endpoint_for_credentials(credentials, config)?;
+    let ctx = RequestContext {
+        credentials,
+        token,
+        machine_id,
+        config,
+    };
+    let mut usage = endpoint.usage_request_parts(&ctx)?;
+
+    let mut url = url::Url::parse(&usage.url)
+        .map_err(|error| anyhow::anyhow!("解析用量查询 URL 失败: {}", error))?;
+    let query_pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(key, _)| key != "profileArn")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    url.set_query(None);
+    if !query_pairs.is_empty() {
+        let mut query = url.query_pairs_mut();
+        for (key, value) in query_pairs {
+            query.append_pair(&key, &value);
+        }
+    }
+    usage.url = url.to_string();
+
+    Ok(usage)
+}
+
+fn available_models_url(host: &str) -> String {
+    format!("https://{}/ListAvailableModels?origin=AI_EDITOR", host)
+}
+
 /// 获取使用额度信息
 pub(crate) async fn get_usage_limits(
     credentials: &KiroCredentials,
@@ -60,14 +97,7 @@ pub(crate) async fn get_usage_limits(
 
     let machine_id = machine_id::generate_from_credentials(credentials, config)
         .ok_or_else(|| anyhow::anyhow!("无法生成 machineId"))?;
-    let endpoint = usage_endpoint_for_credentials(credentials, config)?;
-    let ctx = RequestContext {
-        credentials,
-        token,
-        machine_id: &machine_id,
-        config,
-    };
-    let usage = endpoint.usage_request_parts(&ctx)?;
+    let usage = usage_request_parts_without_profile_arn(credentials, config, token, &machine_id)?;
 
     let client = build_client(proxy, 60, config.tls_backend)?;
     let mut request = client.get(&usage.url);
@@ -126,11 +156,6 @@ pub(crate) async fn get_available_models(
     let os_name = &config.system_version;
     let node_version = &config.node_version;
 
-    let profile_arn_query = credentials
-        .effective_profile_arn()
-        .map(|arn| format!("&profileArn={}", urlencoding::encode(arn)))
-        .unwrap_or_default();
-
     let user_agent = format!(
         "aws-sdk-js/1.0.0 ua/2.1 os/{} lang/js md/nodejs#{} api/codewhispererruntime#1.0.0 m/N,E KiroIDE-{}-{}",
         os_name, node_version, kiro_version, machine_id
@@ -142,10 +167,7 @@ pub(crate) async fn get_available_models(
     let mut last_error: Option<String> = None;
     for (idx, region) in candidates.iter().enumerate() {
         let host = format!("q.{}.amazonaws.com", region);
-        let url = format!(
-            "https://{}/ListAvailableModels?origin=AI_EDITOR{}",
-            host, profile_arn_query
-        );
+        let url = available_models_url(&host);
 
         let mut request = client
             .get(&url)
@@ -208,6 +230,28 @@ mod tests {
     #[test]
     fn test_usage_api_kiro_version_is_pinned_for_rest_usage_apis() {
         assert_eq!(USAGE_API_KIRO_VERSION, "0.9.2");
+    }
+
+    #[test]
+    fn test_usage_rest_requests_omit_profile_arn() {
+        let config = Config::default();
+        let credentials = KiroCredentials {
+            profile_arn: Some(
+                "arn:aws:codewhisperer:us-east-1:123456789012:profile/REAL123".to_string(),
+            ),
+            ..KiroCredentials::default()
+        };
+
+        let usage =
+            usage_request_parts_without_profile_arn(&credentials, &config, "token", "machine123")
+                .unwrap();
+        assert!(usage.url.contains("getUsageLimits"));
+        assert!(!usage.url.contains("profileArn"));
+
+        assert_eq!(
+            available_models_url("q.us-east-1.amazonaws.com"),
+            "https://q.us-east-1.amazonaws.com/ListAvailableModels?origin=AI_EDITOR"
+        );
     }
 
     #[test]
