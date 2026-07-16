@@ -1,5 +1,10 @@
 # Changelog
 
+## [v2.2.1] - 2026-07-16
+
+### Fixed
+- **恢复 ListAvailableModels 的 profileArn 参数** — 回退 v2.2.0 中对 getUsageLimits/ListAvailableModels 移除 profileArn 的变更，修复企业凭据模型列表查询失败
+
 ## [v2.2.0] - 2026-07-16
 
 ### Added
