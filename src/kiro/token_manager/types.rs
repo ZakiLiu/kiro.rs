@@ -79,8 +79,15 @@ fn usage_request_parts_without_profile_arn(
     Ok(usage)
 }
 
-fn available_models_url(host: &str) -> String {
-    format!("https://{}/ListAvailableModels?origin=AI_EDITOR", host)
+fn available_models_url(host: &str, profile_arn: Option<&str>) -> String {
+    match profile_arn {
+        Some(arn) => format!(
+            "https://{}/ListAvailableModels?origin=AI_EDITOR&profileArn={}",
+            host,
+            urlencoding::encode(arn)
+        ),
+        None => format!("https://{}/ListAvailableModels?origin=AI_EDITOR", host),
+    }
 }
 
 /// 获取使用额度信息
@@ -167,7 +174,7 @@ pub(crate) async fn get_available_models(
     let mut last_error: Option<String> = None;
     for (idx, region) in candidates.iter().enumerate() {
         let host = format!("q.{}.amazonaws.com", region);
-        let url = available_models_url(&host);
+        let url = available_models_url(&host, credentials.effective_profile_arn());
 
         let mut request = client
             .get(&url)
@@ -249,9 +256,14 @@ mod tests {
         assert!(!usage.url.contains("profileArn"));
 
         assert_eq!(
-            available_models_url("q.us-east-1.amazonaws.com"),
+            available_models_url("q.us-east-1.amazonaws.com", None),
             "https://q.us-east-1.amazonaws.com/ListAvailableModels?origin=AI_EDITOR"
         );
+        assert!(available_models_url(
+            "q.us-east-1.amazonaws.com",
+            Some("arn:aws:codewhisperer:us-east-1:123:profile/XYZ")
+        )
+        .contains("profileArn="));
     }
 
     #[test]
