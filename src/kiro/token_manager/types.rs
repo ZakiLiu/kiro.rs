@@ -148,11 +148,52 @@ pub(crate) async fn get_available_models(
         return Ok(runtime_fallback_models());
     }
 
+    // 先用兼容版本(0.9.2)尝试，400 时回退到自动获取的最新版本。
+    // FREE 凭据用 0.9.2 成功，POWER 凭据可能需要最新版本。
+    match list_models_with_version(credentials, config, token, proxy, USAGE_API_KIRO_VERSION).await
+    {
+        Ok(resp) => return Ok(resp),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("400") && msg.contains("Improperly formed") {
+                let latest = crate::kiro::kiro_version::effective(&config.kiro_version);
+                tracing::info!(
+                    "ListAvailableModels 版本 {} 返回 400，尝试版本 {}",
+                    USAGE_API_KIRO_VERSION,
+                    latest
+                );
+                match list_models_with_version(credentials, config, token, proxy, &latest).await {
+                    Ok(resp) => return Ok(resp),
+                    Err(e2) => {
+                        let msg2 = e2.to_string();
+                        if msg2.contains("403") {
+                            tracing::info!("凭据无 ListAvailableModels 权限（403），返回空模型列表");
+                            return Ok(ListAvailableModelsResponse::default());
+                        }
+                        return Err(e2);
+                    }
+                }
+            }
+            if msg.contains("403") && msg.contains("权限不足") {
+                tracing::info!("凭据无 ListAvailableModels 权限（403），返回空模型列表");
+                return Ok(ListAvailableModelsResponse::default());
+            }
+            return Err(e);
+        }
+    }
+}
+
+async fn list_models_with_version(
+    credentials: &KiroCredentials,
+    config: &Config,
+    token: &str,
+    proxy: Option<&ProxyConfig>,
+    kiro_version: &str,
+) -> anyhow::Result<ListAvailableModelsResponse> {
     let sso_region = credentials.effective_auth_region(config);
     let candidates = rest_api_region_candidates(sso_region);
     let machine_id = machine_id::generate_from_credentials(credentials, config)
         .ok_or_else(|| anyhow::anyhow!("无法生成 machineId"))?;
-    let kiro_version = USAGE_API_KIRO_VERSION;
     let os_name = &config.system_version;
     let node_version = &config.node_version;
 
@@ -207,17 +248,6 @@ pub(crate) async fn get_available_models(
             _ => "获取可用模型失败",
         };
         bail!("{}: {} {}", error_msg, status, body_text);
-    }
-
-    // 所有区域 403：该凭据无 ListAvailableModels 权限，返回空列表而非报错
-    if last_error
-        .as_deref()
-        .is_some_and(|e| e.starts_with("403"))
-    {
-        tracing::info!(
-            "凭据无 ListAvailableModels 权限（所有区域 403），返回空模型列表"
-        );
-        return Ok(ListAvailableModelsResponse::default());
     }
 
     bail!(
