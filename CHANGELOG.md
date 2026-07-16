@@ -1,5 +1,17 @@
 # Changelog
 
+## [v2.2.0] - 2026-07-16
+
+### Added
+- **Kiro IDE 版本自动获取** — 新增 kiro_version.rs，从 CDN 元数据自动刷新 User-Agent
+- **Enterprise/IdC ListAvailableProfiles** — 新增 available_profiles.rs 数据模型
+- **ToolCompatibilityMode** — Claude Code 内置工具名双向映射（Write↔fs_write 等），兼容不同客户端工具命名
+- **CacheTracker 磁盘持久化** — prompt_cache_tracker.json 启动时加载、定时写入，重启不丢缓存统计
+
+### Fixed
+- **企业凭据余额查询修复** — getUsageLimits/ListAvailableModels 移除 profileArn，修复企业凭据余额查询失败
+- **KAM 导入移除回滚逻辑** — 余额查询失败不再阻断导入，部分账号类型不支持 Usage API 时凭据仍正常添加
+
 ## [v2.1.10] - 2026-07-04
 
 ### Fixed
