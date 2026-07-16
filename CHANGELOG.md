@@ -1,5 +1,11 @@
 # Changelog
 
+## [v2.2.2] - 2026-07-16
+
+### Fixed
+- **ListAvailableModels 版本回退策略** — 兼容 FREE 和 POWER 凭据，403 时降级返回空列表而非报错
+- **ListAvailableModels 移除 profileArn** — 避免因 profileArn 参数导致非企业凭据查询失败
+
 ## [v2.2.1] - 2026-07-16
 
 ### Fixed
