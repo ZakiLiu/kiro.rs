@@ -167,7 +167,9 @@ pub(crate) async fn get_available_models(
                     Err(e2) => {
                         let msg2 = e2.to_string();
                         if msg2.contains("403") {
-                            tracing::info!("凭据无 ListAvailableModels 权限（403），返回空模型列表");
+                            tracing::info!(
+                                "凭据无 ListAvailableModels 权限（403），返回空模型列表"
+                            );
                             return Ok(ListAvailableModelsResponse::default());
                         }
                         return Err(e2);

@@ -54,10 +54,7 @@ pub fn lookup(model: &str) -> Option<&'static CustomModel> {
 
 /// 返回所有已注册的自定义模型（保持配置文件中的原始顺序）。
 pub fn all() -> &'static [CustomModel] {
-    REGISTRY
-        .get()
-        .map(|r| r.ordered.as_slice())
-        .unwrap_or(&[])
+    REGISTRY.get().map(|r| r.ordered.as_slice()).unwrap_or(&[])
 }
 
 /// 是否存在 `backend_id` 等于给定值且声明支持 reasoning 的自定义模型。

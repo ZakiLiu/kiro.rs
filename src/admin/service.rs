@@ -650,11 +650,7 @@ impl AdminService {
             .copied()
             .ok_or_else(|| AdminServiceError::InvalidRequest("无可用凭据".to_string()))?;
 
-        let selection = self
-            .token_manager
-            .config()
-            .load_balancing_mode
-            .clone();
+        let selection = self.token_manager.config().load_balancing_mode.clone();
 
         let resp = self
             .token_manager
@@ -700,12 +696,9 @@ impl AdminService {
         }
         let _requested_credential_id = payload.credential_id;
 
-        let provider = self
-            .kiro_provider
-            .as_ref()
-            .ok_or_else(|| {
-                AdminServiceError::InternalError("kiro_provider 未初始化".to_string())
-            })?;
+        let provider = self.kiro_provider.as_ref().ok_or_else(|| {
+            AdminServiceError::InternalError("kiro_provider 未初始化".to_string())
+        })?;
 
         // 组一个最小化的 Anthropic 请求体，走上游正常链路
         let body = json!({

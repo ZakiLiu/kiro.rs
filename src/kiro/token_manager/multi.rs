@@ -3718,10 +3718,13 @@ impl MultiTokenManager {
     /// 用于 T4 模型感知路由：命中且缺目标模型时可跳过，无缓存时允许尝试。
     #[allow(dead_code)]
     pub fn cached_model_ids_for(&self, id: u64) -> Option<Vec<String>> {
-        self.model_cache
-            .lock()
-            .get(&id)
-            .map(|e| e.response.models.iter().map(|m| m.model_id.clone()).collect())
+        self.model_cache.lock().get(&id).map(|e| {
+            e.response
+                .models
+                .iter()
+                .map(|m| m.model_id.clone())
+                .collect()
+        })
     }
 
     /// T4 模型感知路由裁决：给定凭据是否能承接目标模型。
