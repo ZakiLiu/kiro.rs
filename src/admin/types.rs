@@ -1107,6 +1107,48 @@ pub struct AvailableModelItem {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_input_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<i64>,
+}
+
+/// 按账号池策略查询可用模型时返回的复合结构。
+///
+/// - `selection`: `priority` | `balanced` | `specified`，表明凭据是如何被选中的
+/// - `credential_id`: 最终选中的凭据 ID
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminModelsResponse {
+    pub selection: String,
+    pub credential_id: u64,
+    pub models: Vec<AvailableModelItem>,
+}
+
+/// 真实模型测试请求
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminTestModelRequest {
+    /// 指定凭据 ID；缺省时按账号池策略选择
+    #[serde(default)]
+    pub credential_id: Option<u64>,
+    /// 目标模型 ID
+    pub model: String,
+}
+
+/// 真实模型测试响应
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminTestModelResponse {
+    /// 最终使用的凭据 ID
+    pub credential_id: u64,
+    /// 模型返回的可见文本（可能为空）
+    pub text: String,
+    /// 端到端耗时（毫秒）
+    pub latency_ms: u64,
+    /// meteringEvent 里携带的 credit 信息（若上游下发）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit_usage: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit_unit: Option<String>,
 }
 
 // ============ Auth Flow 响应 ============

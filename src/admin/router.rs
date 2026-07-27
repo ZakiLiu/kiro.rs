@@ -16,7 +16,8 @@ use super::{
         get_all_credentials, get_cached_balances, get_credential_balance, get_credential_models,
         get_global_config, get_global_proxy, get_group_config, get_load_balancing_mode,
         get_log_governance_config, get_metrics_by_credential, get_metrics_by_model,
-        get_metrics_summary, get_presets, get_proxy_config, get_proxy_pool, get_update_config,
+        get_metrics_summary, get_pool_models, get_presets, get_proxy_config, get_proxy_pool,
+        get_update_config,
         import_token_json, list_client_keys, list_groups, list_traces, poll_idc_login,
         poll_idc_relogin, poll_social_login, poll_social_relogin, pull_update_image,
         reset_all_success_count, reset_client_key_stats, reset_failure_count, reset_success_count,
@@ -26,7 +27,8 @@ use super::{
         set_load_balancing_mode, set_log_governance_config, set_proxy_enabled, set_update_config,
         social_oauth_callback, start_idc_login, start_idc_relogin, start_social_login,
         start_social_relogin, stats_by_credential, stats_by_model, stats_overview,
-        stats_timeseries, trace_failure_stats, update_admin_key, update_client_key,
+        stats_timeseries, test_pool_model, trace_failure_stats, update_admin_key,
+        update_client_key,
         update_credential, update_global_config, update_group, update_group_config, update_preset,
         update_proxy_config, update_refresh_token,
     },
@@ -72,6 +74,9 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route("/credentials/{id}/balance", get(get_credential_balance))
         .route("/credentials/{id}/overage", post(set_credential_overage))
         .route("/credentials/{id}/models", get(get_credential_models))
+        // ---- 账号池模型面板（T5 动态模型发现前端出口）----
+        .route("/models", get(get_pool_models))
+        .route("/models/test", post(test_pool_model))
         .route("/credentials/{id}/proxy", post(assign_proxy_to_credential))
         // ---- 代理池 ----
         .route("/proxy-pool", get(get_proxy_pool).post(add_proxy))

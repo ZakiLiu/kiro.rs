@@ -202,6 +202,32 @@ pub async fn get_credential_models(
     }
 }
 
+/// GET /api/admin/models
+///
+/// 按账号池策略选凭据后返回其可用模型目录（走 T3 缓存，不改写调度指针）。
+pub async fn get_pool_models(State(state): State<AdminState>) -> impl IntoResponse {
+    match state.service.get_pool_models().await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/models/test
+///
+/// 使用所选凭据向指定模型发一个最小化请求，返回响应文本、耗时与 credit（若下发）。
+///
+/// 走凭据故障转移链的常规请求路径（`kiro_provider.call_api`），因此结果反映
+/// **实际可调用性**而非仅目录可见性。
+pub async fn test_pool_model(
+    State(state): State<AdminState>,
+    Json(payload): Json<super::types::AdminTestModelRequest>,
+) -> impl IntoResponse {
+    match state.service.test_pool_model(payload).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
 /// GET /api/admin/credentials/:id/balance
 /// 获取指定凭据的余额
 pub async fn get_credential_balance(

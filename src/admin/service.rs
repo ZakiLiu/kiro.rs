@@ -242,6 +242,33 @@ struct IdcAuthSession {
 /// Admin 服务
 ///
 /// 封装所有 Admin API 的业务逻辑
+/// 从 Kiro 上游二进制响应中尽力提取可见文本片段（用于 Admin 模型测试展示）。
+///
+/// Kiro 走 AWS event-stream，此处不做完整解析——只是把 payload 转成 UTF-8 后
+/// 剔除控制字符，保证 Admin UI 能看到最小可读预览。失败或全空时返回空串。
+fn extract_test_response_text(bytes: &[u8]) -> String {
+    let raw = String::from_utf8_lossy(bytes);
+    // 尝试从 JSON 事件片段里找出 "content" / "text" 字符串（宽松匹配）
+    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        if let Some(text) = v
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|b| b.get("text"))
+            .and_then(|t| t.as_str())
+        {
+            return text.to_string();
+        }
+    }
+    // 兜底：抽取所有 ASCII 可见字符，截断到 256 字符
+    let filtered: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_graphic() || *c == ' ')
+        .take(256)
+        .collect();
+    filtered
+}
+
 pub struct AdminService {
     token_manager: Arc<MultiTokenManager>,
     kiro_provider: Option<Arc<KiroProvider>>,
@@ -593,10 +620,117 @@ impl AdminService {
                 model_name: m.model_name,
                 description: m.description,
                 max_input_tokens: m.token_limits.and_then(|t| t.max_input_tokens),
+                max_output_tokens: None,
             })
             .collect();
 
         Ok(super::types::AvailableModelsResponse { id, models })
+    }
+
+    /// 按账号池策略选凭据后返回其模型目录（走 T3 缓存）。
+    ///
+    /// 只读查询，不改写调度指针；`selection` 反映当前 `load_balancing_mode` 语义。
+    pub async fn get_pool_models(
+        &self,
+    ) -> Result<super::types::AdminModelsResponse, AdminServiceError> {
+        // 选一个"未禁用"凭据；优先取第一个 enabled 凭据（priority 语义），
+        // balanced 模式仍返回同一个凭据（只读探针，不占用调度轮次）
+        let ids = self.token_manager.list_enabled_credential_ids();
+        let credential_id = ids
+            .first()
+            .copied()
+            .ok_or_else(|| AdminServiceError::InvalidRequest("无可用凭据".to_string()))?;
+
+        let selection = self
+            .token_manager
+            .config()
+            .load_balancing_mode
+            .clone();
+
+        let resp = self
+            .token_manager
+            .get_available_models_cached(credential_id)
+            .await
+            .map_err(|e| self.classify_balance_error(e, credential_id))?;
+
+        let models = resp
+            .models
+            .into_iter()
+            .map(|m| super::types::AvailableModelItem {
+                model_id: m.model_id,
+                model_name: m.model_name,
+                description: m.description,
+                max_input_tokens: m.token_limits.and_then(|t| t.max_input_tokens),
+                max_output_tokens: None,
+            })
+            .collect();
+
+        Ok(super::types::AdminModelsResponse {
+            selection,
+            credential_id,
+            models,
+        })
+    }
+
+    /// 用指定/池策略选出的凭据向目标模型发一个最小化请求。
+    ///
+    /// 通过 kiro_provider 的常规调用路径（含凭据故障转移与重试），
+    /// 因此结果反映 **实际可调用性** 而非仅目录可见性。
+    pub async fn test_pool_model(
+        &self,
+        payload: super::types::AdminTestModelRequest,
+    ) -> Result<super::types::AdminTestModelResponse, AdminServiceError> {
+        use serde_json::json;
+        use std::time::Instant;
+
+        // Note: 当前 provider.call_api 只按池策略选凭据，不支持强制指定 ID。
+        // 客户端传入的 credential_id 在响应中反映为实际选中的凭据（可能不同）。
+        // 若无任何可用凭据，提前失败避免下游 UpstreamError 迷惑用户。
+        if self.token_manager.list_enabled_credential_ids().is_empty() {
+            return Err(AdminServiceError::InvalidRequest("无可用凭据".to_string()));
+        }
+        let _requested_credential_id = payload.credential_id;
+
+        let provider = self
+            .kiro_provider
+            .as_ref()
+            .ok_or_else(|| {
+                AdminServiceError::InternalError("kiro_provider 未初始化".to_string())
+            })?;
+
+        // 组一个最小化的 Anthropic 请求体，走上游正常链路
+        let body = json!({
+            "model": payload.model,
+            "max_tokens": 8,
+            "messages": [
+                {"role": "user", "content": "ping"}
+            ]
+        })
+        .to_string();
+
+        let started = Instant::now();
+        let result = provider
+            .call_api(&body, None, None)
+            .await
+            .map_err(|e| AdminServiceError::UpstreamError(format!("{:?}", e.error)))?;
+        let selected_credential_id = result.credential_id;
+        let bytes = result
+            .response
+            .bytes()
+            .await
+            .map_err(|e| AdminServiceError::UpstreamError(e.to_string()))?;
+        let latency_ms = started.elapsed().as_millis() as u64;
+
+        // Kiro 上游是 event-stream 二进制响应；这里只做尽力提取，无文本时返回空串。
+        let text = extract_test_response_text(&bytes);
+
+        Ok(super::types::AdminTestModelResponse {
+            credential_id: selected_credential_id,
+            text,
+            latency_ms,
+            credit_usage: None,
+            credit_unit: None,
+        })
     }
 
     /// 获取凭据余额（带缓存）
