@@ -412,9 +412,20 @@ mod tests {
     }
 
     #[test]
-    fn test_map_model_unknown_returns_none() {
-        assert!(map_model("deepseek-v3.2").is_none());
-        assert!(map_model("qwen3-coder-next").is_none());
+    fn test_map_model_unknown_passes_through_when_safe() {
+        // 未知但格式合法的 ID 现在原样透传（T2 开放模型 ID 透传），
+        // 由上游决定可用性——避免 kiro 上新模型时被前端拦截。
+        assert_eq!(
+            map_model("deepseek-v3.2"),
+            Some("deepseek-v3.2".to_string())
+        );
+        assert_eq!(
+            map_model("qwen3-coder-next"),
+            Some("qwen3-coder-next".to_string())
+        );
+        // 但含非法字符或空的仍返回 None
+        assert!(map_model("").is_none());
+        assert!(map_model("bad name").is_none());
     }
 
     #[test]

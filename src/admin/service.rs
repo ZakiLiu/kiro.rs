@@ -505,19 +505,28 @@ impl AdminService {
         // 按优先级排序（数字越小优先级越高）
         credentials.sort_by_key(|c| c.priority);
 
-        // 当前活跃 = 最近使用的非禁用凭据
-        let current_id = credentials
-            .iter()
-            .filter(|c| !c.disabled && c.last_used_at.is_some())
-            .max_by(|a, b| a.last_used_at.cmp(&b.last_used_at))
-            .map(|c| c.id)
-            .or_else(|| credentials.iter().find(|c| !c.disabled).map(|c| c.id))
-            .unwrap_or(0);
+        // T6：balanced 模式没有"当前活跃"的语义（每个请求都可能挑不同凭据）；
+        // 与参考项目保持一致，balanced 下 currentId 固定 0、所有 isCurrent=false，
+        // 避免"看起来某个凭据一直在跑"的误导。priority 模式保留原逻辑。
+        let is_balanced_mode = self.config.read().load_balancing_mode == "balanced";
 
-        // 标记当前活跃凭据
-        for c in &mut credentials {
-            if c.id == current_id {
-                c.is_current = true;
+        let current_id = if is_balanced_mode {
+            0
+        } else {
+            credentials
+                .iter()
+                .filter(|c| !c.disabled && c.last_used_at.is_some())
+                .max_by(|a, b| a.last_used_at.cmp(&b.last_used_at))
+                .map(|c| c.id)
+                .or_else(|| credentials.iter().find(|c| !c.disabled).map(|c| c.id))
+                .unwrap_or(0)
+        };
+
+        if !is_balanced_mode {
+            for c in &mut credentials {
+                if c.id == current_id {
+                    c.is_current = true;
+                }
             }
         }
 

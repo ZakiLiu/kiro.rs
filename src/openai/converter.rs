@@ -236,7 +236,10 @@ fn resolve_openai_model_id(model: &str) -> String {
         return normalized;
     }
 
-    if let Some(mapped) = map_model(model).or_else(|| map_model(&normalized)) {
+    // 先用 OpenAI 侧归一化产物做映射，让 `deepseek-v3.2` → `deepseek-3.2` 等
+    // openai-only 归一化规则生效；然后再用原始模型名兜底（覆盖 gpt-4 / 别名等）。
+    // 最后 map_model 的透传兜底会返回原样归一化 ID。
+    if let Some(mapped) = map_model(&normalized).or_else(|| map_model(model)) {
         return mapped;
     }
 
