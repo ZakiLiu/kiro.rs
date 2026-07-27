@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **customModels 配置驱动模型映射** — `config.json` 新增 `customModels` 数组，可声明客户端模型别名到 Kiro 后端模型 ID 的映射，可覆盖内置模糊映射，支持 `displayName` / `contextWindow` / `maxTokens` / `supportsReasoning` / `ownedBy` 元数据；`-thinking` 后缀自动剥离回退（`src/model/custom_models.rs`、`src/anthropic/converter/model.rs`）
+- **未知模型 ID 透传** — `map_model` 末尾新增兜底：未命中内置映射且格式合法（仅 `[a-zA-Z0-9._\-]`）的模型 ID 原样透传给上游，避免 kiro 上新时被前端拦截（`glm-5`、`minimax-m2.5`、`deepseek-3.2` 等）
+- **动态模型发现** — `/v1/models` 并发查询各未禁用凭据的上游 `ListAvailableModels`，合并去重后追加到列表尾部；每凭据独立 TTL 缓存（默认 3600s，`modelCacheTtlSecs`）+ singleflight 锁避免并发重复；上游失败降级 stale
+- **模型感知路由** — MultiTokenManager 加 `credential_upstream_supports_model`：缓存命中且含目标模型时允许，缓存明确不含时跳过，缓存缺失时允许尝试；priority / balanced / affinity 3 处凭据选择路径均接入
+- **Admin 账号池模型面板 API** — `GET /api/admin/models` 按账号池策略选凭据返回模型目录（走缓存、不改写调度指针）；`POST /api/admin/models/test` 走 `kiro_provider.call_api` 常规链路发最小请求验证目标模型可调用性
+- **customModels /v1/models 展示** — 所有自定义模型追加到 `/v1/models` 列表尾部，与内置模型 id 冲突时跳过
+
+### Changed
+- **balanced 模式状态语义修正** — 状态接口在 `balanced` 模式下 `currentId` 固定 `0`、所有凭据 `isCurrent=false`，避免"看起来某个凭据一直在跑"的误导；priority 模式保留原逻辑
+- **OpenAI resolve_openai_model_id 顺序调整** — 先用 openai 侧归一化产物走 `map_model`，让 `deepseek-v3.2 → deepseek-3.2`、`MiniMax M2.5 → minimax-m2.5` 等 openai-only 归一化规则先于通用透传兜底生效
+
+### Notes
+- 移植自参考项目 v0.7.2 (PR #46 @bestK) 与 v0.7.3 动态模型发现 / 未知模型开放透传章节
+- 参考项目的 `meteringEvent credit` 字段透传本项目 v2.0.41 已明确移除，不合并
+- 参考项目的远程 Social 登录回调已被上游自身回退（Kiro 收紧 OAuth 白名单），不合并
+- 前端 admin-ui 模型面板留待独立 commit（需 pnpm build 验证）
+
 ## [v2.2.2] - 2026-07-16
 
 ### Fixed
