@@ -188,6 +188,14 @@ pub struct Config {
     #[serde(default = "default_prompt_cache_ttl_seconds")]
     pub prompt_cache_ttl_seconds: u64,
 
+    /// 上游模型目录逐凭据缓存 TTL（秒），默认 3600
+    ///
+    /// `/v1/models` 与 Admin 模型面板会按凭据独立缓存 `ListAvailableModels`
+    /// 结果；过期后由下一次请求触发懒刷新（singleflight 锁避免并发重复）。
+    /// 编辑代理 / 刷新 / 删除凭据时会主动清理对应缓存。
+    #[serde(default = "default_model_cache_ttl_secs")]
+    pub model_cache_ttl_secs: u64,
+
     /// 是否启用本地 Prompt Cache usage 记账，默认 true
     #[serde(default = "default_true")]
     pub prompt_cache_accounting_enabled: bool,
@@ -383,6 +391,10 @@ pub fn is_supported_prompt_cache_ttl_seconds(ttl_seconds: u64) -> bool {
     )
 }
 
+fn default_model_cache_ttl_secs() -> u64 {
+    3600
+}
+
 fn default_prompt_cache_ttl_seconds() -> u64 {
     PROMPT_CACHE_TTL_5M_SECONDS
 }
@@ -574,6 +586,7 @@ impl Default for Config {
             keepalive_idle_threshold_seconds: None,
             compression: CompressionConfig::default(),
             prompt_cache_ttl_seconds: default_prompt_cache_ttl_seconds(),
+            model_cache_ttl_secs: default_model_cache_ttl_secs(),
             prompt_cache_accounting_enabled: default_true(),
             default_endpoint: default_endpoint(),
             metrics_enabled: default_true(),

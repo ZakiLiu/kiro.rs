@@ -767,8 +767,12 @@ pub async fn health() -> impl IntoResponse {
 
 /// GET /v1/models
 ///
-/// 返回可用的模型列表。
-pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
+/// 返回可用的模型列表。当存在可用凭据时，会额外并发查询各凭据的上游
+/// `ListAvailableModels` 目录（走 TTL + singleflight 缓存），合并去重后追加到列表尾部。
+pub async fn get_models(
+    State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+) -> impl IntoResponse {
     tracing::info!(
         path = %uri.path(),
         "Received request"
@@ -1133,12 +1137,77 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
     ];
 
     append_runtime_gateway_models(&mut models);
+    append_dynamic_upstream_models(&state, &mut models).await;
     append_custom_models(&mut models);
 
     Json(ModelsResponse {
         object: "list".to_string(),
         data: models,
     })
+}
+
+/// 并发查询各未禁用凭据的上游模型目录（走缓存），合并去重后追加到列表尾部。
+///
+/// 失败凭据静默跳过（缓存层已提供 stale 兜底）；无 provider / 无凭据时 no-op。
+async fn append_dynamic_upstream_models(state: &AppState, models: &mut Vec<Model>) {
+    let Some(provider) = state.kiro_provider.as_ref() else {
+        return;
+    };
+    let manager = provider.token_manager();
+    let ids = manager.list_enabled_credential_ids();
+    if ids.is_empty() {
+        return;
+    }
+
+    // 并发拉各凭据的缓存目录
+    let futures = ids
+        .into_iter()
+        .map(|id| async move { manager.get_available_models_cached(id).await.ok() });
+    let responses = futures::future::join_all(futures).await;
+
+    // 汇总所有上游模型，按 model_id 去重（保留首次出现的元数据）
+    use std::collections::BTreeMap;
+    let mut merged: BTreeMap<String, crate::kiro::model::available_models::UpstreamModel> =
+        BTreeMap::new();
+    for resp in responses.into_iter().flatten() {
+        for m in resp.models {
+            merged.entry(m.model_id.clone()).or_insert(m);
+        }
+    }
+
+    for (id, upstream) in merged {
+        if models
+            .iter()
+            .any(|existing| existing.id.eq_ignore_ascii_case(&id))
+        {
+            continue;
+        }
+        let display_name = upstream.model_name.clone().unwrap_or_else(|| id.clone());
+        let context_length = upstream
+            .token_limits
+            .as_ref()
+            .and_then(|limits| limits.max_input_tokens)
+            .map(|t| t.min(i32::MAX as i64) as i32);
+        let max_completion = Some(64_000);
+        let thinking = if id.starts_with("claude-") {
+            Some(true)
+        } else {
+            None
+        };
+        models.push(Model {
+            id,
+            object: "model".to_string(),
+            created: 1783180800,
+            owned_by: "kiro".to_string(),
+            display_name,
+            model_type: "chat".to_string(),
+            max_tokens: 32000,
+            context_length,
+            max_completion_tokens: max_completion,
+            thinking,
+            additional_model_request_fields_schema: None,
+        });
+    }
 }
 
 /// 追加 `config.custom_models` 中的自定义模型。

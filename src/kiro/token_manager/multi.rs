@@ -150,6 +150,17 @@ pub struct MultiTokenManager {
     keepalive_started_at: Mutex<DateTime<Utc>>,
     /// keepalive：每凭据最近一次探测时间（内存态节流表，防过阈值后每 tick 重复探测）
     keepalive_last_probed: Mutex<HashMap<u64, Instant>>,
+    /// 逐凭据上游模型目录缓存（T3 动态模型发现）
+    model_cache: Mutex<HashMap<u64, ModelCacheEntry>>,
+    /// 每凭据模型目录刷新单飞锁（避免并发重复请求）
+    model_cache_locks: Mutex<HashMap<u64, Arc<TokioMutex<()>>>>,
+}
+
+/// 单条凭据的上游模型目录缓存条目
+#[derive(Debug, Clone)]
+struct ModelCacheEntry {
+    fetched_at: Instant,
+    response: crate::kiro::model::available_models::ListAvailableModelsResponse,
 }
 
 /// 凭据可用性诊断：被禁用的凭据
@@ -589,6 +600,8 @@ impl MultiTokenManager {
             stats_dirty: AtomicBool::new(false),
             keepalive_started_at: Mutex::new(Utc::now()),
             keepalive_last_probed: Mutex::new(HashMap::new()),
+            model_cache: Mutex::new(HashMap::new()),
+            model_cache_locks: Mutex::new(HashMap::new()),
         };
 
         // 如果有新分配的 ID、新生成的 machineId、补齐/修正 profileArn，或迁移了旧版误禁用状态，立即持久化到配置文件
@@ -1106,7 +1119,9 @@ impl MultiTokenManager {
                 let mut enabled_total = 0usize;
                 let mut enabled_tried = 0usize;
                 for entry in entries.iter().filter(|entry| {
-                    !entry.disabled && credential_matches_request(&entry.credentials, model, group)
+                    !entry.disabled
+                        && credential_matches_request(&entry.credentials, model, group)
+                        && self.credential_upstream_supports_model(entry.id, model)
                 }) {
                     enabled_total += 1;
                     if tried_ids.contains(&entry.id) {
@@ -1207,6 +1222,7 @@ impl MultiTokenManager {
                         !e.disabled
                             && !tried_ids.contains(&e.id)
                             && credential_matches_request(&e.credentials, model, group)
+                            && self.credential_upstream_supports_model(e.id, model)
                     })
                     .map(|e| (e.id, e.credentials.priority, e.credentials.runtime_only))
                     .collect();
@@ -1237,6 +1253,7 @@ impl MultiTokenManager {
                             !e.disabled
                                 && !tried_ids.contains(&e.id)
                                 && credential_matches_request(&e.credentials, model, group)
+                                && self.credential_upstream_supports_model(e.id, model)
                         })
                         .map(|e| (e.id, e.credentials.priority, e.credentials.runtime_only))
                         .collect();
@@ -1413,6 +1430,7 @@ impl MultiTokenManager {
                     e.id == bound_id
                         && !e.disabled
                         && credential_matches_request(&e.credentials, model, group)
+                        && self.credential_upstream_supports_model(e.id, model)
                 })
             };
 
@@ -3609,6 +3627,127 @@ impl MultiTokenManager {
         get_available_models(&credentials, &config, &token, proxy.as_ref()).await
     }
 
+    /// 带 TTL + singleflight 的模型目录查询（T3 动态模型发现）
+    ///
+    /// - 命中且未过期：直接返回缓存快照。
+    /// - 缺失或过期：加 per-credential 锁，锁内 double-check；只发一次上游请求。
+    /// - 上游失败但仍有旧缓存：降级返回旧缓存（`serve stale`）。
+    #[allow(dead_code)]
+    pub async fn get_available_models_cached(
+        &self,
+        id: u64,
+    ) -> anyhow::Result<crate::kiro::model::available_models::ListAvailableModelsResponse> {
+        let ttl_secs = self.config.read().model_cache_ttl_secs;
+        let ttl = StdDuration::from_secs(ttl_secs.max(1));
+
+        // Fast path: 命中未过期
+        if let Some(entry) = self.model_cache.lock().get(&id).cloned() {
+            if entry.fetched_at.elapsed() < ttl {
+                return Ok(entry.response);
+            }
+        }
+
+        // Slow path: 单飞锁
+        let lock = {
+            let mut locks = self.model_cache_locks.lock();
+            locks
+                .entry(id)
+                .or_insert_with(|| Arc::new(TokioMutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock().await;
+
+        // Double-check: 前一个持锁者可能已经刷新过
+        if let Some(entry) = self.model_cache.lock().get(&id).cloned() {
+            if entry.fetched_at.elapsed() < ttl {
+                return Ok(entry.response);
+            }
+        }
+
+        match self.get_available_models_for(id).await {
+            Ok(resp) => {
+                self.model_cache.lock().insert(
+                    id,
+                    ModelCacheEntry {
+                        fetched_at: Instant::now(),
+                        response: resp.clone(),
+                    },
+                );
+                Ok(resp)
+            }
+            Err(e) => {
+                // 上游失败：如仍有旧缓存则降级返回，避免瞬时故障影响 /v1/models 展示
+                if let Some(stale) = self.model_cache.lock().get(&id).cloned() {
+                    tracing::warn!(
+                        credential_id = id,
+                        age_secs = stale.fetched_at.elapsed().as_secs(),
+                        error = %e,
+                        "模型目录刷新失败，降级返回旧缓存"
+                    );
+                    return Ok(stale.response);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// 清理指定凭据的模型缓存（凭据编辑 / 刷新 / 删除时调用）
+    #[allow(dead_code)]
+    pub fn invalidate_model_cache(&self, id: u64) {
+        self.model_cache.lock().remove(&id);
+    }
+
+    /// 列出当前所有未被禁用凭据的 ID（用于遍历刷新模型目录）
+    pub fn list_enabled_credential_ids(&self) -> Vec<u64> {
+        self.entries
+            .lock()
+            .iter()
+            .filter(|e| !e.disabled)
+            .map(|e| e.id)
+            .collect()
+    }
+
+    /// 清理全部凭据的模型缓存（配置整体重载时调用）
+    #[allow(dead_code)]
+    pub fn invalidate_all_model_caches(&self) {
+        self.model_cache.lock().clear();
+    }
+
+    /// 快照式返回某凭据当前缓存的模型 ID 集合（若缓存缺失返回 None）
+    ///
+    /// 用于 T4 模型感知路由：命中且缺目标模型时可跳过，无缓存时允许尝试。
+    #[allow(dead_code)]
+    pub fn cached_model_ids_for(&self, id: u64) -> Option<Vec<String>> {
+        self.model_cache
+            .lock()
+            .get(&id)
+            .map(|e| e.response.models.iter().map(|m| m.model_id.clone()).collect())
+    }
+
+    /// T4 模型感知路由裁决：给定凭据是否能承接目标模型。
+    ///
+    /// 返回值：
+    /// - `true`：允许（模型在缓存中命中 或 缓存缺失）
+    /// - `false`：拒绝（缓存已有但目标模型不在其中）
+    ///
+    /// 目标模型为 `None` 时始终允许——上层 handler 未传模型信息时不做过滤。
+    /// 缓存过期的旧数据仍视为"命中即允许"，只清理由 TTL 触发的刷新覆盖。
+    fn credential_upstream_supports_model(&self, id: u64, model: Option<&str>) -> bool {
+        let Some(target) = model else {
+            return true;
+        };
+        let target_lc = target.to_ascii_lowercase();
+        let cache = self.model_cache.lock();
+        match cache.get(&id) {
+            None => true, // 无缓存：允许尝试（可能是新凭据 / 尚未预热）
+            Some(entry) => entry
+                .response
+                .models
+                .iter()
+                .any(|m| m.model_id.eq_ignore_ascii_case(&target_lc)),
+        }
+    }
+
     /// 添加新凭据（Admin API）
     ///
     /// # 流程
@@ -3825,6 +3964,9 @@ impl MultiTokenManager {
             // 删除凭据
             entries.retain(|e| e.id != id);
         }
+
+        // 清理模型目录缓存，避免下次 /v1/models 拿到已删凭据的目录
+        self.invalidate_model_cache(id);
 
         // 持久化更改
         self.persist_credentials()?;
