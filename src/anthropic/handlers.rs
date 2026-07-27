@@ -1133,11 +1133,44 @@ pub async fn get_models(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
     ];
 
     append_runtime_gateway_models(&mut models);
+    append_custom_models(&mut models);
 
     Json(ModelsResponse {
         object: "list".to_string(),
         data: models,
     })
+}
+
+/// 追加 `config.custom_models` 中的自定义模型。
+///
+/// 保持配置文件中的原始顺序；`id` 大小写不敏感冲突时跳过（内置项优先）。
+fn append_custom_models(models: &mut Vec<Model>) {
+    let now = 1783180800; // Jul 3, 2026 (与最新内置模型时间戳对齐)
+    for cm in crate::model::custom_models::all() {
+        if models
+            .iter()
+            .any(|existing| existing.id.eq_ignore_ascii_case(&cm.id))
+        {
+            continue;
+        }
+        let display_name = cm.display_name.clone().unwrap_or_else(|| cm.id.clone());
+        let owned_by = cm.owned_by.clone().unwrap_or_else(|| "custom".to_string());
+        let context_length = cm.context_window.or(Some(200_000));
+        let max_completion = cm.max_tokens.or(Some(64_000));
+        models.push(Model {
+            id: cm.id.clone(),
+            object: "model".to_string(),
+            created: now,
+            owned_by,
+            display_name,
+            model_type: "chat".to_string(),
+            max_tokens: 32000,
+            context_length,
+            max_completion_tokens: max_completion,
+            thinking: cm.supports_reasoning,
+            additional_model_request_fields_schema: None,
+        });
+    }
 }
 
 fn append_runtime_gateway_models(models: &mut Vec<Model>) {

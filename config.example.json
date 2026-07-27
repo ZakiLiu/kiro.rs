@@ -13,5 +13,6 @@
   "compression": {
     "maxRequestBodyBytes": 4718592,
     "maxInputTokens": 200000
-  }
+  },
+  "customModels": []
 }

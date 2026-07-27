@@ -22,6 +22,43 @@ pub enum ToolCompatibilityMode {
     Raw,
 }
 
+/// 自定义模型定义。
+///
+/// 用户在 `config.json` 的 `customModels` 数组里声明客户端模型别名到 Kiro 后端
+/// 模型 ID 的映射及元数据。运行期由 [`crate::model::custom_models`] 全局注册表按
+/// `id`（大小写不敏感）精确匹配，优先于内置的模糊映射逻辑——既能新增模型，也能
+/// 覆盖内置模型的映射。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomModel {
+    /// 客户端请求时使用的模型名（别名）。匹配大小写不敏感。
+    pub id: String,
+
+    /// 映射到的 Kiro 后端模型 ID（实际下发给上游）。
+    pub backend_id: String,
+
+    /// `/v1/models` 展示名（可选，缺省用 `id`）。
+    #[serde(default)]
+    pub display_name: Option<String>,
+
+    /// 上下文窗口大小（可选，缺省 200000）。
+    #[serde(default)]
+    pub context_window: Option<i32>,
+
+    /// 单次响应最大 token 数，用于 `/v1/models` 展示（可选，缺省 64000）。
+    #[serde(default)]
+    pub max_tokens: Option<i32>,
+
+    /// 是否支持原生 reasoning / `output_config`（可选，缺省 false）。
+    /// 命中的自定义模型置 true 时，会按 backend_id 放行 `additionalModelRequestFields`。
+    #[serde(default)]
+    pub supports_reasoning: Option<bool>,
+
+    /// `/v1/models` 的 `owned_by` 字段（可选，缺省 "custom"）。
+    #[serde(default)]
+    pub owned_by: Option<String>,
+}
+
 /// Prompt Preset 预设
 ///
 /// 可通过 `x-preset-id` 请求头选择，将 system_prompt 前置注入到请求中。
@@ -178,6 +215,12 @@ pub struct Config {
     /// Prompt 预设列表
     #[serde(default)]
     pub presets: Vec<Preset>,
+
+    /// 自定义模型定义列表（客户端别名 → Kiro 后端模型 ID）
+    ///
+    /// 优先级最高，先于内置模糊映射查询；未命中时回退到原有映射逻辑。
+    #[serde(default)]
+    pub custom_models: Vec<CustomModel>,
 
     // ── 运维管理（从 OTHER 移植） ──
     /// 负载均衡模式："priority"（默认，按优先级）或 "balanced"（均衡分配）
@@ -538,6 +581,7 @@ impl Default for Config {
             cross_request_cache_enabled: default_true(),
             cross_request_cache_max_entries: default_cross_request_cache_max_entries(),
             presets: Vec::new(),
+            custom_models: Vec::new(),
             load_balancing_mode: default_load_balancing_mode(),
             trace_enabled: false,
             trace_retention_days: default_trace_retention_days(),

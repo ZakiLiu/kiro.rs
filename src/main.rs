@@ -46,6 +46,16 @@ async fn main() {
         tracing::error!("加载配置失败: {}", e);
         std::process::exit(1);
     });
+
+    // 装载自定义模型注册表（先于任何请求路由；OnceLock 只允许 set 一次）
+    crate::model::custom_models::init(config.custom_models.clone());
+    if !config.custom_models.is_empty() {
+        tracing::info!(
+            count = config.custom_models.len(),
+            "已装载 customModels 自定义模型映射"
+        );
+    }
+
     let config = Arc::new(RwLock::new(config));
 
     // 加载凭证（支持单对象或数组格式）

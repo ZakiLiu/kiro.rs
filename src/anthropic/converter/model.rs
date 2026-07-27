@@ -68,13 +68,22 @@ pub(super) const KIRO_MODEL_DEFAULT: &str = KIRO_MODEL_SONNET_4_5;
 
 /// 模型映射：将 Anthropic / OpenAI / Gemini 模型名映射到 Kiro 模型 ID
 ///
-/// 映射规则：
-/// - Claude 家族：按版本号精确映射
-/// - GPT 家族：全部映射到对应 Claude 模型
-/// - Gemini 家族：全部映射到对应 Claude 模型
-/// - `-thinking` / `-agentic` 后缀会被剥离后再映射
-/// - 未知模型返回 None（由调用方决定兜底策略）
+/// 映射规则（按优先级）：
+/// 1. `config.custom_models` 里显式声明的别名（大小写不敏感，`-thinking` 会剥离后再试一次）
+/// 2. Claude 家族：按版本号精确映射
+/// 3. GPT 家族：全部映射到对应 Claude 模型
+/// 4. Gemini 家族：全部映射到对应 Claude 模型
+/// 5. 已知合法 Kiro 模型 ID：`claude-*` 直通
+/// 6. 未知但格式合法的 ID（如 `glm-5`、`minimax-m2.5`）：原样透传给上游
+/// 7. 其它（含非法字符 / 空）：返回 None
+///
+/// `-thinking` / `-agentic` 后缀会被剥离后再映射（除非命中显式 custom 条目）。
 pub fn map_model(model: &str) -> Option<String> {
+    // 1) customModels 优先（含 -thinking 剥离回退，由 lookup 内部处理）
+    if let Some(cm) = crate::model::custom_models::lookup(model) {
+        return Some(cm.backend_id.clone());
+    }
+
     let normalized_model = normalize_model_name(model);
 
     // Claude 家族
@@ -180,7 +189,25 @@ pub fn map_model(model: &str) -> Option<String> {
         return Some(normalized_model);
     }
 
+    // 未知但格式合法的 ID 原样透传：交由上游决定可用性（避免 kiro 上新模型时被前端拦截）。
+    // 合法字符集：`[a-zA-Z0-9._\-]`；空字符串 / 含空格 / 含非法字符则返回 None。
+    if is_passthrough_safe(&normalized_model) {
+        return Some(normalized_model);
+    }
+
     None
+}
+
+/// 判断模型 ID 是否可以原样透传给上游。
+///
+/// 允许：`a-z`、`A-Z`、`0-9`、`.`、`_`、`-`；不允许空字符串。
+fn is_passthrough_safe(model: &str) -> bool {
+    if model.is_empty() {
+        return false;
+    }
+    model
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
 
 /// 判断模型名是否为 agentic 变体
@@ -223,3 +250,30 @@ impl std::fmt::Display for ConversionError {
 }
 
 impl std::error::Error for ConversionError {}
+
+#[cfg(test)]
+mod passthrough_tests {
+    use super::*;
+
+    #[test]
+    fn passthrough_allows_known_open_ids() {
+        assert_eq!(map_model("glm-5"), Some("glm-5".to_string()));
+        assert_eq!(map_model("minimax-m2.5"), Some("minimax-m2.5".to_string()));
+        assert_eq!(map_model("deepseek-3.2"), Some("deepseek-3.2".to_string()));
+    }
+
+    #[test]
+    fn passthrough_rejects_illegal_ids() {
+        assert_eq!(map_model(""), None);
+        assert_eq!(map_model("has space"), None);
+        assert_eq!(map_model("bad$char"), None);
+    }
+
+    #[test]
+    fn passthrough_keeps_claude_direct() {
+        assert_eq!(
+            map_model("claude-opus-4.6"),
+            Some("claude-opus-4.6".to_string())
+        );
+    }
+}
