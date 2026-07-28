@@ -260,6 +260,31 @@ struct NonStreamRequestContext<'a> {
     adaptive_outcome: Option<&'a AdaptiveCompressionOutcome>,
 }
 
+/// 判断 Kiro request_body 的最新一轮 user 消息是否携带非空 `toolResults`。
+///
+/// 用于 "空 tool_result 回合" 判别的前置条件——只有在工具结果继续场景下，
+/// 上游偶发回一个只有 thinking / 无可见文本的空洞回合时才需要重试。
+fn request_is_tool_result_continuation(request_body: &str) -> bool {
+    let v: serde_json::Value = match serde_json::from_str(request_body) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    v.pointer(
+        "/conversationState/currentMessage/userInputMessage/userInputMessageContext/toolResults",
+    )
+    .and_then(|arr| arr.as_array())
+    .map(|arr| !arr.is_empty())
+    .unwrap_or(false)
+}
+
+/// 判断解析出的助手回合是否 "空洞继续"：无可见文本、无工具调用、无终止原因。
+///
+/// 纯 thinking / reasoning 内容不足以构成有效继续——Codex 等下游需要真实
+/// assistant 文本或 client tool_use 才能保持任务生命周期正确。
+fn is_empty_assistant_turn(cleaned_text: &str, tool_uses_len: usize, stop_reason: &str) -> bool {
+    cleaned_text.trim().is_empty() && tool_uses_len == 0 && stop_reason == "end_turn"
+}
+
 fn build_cache_profile(
     cache_tracker: &crate::anthropic::cache_tracker::CacheTracker,
     payload: &MessagesRequest,
@@ -2172,59 +2197,70 @@ async fn handle_non_stream_request(
         }
     };
 
-    // 解析事件流
-    let mut decoder = EventStreamDecoder::new();
-    if let Err(e) = decoder.feed(&body_bytes) {
-        tracing::warn!("缓冲区溢出: {}", e);
-    }
+    // === T3 空 tool_result 判别循环 ===
+    // 上游 Kiro 偶发在收到 tool_result 后返回只含 thinking 无可见文本的空洞回合，
+    // 直接序列化为 end_turn 会让 Codex 等下游误以为任务完成。此处仅在最后一轮
+    // user 消息含 toolResults 且回合确实"空洞"时重试一次；第二次仍空洞返回 502。
+    let is_tool_result_turn = request_is_tool_result_continuation(context.request_body);
+    let mut retry_used = false;
+    let mut current_body_bytes = body_bytes;
+    let mut current_api_result_credential_id = api_result.credential_id;
+    let mut current_api_result_attempts = api_result.attempts.clone();
 
-    let mut text_content = String::new();
-    // reasoningContentEvent 累积（thinking 模型独立推理流），最终作为 thinking content block 返回
-    let mut reasoning_text = String::new();
-    let mut reasoning_signature: Option<String> = None;
-    let mut tool_uses: Vec<serde_json::Value> = Vec::new();
-    let mut has_tool_use = false;
-    let mut stop_reason = "end_turn".to_string();
-    #[cfg(feature = "sensitive-logs")]
-    let mut context_input_tokens_for_log: Option<i32> = None;
-    // 从 meteringEvent 透传的 credit usage，仅用于最终 usage 字段
-    let mut metering: Option<MeteringEvent> = None;
+    loop {
+        // 解析事件流
+        let mut decoder = EventStreamDecoder::new();
+        if let Err(e) = decoder.feed(&current_body_bytes) {
+            tracing::warn!("缓冲区溢出: {}", e);
+        }
 
-    // 收集工具调用的增量 JSON
-    let mut tool_json_buffers: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+        let mut text_content = String::new();
+        // reasoningContentEvent 累积（thinking 模型独立推理流），最终作为 thinking content block 返回
+        let mut reasoning_text = String::new();
+        let mut reasoning_signature: Option<String> = None;
+        let mut tool_uses: Vec<serde_json::Value> = Vec::new();
+        let mut has_tool_use = false;
+        let mut stop_reason = "end_turn".to_string();
+        #[cfg(feature = "sensitive-logs")]
+        let mut context_input_tokens_for_log: Option<i32> = None;
+        // 从 meteringEvent 透传的 credit usage，仅用于最终 usage 字段
+        let mut metering: Option<MeteringEvent> = None;
 
-    for result in decoder.decode_iter() {
-        match result {
-            Ok(frame) => {
-                if let Ok(event) = Event::from_frame(frame) {
-                    match event {
-                        Event::AssistantResponse(resp) => {
-                            text_content.push_str(&resp.content);
-                        }
-                        Event::ReasoningContent(reasoning) => {
-                            reasoning_text.push_str(&reasoning.text);
-                            if let Some(sig) = reasoning.signature {
-                                reasoning_signature = Some(sig);
+        // 收集工具调用的增量 JSON
+        let mut tool_json_buffers: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+
+        for result in decoder.decode_iter() {
+            match result {
+                Ok(frame) => {
+                    if let Ok(event) = Event::from_frame(frame) {
+                        match event {
+                            Event::AssistantResponse(resp) => {
+                                text_content.push_str(&resp.content);
                             }
-                        }
-                        Event::ToolUse(tool_use) => {
-                            has_tool_use = true;
+                            Event::ReasoningContent(reasoning) => {
+                                reasoning_text.push_str(&reasoning.text);
+                                if let Some(sig) = reasoning.signature {
+                                    reasoning_signature = Some(sig);
+                                }
+                            }
+                            Event::ToolUse(tool_use) => {
+                                has_tool_use = true;
 
-                            // 累积工具的 JSON 输入
-                            let buffer = tool_json_buffers
-                                .entry(tool_use.tool_use_id.clone())
-                                .or_default();
-                            buffer.push_str(&tool_use.input);
+                                // 累积工具的 JSON 输入
+                                let buffer = tool_json_buffers
+                                    .entry(tool_use.tool_use_id.clone())
+                                    .or_default();
+                                buffer.push_str(&tool_use.input);
 
-                            // 如果是完整的工具调用，添加到列表
-                            if tool_use.stop {
-                                let input: serde_json::Value = if buffer.trim().is_empty() {
-                                    // 上游可能省略无参工具的 input 字段（或传空字符串）。
-                                    // 这里将其视为合法的空对象，避免 EOF 解析错误导致日志噪音。
-                                    serde_json::json!({})
-                                } else {
-                                    serde_json::from_str(buffer).unwrap_or_else(|e| {
+                                // 如果是完整的工具调用，添加到列表
+                                if tool_use.stop {
+                                    let input: serde_json::Value = if buffer.trim().is_empty() {
+                                        // 上游可能省略无参工具的 input 字段（或传空字符串）。
+                                        // 这里将其视为合法的空对象，避免 EOF 解析错误导致日志噪音。
+                                        serde_json::json!({})
+                                    } else {
+                                        serde_json::from_str(buffer).unwrap_or_else(|e| {
                                         // 检测是否为截断导致的解析失败
                                         if let Some(truncation_info) =
                                             super::truncation::detect_truncation(
@@ -2261,215 +2297,292 @@ async fn handle_non_stream_request(
                                         );
                                         serde_json::json!({})
                                     })
-                                };
+                                    };
 
-                                // 释放已完成的 buffer，避免请求处理期间内存重复占用
-                                tool_json_buffers.remove(&tool_use.tool_use_id);
+                                    // 释放已完成的 buffer，避免请求处理期间内存重复占用
+                                    tool_json_buffers.remove(&tool_use.tool_use_id);
 
-                                let original_name = context
-                                    .tool_name_map
-                                    .get(&tool_use.name)
-                                    .cloned()
-                                    .unwrap_or_else(|| tool_use.name.clone());
+                                    let original_name = context
+                                        .tool_name_map
+                                        .get(&tool_use.name)
+                                        .cloned()
+                                        .unwrap_or_else(|| tool_use.name.clone());
 
-                                tool_uses.push(json!({
-                                    "type": "tool_use",
-                                    "id": tool_use.tool_use_id,
-                                    "name": original_name,
-                                    "input": input
-                                }));
+                                    tool_uses.push(json!({
+                                        "type": "tool_use",
+                                        "id": tool_use.tool_use_id,
+                                        "name": original_name,
+                                        "input": input
+                                    }));
+                                }
                             }
-                        }
-                        Event::ContextUsage(context_usage) => {
-                            // 从上下文使用百分比计算实际的 input_tokens
-                            let context_window =
-                                super::types::get_context_window_size(context.model) as f64;
-                            let actual_input_tokens =
-                                (context_usage.context_usage_percentage * context_window / 100.0)
-                                    as i32;
-                            #[cfg(feature = "sensitive-logs")]
+                            Event::ContextUsage(context_usage) => {
+                                // 从上下文使用百分比计算实际的 input_tokens
+                                let context_window =
+                                    super::types::get_context_window_size(context.model) as f64;
+                                let actual_input_tokens =
+                                    (context_usage.context_usage_percentage * context_window
+                                        / 100.0) as i32;
+                                #[cfg(feature = "sensitive-logs")]
+                                {
+                                    context_input_tokens_for_log = Some(actual_input_tokens);
+                                }
+                                // 上下文使用量达到 100% 时，设置 stop_reason 为 model_context_window_exceeded
+                                if context_usage.context_usage_percentage >= 100.0 {
+                                    stop_reason = "model_context_window_exceeded".to_string();
+                                }
+                                tracing::debug!(
+                                    "收到 contextUsageEvent: {}%, 计算 input_tokens: {} (context_window: {})",
+                                    context_usage.context_usage_percentage,
+                                    actual_input_tokens,
+                                    context_window as i32
+                                );
+                            }
+                            Event::Metering(event_metering) => {
+                                tracing::debug!(
+                                    usage = event_metering.usage,
+                                    unit = %event_metering.unit,
+                                    unit_plural = %event_metering.unit_plural,
+                                    "收到 meteringEvent"
+                                );
+                                metering = Some(event_metering);
+                            }
+                            Event::Exception { exception_type, .. }
+                                if exception_type == "ContentLengthExceededException" =>
                             {
-                                context_input_tokens_for_log = Some(actual_input_tokens);
+                                stop_reason = "max_tokens".to_string();
                             }
-                            // 上下文使用量达到 100% 时，设置 stop_reason 为 model_context_window_exceeded
-                            if context_usage.context_usage_percentage >= 100.0 {
-                                stop_reason = "model_context_window_exceeded".to_string();
-                            }
-                            tracing::debug!(
-                                "收到 contextUsageEvent: {}%, 计算 input_tokens: {} (context_window: {})",
-                                context_usage.context_usage_percentage,
-                                actual_input_tokens,
-                                context_window as i32
-                            );
+                            _ => {}
                         }
-                        Event::Metering(event_metering) => {
-                            tracing::debug!(
-                                usage = event_metering.usage,
-                                unit = %event_metering.unit,
-                                unit_plural = %event_metering.unit_plural,
-                                "收到 meteringEvent"
-                            );
-                            metering = Some(event_metering);
-                        }
-                        Event::Exception { exception_type, .. }
-                            if exception_type == "ContentLengthExceededException" =>
-                        {
-                            stop_reason = "max_tokens".to_string();
-                        }
-                        _ => {}
                     }
                 }
+                Err(e) => {
+                    tracing::warn!("解码事件失败: {}", e);
+                }
             }
-            Err(e) => {
-                tracing::warn!("解码事件失败: {}", e);
+        }
+
+        // 确定 stop_reason
+        if has_tool_use && stop_reason == "end_turn" {
+            stop_reason = "tool_use".to_string();
+        }
+
+        // 提前提取 thinking 判断"空洞"用（真正 content 组装在 loop 外）
+        let (probe_extracted_thinking, probe_cleaned_text) = extract_thinking_xml(&text_content);
+
+        // T3 空洞检测：只有"工具结果继续 + 无可见文本 + 无工具调用 + end_turn"才判定
+        if is_tool_result_turn
+            && is_empty_assistant_turn(&probe_cleaned_text, tool_uses.len(), &stop_reason)
+        {
+            if !retry_used {
+                retry_used = true;
+                tracing::warn!(
+                    model = %context.model,
+                    credential_id = current_api_result_credential_id,
+                    had_thinking = %(!probe_extracted_thinking.is_empty() || !reasoning_text.is_empty()),
+                    "检测到工具结果后空洞回合，触发一次重试（丢弃当前 thinking，避免复读）"
+                );
+                // 重发同一请求；使用同一凭据池策略。失败或再次空洞时返回 502。
+                match provider
+                    .call_api(context.request_body, context.user_id, auth.group.as_deref())
+                    .await
+                {
+                    Ok(retry_result) => {
+                        let retry_credential_id = retry_result.credential_id;
+                        let retry_attempts = retry_result.attempts.clone();
+                        let retry_bytes = match retry_result.response.bytes().await {
+                            Ok(b) => b,
+                            Err(e) => {
+                                tracing::error!("空洞回合重试读取响应体失败: {}", e);
+                                return (
+                                    StatusCode::BAD_GATEWAY,
+                                    Json(ErrorResponse::new(
+                                        "api_error",
+                                        "上游返回空洞回合且重试读取失败".to_string(),
+                                    )),
+                                )
+                                    .into_response();
+                            }
+                        };
+                        current_body_bytes = retry_bytes;
+                        // 更新 current_api_result 用于后续 telemetry；response 字段本身已被消费，
+                        // 后续只用 credential_id / attempts，不再触碰 response。
+                        current_api_result_credential_id = retry_credential_id;
+                        current_api_result_attempts = retry_attempts;
+                        continue;
+                    }
+                    Err(e) => {
+                        let crate::kiro::provider::ApiCallError { error, .. } = e;
+                        tracing::warn!(error = %error, "空洞回合重试请求失败");
+                        return (
+                            StatusCode::BAD_GATEWAY,
+                            Json(ErrorResponse::new(
+                                "api_error",
+                                "上游返回空洞回合且重试失败".to_string(),
+                            )),
+                        )
+                            .into_response();
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    model = %context.model,
+                    credential_id = current_api_result_credential_id,
+                    "工具结果继续场景重试后仍为空洞回合，返回 502"
+                );
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorResponse::new(
+                        "api_error",
+                        "上游连续返回空洞回合（tool_result 继续场景）".to_string(),
+                    )),
+                )
+                    .into_response();
             }
         }
-    }
 
-    // 确定 stop_reason
-    if has_tool_use && stop_reason == "end_turn" {
-        stop_reason = "tool_use".to_string();
-    }
+        // 非空洞回合：跳出重试循环，继续走响应组装
+        // 构建响应内容
+        let mut content: Vec<serde_json::Value> = Vec::new();
 
-    // 构建响应内容
-    let mut content: Vec<serde_json::Value> = Vec::new();
+        // 实测发现：Q 上游对**非流式**请求不发独立 reasoningContentEvent，
+        // 而是把推理以 `<thinking>...</thinking>` XML 标签嵌入 assistantResponse 文本。
+        // 这里从 text_content 提取 thinking 标签升级为独立 thinking content_block，
+        // 跟流式 reasoningContentEvent 路径保持响应结构一致。
+        // 若没有 XML 标签但有 reasoning_text（流式情况下被聚合走非流式 handler 的边缘场景），
+        // 直接用 reasoning_text。
+        let cleaned_text = probe_cleaned_text;
+        let extracted_thinking = probe_extracted_thinking;
+        let final_thinking = if !reasoning_text.is_empty() {
+            reasoning_text
+        } else {
+            extracted_thinking
+        };
 
-    // 实测发现：Q 上游对**非流式**请求不发独立 reasoningContentEvent，
-    // 而是把推理以 `<thinking>...</thinking>` XML 标签嵌入 assistantResponse 文本。
-    // 这里从 text_content 提取 thinking 标签升级为独立 thinking content_block，
-    // 跟流式 reasoningContentEvent 路径保持响应结构一致。
-    // 若没有 XML 标签但有 reasoning_text（流式情况下被聚合走非流式 handler 的边缘场景），
-    // 直接用 reasoning_text。
-    let (extracted_thinking, cleaned_text) = extract_thinking_xml(&text_content);
-    let final_thinking = if !reasoning_text.is_empty() {
-        reasoning_text
-    } else {
-        extracted_thinking
-    };
-
-    // thinking 块必须排在 text/tool 之前（Anthropic 协议要求）。
-    // signature 字段必须存在（空字符串可被客户端 SDK 接受，但有 signature 才能写回 history）。
-    if !final_thinking.is_empty() {
-        content.push(json!({
-            "type": "thinking",
-            "thinking": final_thinking,
-            "signature": reasoning_signature.unwrap_or_default(),
-        }));
-    }
-
-    if !cleaned_text.is_empty() {
-        content.push(json!({
-            "type": "text",
-            "text": cleaned_text
-        }));
-    }
-
-    content.extend(tool_uses);
-
-    // 估算输出 tokens
-    let output_tokens = token::estimate_output_tokens(&content);
-
-    // non-stream 与 stream 保持一致：始终使用本地估算的 input_tokens 作为最终口径。
-    let final_input_tokens = context.input_tokens;
-    let billed_input_tokens = final_cache_context
-        .map(|ctx| {
-            billed_input_tokens(
-                final_input_tokens,
-                ctx.cache_creation_input_tokens,
-                ctx.cache_read_input_tokens,
-            )
-        })
-        .unwrap_or(final_input_tokens);
-
-    #[cfg(feature = "sensitive-logs")]
-    tracing::info!(
-        estimated_input_tokens = context.input_tokens,
-        context_input_tokens = ?context_input_tokens_for_log,
-        final_input_tokens,
-        billed_input_tokens,
-        output_tokens,
-        "Non-stream usage: final_input_tokens={} (估算值), context_input_tokens={} (上游值), billed_input_tokens={}, output_tokens={}",
-        final_input_tokens,
-        context_input_tokens_for_log.map_or("N/A".to_string(), |v| v.to_string()),
-        billed_input_tokens,
-        output_tokens
-    );
-
-    let response_body = {
-        let mut usage = json!({
-            "input_tokens": billed_input_tokens,
-            "output_tokens": output_tokens
-        });
-        if let Some(ref metering) = metering {
-            inject_credit_usage_fields(&mut usage, metering);
-        }
-        if let Some(cache_context) = final_cache_context {
-            inject_cache_usage_fields(&mut usage, cache_context);
+        // thinking 块必须排在 text/tool 之前（Anthropic 协议要求）。
+        // signature 字段必须存在（空字符串可被客户端 SDK 接受，但有 signature 才能写回 history）。
+        if !final_thinking.is_empty() {
+            content.push(json!({
+                "type": "thinking",
+                "thinking": final_thinking,
+                "signature": reasoning_signature.unwrap_or_default(),
+            }));
         }
 
-        json!({
-            "id": format!("msg_{}", Uuid::new_v4().to_string().replace('-', "")),
-            "type": "message",
-            "role": "assistant",
-            "content": content,
-            "model": context.model,
-            "stop_reason": stop_reason,
-            "stop_sequence": null,
-            "usage": usage
-        })
-    };
+        if !cleaned_text.is_empty() {
+            content.push(json!({
+                "type": "text",
+                "text": cleaned_text
+            }));
+        }
 
-    // 记录 RequestCompleted 指标（非流式：完整请求延迟 + token 统计）
-    let total_ms = context.request_start.elapsed().as_millis() as u64;
-    tracing::info!(
-        ttfb_ms = ttfb_ms,
-        total_ms = total_ms,
-        credential_id = api_result.credential_id,
-        model = %context.model,
-        output_tokens = output_tokens,
-        "请求完成（非流式）"
-    );
-    if let Some(metrics) = context.metrics {
-        metrics.record(
-            MetricEvent::new(MetricEventType::RequestCompleted)
-                .with_model(context.model)
-                .with_status("success")
-                .with_latency_ms(total_ms)
-                .with_tokens(context.input_tokens, output_tokens),
-        );
-    }
+        content.extend(tool_uses);
 
-    let credits = metering.as_ref().map(|m| m.usage).unwrap_or(0.0);
-    record_request_telemetry(
-        state,
-        auth,
-        TelemetryData {
-            model: context.model,
-            is_stream: false,
-            credential_id: api_result.credential_id,
-            input_tokens: billed_input_tokens,
+        // 估算输出 tokens
+        let output_tokens = token::estimate_output_tokens(&content);
+
+        // non-stream 与 stream 保持一致：始终使用本地估算的 input_tokens 作为最终口径。
+        let final_input_tokens = context.input_tokens;
+        let billed_input_tokens = final_cache_context
+            .map(|ctx| {
+                billed_input_tokens(
+                    final_input_tokens,
+                    ctx.cache_creation_input_tokens,
+                    ctx.cache_read_input_tokens,
+                )
+            })
+            .unwrap_or(final_input_tokens);
+
+        #[cfg(feature = "sensitive-logs")]
+        tracing::info!(
+            estimated_input_tokens = context.input_tokens,
+            context_input_tokens = ?context_input_tokens_for_log,
+            final_input_tokens,
+            billed_input_tokens,
             output_tokens,
-            cache_creation_tokens: final_cache_context
-                .map(|c| c.cache_creation_input_tokens)
-                .unwrap_or(0),
-            cache_read_tokens: final_cache_context
-                .map(|c| c.cache_read_input_tokens)
-                .unwrap_or(0),
-            credits,
-            duration_ms: total_ms,
-            status: "success",
-            attempts: api_result.attempts,
-            first_token_ms: Some(ttfb_ms),
-            error_message: None,
-        },
-    );
+            "Non-stream usage: final_input_tokens={} (估算值), context_input_tokens={} (上游值), billed_input_tokens={}, output_tokens={}",
+            final_input_tokens,
+            context_input_tokens_for_log.map_or("N/A".to_string(), |v| v.to_string()),
+            billed_input_tokens,
+            output_tokens
+        );
 
-    (
-        StatusCode::OK,
-        anthropic_response_headers(),
-        Json(response_body),
-    )
-        .into_response()
+        let response_body = {
+            let mut usage = json!({
+                "input_tokens": billed_input_tokens,
+                "output_tokens": output_tokens
+            });
+            if let Some(ref metering) = metering {
+                inject_credit_usage_fields(&mut usage, metering);
+            }
+            if let Some(cache_context) = final_cache_context {
+                inject_cache_usage_fields(&mut usage, cache_context);
+            }
+
+            json!({
+                "id": format!("msg_{}", Uuid::new_v4().to_string().replace('-', "")),
+                "type": "message",
+                "role": "assistant",
+                "content": content,
+                "model": context.model,
+                "stop_reason": stop_reason,
+                "stop_sequence": null,
+                "usage": usage
+            })
+        };
+
+        // 记录 RequestCompleted 指标（非流式：完整请求延迟 + token 统计）
+        let total_ms = context.request_start.elapsed().as_millis() as u64;
+        tracing::info!(
+            ttfb_ms = ttfb_ms,
+            total_ms = total_ms,
+            credential_id = current_api_result_credential_id,
+            model = %context.model,
+            output_tokens = output_tokens,
+            "请求完成（非流式）"
+        );
+        if let Some(metrics) = context.metrics {
+            metrics.record(
+                MetricEvent::new(MetricEventType::RequestCompleted)
+                    .with_model(context.model)
+                    .with_status("success")
+                    .with_latency_ms(total_ms)
+                    .with_tokens(context.input_tokens, output_tokens),
+            );
+        }
+
+        let credits = metering.as_ref().map(|m| m.usage).unwrap_or(0.0);
+        record_request_telemetry(
+            state,
+            auth,
+            TelemetryData {
+                model: context.model,
+                is_stream: false,
+                credential_id: current_api_result_credential_id,
+                input_tokens: billed_input_tokens,
+                output_tokens,
+                cache_creation_tokens: final_cache_context
+                    .map(|c| c.cache_creation_input_tokens)
+                    .unwrap_or(0),
+                cache_read_tokens: final_cache_context
+                    .map(|c| c.cache_read_input_tokens)
+                    .unwrap_or(0),
+                credits,
+                duration_ms: total_ms,
+                status: "success",
+                attempts: std::mem::take(&mut current_api_result_attempts),
+                first_token_ms: Some(ttfb_ms),
+                error_message: None,
+            },
+        );
+
+        break (
+            StatusCode::OK,
+            anthropic_response_headers(),
+            Json(response_body),
+        )
+            .into_response();
+    } // end of T3 retry loop
 }
 
 /// 检测模型名是否包含 "thinking" 后缀，若包含则覆写 thinking 配置
@@ -2664,6 +2777,48 @@ fn is_likely_base64(s: &str) -> bool {
     s.bytes()
         .take(100)
         .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
+}
+
+#[cfg(test)]
+mod empty_tool_result_tests {
+    use super::*;
+
+    #[test]
+    fn empty_turn_only_when_all_conditions_meet() {
+        assert!(is_empty_assistant_turn("", 0, "end_turn"));
+        assert!(is_empty_assistant_turn("   \n\t  ", 0, "end_turn"));
+        // 有文本 → 非空洞
+        assert!(!is_empty_assistant_turn("hello", 0, "end_turn"));
+        // 有工具调用 → 非空洞
+        assert!(!is_empty_assistant_turn("", 1, "end_turn"));
+        // 非 end_turn → 非空洞（tool_use / max_tokens 等）
+        assert!(!is_empty_assistant_turn("", 0, "tool_use"));
+        assert!(!is_empty_assistant_turn("", 0, "max_tokens"));
+    }
+
+    #[test]
+    fn request_probe_detects_tool_result_continuation() {
+        let with = r#"{
+            "conversationState": {
+                "currentMessage": {
+                    "userInputMessage": {
+                        "userInputMessageContext": {
+                            "toolResults": [{"toolUseId":"x","content":[],"status":"success"}]
+                        }
+                    }
+                }
+            }
+        }"#;
+        assert!(request_is_tool_result_continuation(with));
+
+        let empty = r#"{"conversationState":{"currentMessage":{"userInputMessage":{"userInputMessageContext":{"toolResults":[]}}}}}"#;
+        assert!(!request_is_tool_result_continuation(empty));
+
+        let missing = r#"{"conversationState":{"currentMessage":{"userInputMessage":{"userInputMessageContext":{}}}}}"#;
+        assert!(!request_is_tool_result_continuation(missing));
+
+        assert!(!request_is_tool_result_continuation("not json"));
+    }
 }
 
 #[cfg(test)]
