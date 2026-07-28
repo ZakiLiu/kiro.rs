@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v2.3.0] - 2026-07-28
 
 ### Added
 - **customModels 配置驱动模型映射** — `config.json` 新增 `customModels` 数组，可声明客户端模型别名到 Kiro 后端模型 ID 的映射，可覆盖内置模糊映射，支持 `displayName` / `contextWindow` / `maxTokens` / `supportsReasoning` / `ownedBy` 元数据；`-thinking` 后缀自动剥离回退（`src/model/custom_models.rs`、`src/anthropic/converter/model.rs`）
