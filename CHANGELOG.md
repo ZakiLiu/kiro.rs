@@ -9,16 +9,20 @@
 - **模型感知路由** — MultiTokenManager 加 `credential_upstream_supports_model`：缓存命中且含目标模型时允许，缓存明确不含时跳过，缓存缺失时允许尝试；priority / balanced / affinity 3 处凭据选择路径均接入
 - **Admin 账号池模型面板 API** — `GET /api/admin/models` 按账号池策略选凭据返回模型目录（走缓存、不改写调度指针）；`POST /api/admin/models/test` 走 `kiro_provider.call_api` 常规链路发最小请求验证目标模型可调用性
 - **customModels /v1/models 展示** — 所有自定义模型追加到 `/v1/models` 列表尾部，与内置模型 id 冲突时跳过
+- **Admin 账号池模型面板前端** — admin-ui 新增"模型"tab，网格展示池模型 + display_name / model_id / 输入&输出 Token badge，每张卡"测试"按钮触发真实模型测试对话框（`admin-ui/src/components/models-page.tsx`）
+
+### Fixed
+- **空 tool_result 回合判别与重试（非流式）** — 上游 Kiro 偶发在 tool_result 继续场景下回一个只含 thinking 无可见 assistant 文本的空洞回合，旧代码序列化为 `end_turn` 会让 Codex 等下游误标任务完成。修复后仅在最后一轮 user 消息含非空 `toolResults` 且回合无文本 / 无 tool_use / 无终止原因时判定为"空洞继续"，用同一请求体重试一次；重试仍空洞（或重试请求失败）返回 502 而非静默 end_turn（`src/anthropic/handlers.rs`）
 
 ### Changed
 - **balanced 模式状态语义修正** — 状态接口在 `balanced` 模式下 `currentId` 固定 `0`、所有凭据 `isCurrent=false`，避免"看起来某个凭据一直在跑"的误导；priority 模式保留原逻辑
 - **OpenAI resolve_openai_model_id 顺序调整** — 先用 openai 侧归一化产物走 `map_model`，让 `deepseek-v3.2 → deepseek-3.2`、`MiniMax M2.5 → minimax-m2.5` 等 openai-only 归一化规则先于通用透传兜底生效
 
 ### Notes
-- 移植自参考项目 v0.7.2 (PR #46 @bestK) 与 v0.7.3 动态模型发现 / 未知模型开放透传章节
+- 移植自参考项目 v0.7.1 空 tool_result 判别、v0.7.2 (PR #46 @bestK) customModels、v0.7.3 动态模型发现 / 未知模型开放透传
 - 参考项目的 `meteringEvent credit` 字段透传本项目 v2.0.41 已明确移除，不合并
 - 参考项目的远程 Social 登录回调已被上游自身回退（Kiro 收紧 OAuth 白名单），不合并
-- 前端 admin-ui 模型面板留待独立 commit（需 pnpm build 验证）
+- Batch 2 中的 Codex CLI 完整工具桥接（additional_tools 双源、ToolKindMap、custom_tool_call、namespace 展平、SSE 事件序列）暂不合并——本地无 Codex CLI 端到端验证条件，风险高于收益
 
 ## [v2.2.2] - 2026-07-16
 
