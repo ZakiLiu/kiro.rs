@@ -171,6 +171,23 @@ export async function getCredentialModels(id: number): Promise<AvailableModelsRe
   return data
 }
 
+// 按账号池策略查询模型目录（走 T3 缓存，不改写调度指针）
+export async function getPoolModels(): Promise<import('@/types/api').AdminModelsResponse> {
+  const { data } =
+    await api.get<import('@/types/api').AdminModelsResponse>(`/models`)
+  return data
+}
+
+// 用所选凭据向目标模型发最小化请求，验证实际可调用性
+export async function testPoolModel(
+  req: import('@/types/api').AdminTestModelRequest
+): Promise<import('@/types/api').AdminTestModelResponse> {
+  const { data } = await api.post<
+    import('@/types/api').AdminTestModelResponse
+  >(`/models/test`, req)
+  return data
+}
+
 // 添加新凭据
 export async function addCredential(
   req: AddCredentialRequest

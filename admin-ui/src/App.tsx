@@ -4,7 +4,7 @@ import { LoginPage } from "@/components/login-page";
 import { Toaster } from "@/components/ui/sonner";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { Button } from "@/components/ui/button";
-import { Activity, KeyRound, Server, LogOut, Moon, Sun, ScrollText, FolderTree } from "lucide-react";
+import { Activity, KeyRound, Server, LogOut, Moon, Sun, ScrollText, FolderTree, Boxes } from "lucide-react";
 import { TopbarTools } from "@/components/topbar-tools";
 
 function GithubIcon({ className }: { className?: string }) {
@@ -43,8 +43,13 @@ const GroupsPage = lazy(() =>
     default: m.GroupsPage,
   })),
 );
+const ModelsPage = lazy(() =>
+  import("@/components/models-page").then((m) => ({
+    default: m.ModelsPage,
+  })),
+);
 
-type Tab = "overview" | "credentials" | "keys" | "groups" | "traces";
+type Tab = "overview" | "credentials" | "keys" | "groups" | "models" | "traces";
 
 const TABS: {
   key: Tab;
@@ -77,6 +82,12 @@ const TABS: {
     icon: <FolderTree className="h-3.5 w-3.5" />,
   },
   {
+    key: "models",
+    label: "模型",
+    mobileLabel: "模型",
+    icon: <Boxes className="h-3.5 w-3.5" />,
+  },
+  {
     key: "traces",
     label: "请求日志",
     mobileLabel: "日志",
@@ -90,6 +101,7 @@ function readTabFromHash(): Tab {
     h === "credentials" ||
     h === "keys" ||
     h === "groups" ||
+    h === "models" ||
     h === "overview" ||
     h === "traces"
   )
@@ -377,6 +389,7 @@ function AppMain({ onLogout, tab }: { onLogout: () => void; tab: Tab }) {
         {tab === "credentials" && <Dashboard onLogout={onLogout} embedded />}
         {tab === "keys" && <ClientKeysPage />}
         {tab === "groups" && <GroupsPage />}
+        {tab === "models" && <ModelsPage />}
         {tab === "traces" && <TraceLogPage />}
       </Suspense>
     </main>

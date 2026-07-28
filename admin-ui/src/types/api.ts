@@ -73,6 +73,29 @@ export interface AvailableModelItem {
   modelName?: string
   description?: string
   maxInputTokens?: number
+  maxOutputTokens?: number
+}
+
+// 账号池模型响应（GET /api/admin/models）
+export interface AdminModelsResponse {
+  selection: string // "priority" | "balanced" | "specified"
+  credentialId: number
+  models: AvailableModelItem[]
+}
+
+// 真实模型测试请求
+export interface AdminTestModelRequest {
+  credentialId?: number
+  model: string
+}
+
+// 真实模型测试响应
+export interface AdminTestModelResponse {
+  credentialId: number
+  text: string
+  latencyMs: number
+  creditUsage?: number
+  creditUnit?: string
 }
 
 // 成功响应

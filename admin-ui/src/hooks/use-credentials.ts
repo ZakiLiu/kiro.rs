@@ -8,6 +8,8 @@ import {
   clearThrottle,
   getCredentialBalance,
   getCredentialModels,
+  getPoolModels,
+  testPoolModel,
   getProxyConfig,
   updateProxyConfig,
   getGlobalConfig,
@@ -53,6 +55,24 @@ export function useCredentialModels(id: number | null) {
     queryFn: () => getCredentialModels(id!),
     enabled: id !== null,
     retry: false, // 失败不重试，避免对被封禁/异常账号反复请求
+  })
+}
+
+// 按账号池策略查询模型目录
+export function usePoolModels(enabled: boolean) {
+  return useQuery({
+    queryKey: ['pool-models'],
+    queryFn: getPoolModels,
+    enabled,
+    retry: false,
+    staleTime: 60_000,
+  })
+}
+
+// 真实模型测试
+export function useTestPoolModel() {
+  return useMutation({
+    mutationFn: testPoolModel,
   })
 }
 
